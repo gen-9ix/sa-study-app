@@ -7092,6 +7092,23 @@ function syncCard(){
     <div class="tiny muted mt-xs">在其他裝置的「設定 → 跨裝置同步 → 我已經有同步碼」輸入它。進度每次變動後幾秒內上傳，其他裝置打開 app 或每 30 秒會抓最新的。</div></div>`;
 }
 
+
+/* Merge one in-app account's progress into another (same person, two devices), then retire it. */
+async function mergeProfileInto(fromId,toId){
+  if(fromId===toId) return;
+  if(fromId===PROF.cur){ if(SYNC.unsub){ try{ SYNC.unsub(); }catch(e){} SYNC.unsub=null; } clearTimeout(SYNC.timer); SYNC.dirty=false; SYNC.ref=null; }
+  let from=fromId===PROF.cur?normState(S):normState(lsRead(pKey(fromId))), to=normState(lsRead(pKey(toId)));
+  if(SYNC.db){
+    try{ const a=await SYNC.db.doc(SYNC.base+pDoc(fromId)).get(); if(a.exists) from=normState(mergeState(from,dclone(a.data()))); }catch(e){}
+    try{ const b=await SYNC.db.doc(SYNC.base+pDoc(toId)).get(); if(b.exists) to=normState(mergeState(to,dclone(b.data()))); }catch(e){}
+  }
+  const m=normState(mergeState(to,from)); m.u=Date.now(); lsWrite(pKey(toId),m);
+  if(SYNC.db){ try{ await SYNC.db.doc(SYNC.base+pDoc(toId)).set(JSON.parse(JSON.stringify(m))); }catch(e){} }
+  const p=PROF.list.find(x=>x.id===fromId); if(p){ p.del=true; p.t=Date.now(); delete p.pin; }
+  try{ localStorage.removeItem(pKey(fromId)); }catch(e){}
+  if(SYNC.db) SYNC.db.doc(SYNC.base+pDoc(fromId)).delete().catch(()=>{});
+  return m;
+}
 async function initSync(){
   if(!window.claude||!window.claude.use) return;
   try{
@@ -7103,11 +7120,16 @@ async function initSync(){
     const md=ms.exists?(dclone(ms.data())||{}):{}; const rl=md.list||[];
     for(const p of rl){ if(!p||!p.id) continue; const i=PROF.list.findIndex(x=>x.id===p.id); if(i<0) PROF.list.push(p); else if((p.t||0)>(PROF.list[i].t||0)) PROF.list[i]=p; }
     if(!PROF.list.length&&old&&old.exists) PROF.list.push({id:'main',name:'我',em:'🐧',t:Date.now()});
+    const jn=lsRead('sa-sync'); if(jn&&jn.join){ const ids=new Set(rl.map(p=>p&&p.id));
+      for(const lp of PROF.list.filter(p=>!p.del&&!ids.has(p.id))){ const rp=rl.find(p=>p&&!p.del&&p.id!==lp.id&&p.name===lp.name); if(!rp) continue;
+        await mergeProfileInto(lp.id,rp.id); if(PROF.cur===lp.id){ PROF.cur=rp.id; S=normState(lsGet()); } SYNC.merged=(SYNC.merged||0)+1; }
+      delete jn.join; lsWrite('sa-sync',jn); }
     if(!PROF.cur&&md.cur){ const p=PROF.list.find(x=>x.id===md.cur&&!x.del); if(p&&!p.pin){ PROF.cur=p.id; S=normState(lsGet()); if(!BOOT.done) { VIEW={name:'loading'}; render(); } } }
     lsWrite(LS_PROF,PROF);
     if(JSON.stringify(PROF.list)!==JSON.stringify(rl)||(md.cur||'')!==(PROF.cur||'')) pushMeta();
     if(VIEW.name==='who') render();
     await attachProfile();
+    if(SYNC.merged){ setTimeout(()=>toast('已把這台裝置上同名的帳號，和雲端的帳號合併成一個',3200),800); SYNC.merged=0; }
   }catch(e){ SYNC.status='local'; refreshSyncBadge(); }
 }
 function pushMeta(){ lsWrite(LS_PROF,PROF); if(SYNC.metaRef) SYNC.metaRef.set({list:JSON.parse(JSON.stringify(PROF.list)),cur:PROF.cur||'',u:Date.now()}).catch(()=>{}); }
@@ -7997,6 +8019,9 @@ VIEWS.account=()=>{
     <div class="row wrap mt-sm"><button class="btn sm pri" data-act="pinset">${p.pin?'更改密碼':'設定密碼'}</button>${p.pin?'<button class="btn sm" data-act="pindel">移除密碼</button>':''}</div>
     <div class="tiny muted mt-xs">密碼只是避免點錯帳號，不是加密保護</div>
   </div>
+  ${(()=>{ const others=activeProfiles().filter(x=>x.id!==p.id); if(!others.length) return '';
+    return `<div class="card"><h2 class="h2">合併帳號</h2><div class="small muted mt-2xs">同一個人在不同裝置各建了一個帳號時，用這個把它們併成一個。進度會合併（每題保留較新的紀錄），不會遺失。</div>
+    ${others.map(o=>{ const st=lsRead(pKey(o.id)); return `<div class="li">${avHTML(o,'sm')}<span class="grow"><span class="t">${esc(o.name)}${o.name===p.name?' <span class="chip y">同名</span>':''}</span><span class="m">${st?(st.xp||0)+' XP，'+Object.keys(st.q||{}).length+' 題':'進度在雲端'}</span></span><button class="btn sm" data-act="mergeui" data-p="${esc(o.id)}">合併</button></div>`; }).join('')}</div>`; })()}
   <div class="card"><h2 class="h2">其他</h2><div class="row wrap mt-sm"><button class="btn sm" data-act="who">切換 / 新增帳號</button><button class="btn sm danger" data-act="profdel">刪除此帳號</button></div></div>`;
 };
 AFTER.account=()=>{ const a=$('#anm'); if(a) a.oninput=()=>{ VIEW.anm=a.value; }; };
@@ -8511,11 +8536,20 @@ const ACT={
     toast('<span class="spin"></span> 確認中…',3000); let j=null;
     try{ j=await fbReq('GET','meta',null,c); }catch(e){ toast(e&&e.code==='unavailable'?'連不上網路，等一下再試':'這組同步碼不能用'); return; }
     if(!j){ toast('找不到這組同步碼，確認一下有沒有打錯'); return; }
-    lsWrite('sa-sync',{code:c}); toast('連上了，正在載入…'); setTimeout(()=>location.reload(),500); },
+    lsWrite('sa-sync',{code:c,join:1}); toast('連上了，正在載入…'); setTimeout(()=>location.reload(),500); },
   synccode:()=>{ VIEW.showcode=!VIEW.showcode; render(); },
   synccopy:async()=>{ try{ await navigator.clipboard.writeText(fmtCode(FBS.code)); toast('同步碼已複製'); }catch(e){ VIEW.showcode=true; render(); toast('無法自動複製，請長按同步碼複製'); } },
   syncoff:()=>{ if(now()-leaveArmed>3000){ leaveArmed=now(); toast('這台裝置會停止同步（資料留在這台，雲端也不會刪）。3 秒內再按一次確認',3200); return; }
     flush(); try{ localStorage.removeItem('sa-sync'); }catch(e){} toast('已停止同步'); setTimeout(()=>location.reload(),600); },
+  mergeui:d=>{ const a=curProf(), b=PROF.list.find(x=>x.id===d.p); if(!a||!b) return;
+    sheet(`<div class="row between"><h2 class="h2">合併帳號</h2><button class="iconbtn" data-act="closesheet" aria-label="關閉">${icon('x')}</button></div>
+    <div class="small mt-sm">把目前的「${esc(a.name)}」（${S.xp||0} XP）併入「${esc(b.name)}」。合併後只會留下「${esc(b.name)}」，兩邊的進度都會保留在裡面。</div>
+    ${b.pin?`<label class="small muted mt-sm" style="display:block" for="mpin">「${esc(b.name)}」的密碼</label><input class="field mono mt-2xs" id="mpin" inputmode="numeric" maxlength="6" autocomplete="off">`:''}
+    <button class="btn pri block mt-md" data-act="mergego" data-p="${esc(b.id)}">確定合併</button>`); },
+  mergego:async d=>{ const a=curProf(), b=PROF.list.find(x=>x.id===d.p); if(!a||!b) return;
+    if(b.pin&&($('#mpin')?.value||'').trim()!==b.pin){ toast('密碼不對'); return; }
+    closeSheet(); toast('<span class="spin"></span> 合併中…',4000);
+    await mergeProfileInto(a.id,b.id); pushMeta(); selectProfile(b.id); setTimeout(()=>toast('合併完成'),600); },
   pem:d=>{ VIEW.em=d.e; render(); },
   prof:d=>{ const p=PROF.list.find(x=>x.id===d.p); if(!p) return; if(p.pin){ sheet(`<div class="row between"><div class="row">${avHTML(p,'sm')}<h2 class="h2">${esc(p.name)}</h2></div><button class="iconbtn" data-act="closesheet" aria-label="關閉">${icon('x')}</button></div><input class="field mono" id="pinin" inputmode="numeric" maxlength="6" placeholder="輸入密碼" style="margin-top:var(--space-sm)" autocomplete="off"><button class="btn pri block" style="margin-top:var(--space-sm)" data-act="pinok" data-p="${esc(p.id)}">進入</button>`); setTimeout(()=>{ try{ $('#pinin').focus(); }catch(e){} },80); } else selectProfile(p.id); },
   pinok:d=>{ const p=PROF.list.find(x=>x.id===d.p); if(p&&($('#pinin')?.value||'')===p.pin) selectProfile(p.id); else toast('密碼不對'); },
