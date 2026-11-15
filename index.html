@@ -554,6 +554,65 @@ pre.code,.term{color:var(--color-ink-2)}
 .q-shd{fill:var(--rq-o);opacity:.45} .q-cast{fill:var(--rq-o);opacity:.4} .q-cast2{opacity:.22} .q-ao{fill:var(--rq-o);opacity:.28} .q-ao2{fill:var(--rq-o);opacity:.18}
 .q-rim{fill:var(--rq-lamp);opacity:.32} .q-rim2{opacity:.16}
 .q-wall{fill:var(--rm-wall)} .q-wall2{fill:var(--rm-wall-2)} .q-base{fill:var(--rm-wood-2)} .q-floor{fill:var(--rm-floor)} .q-floor2{fill:var(--rm-floor-2)} .q-rug{fill:var(--rm-rug)} .q-rug2{fill:var(--rm-rug-2)}
+
+/* tappable speech bubble on home */
+.bubble.tap{cursor:pointer;position:relative;-webkit-tap-highlight-color:transparent;transition:transform .12s}
+.bubble.tap:active{transform:scale(.985)}
+.bubble.tap:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px}
+.bubble .tiphead{display:flex;align-items:center;gap:var(--space-2xs);flex-wrap:wrap;font-size:var(--text-xs);color:var(--color-muted);margin-bottom:var(--space-3xs)}
+.bubble .tipk{color:var(--color-accent)}
+.bubble .hint{display:block;margin-top:var(--space-2xs);font-size:var(--text-xs);color:var(--color-muted)}
+.bubble .tiplink{display:inline-flex;align-items:center;gap:var(--space-3xs);margin-top:var(--space-2xs);font-size:var(--text-xs);color:var(--color-accent);background:none;border:0;padding:var(--space-3xs) 0;cursor:pointer}
+.bubble.fresh{animation:bubIn .22s ease-out}
+@keyframes bubIn{from{opacity:.4;transform:translateY(3px)}to{opacity:1;transform:none}}
+/* pet forms album */
+.forms{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--space-xs)}
+.form{display:flex;flex-direction:column;align-items:center;gap:var(--space-3xs);padding:var(--space-xs) var(--space-3xs);border-radius:var(--radius-card);background:var(--color-paper-2);border:var(--rule-hair) solid var(--color-rule);color:var(--color-ink);cursor:pointer;font:inherit}
+.form[disabled]{cursor:not-allowed;background:transparent;color:var(--color-muted);border-style:dashed}
+.form.on{border-color:var(--color-accent);box-shadow:0 0 0 1px var(--color-accent)}
+.form .fn{font-size:var(--text-xs);line-height:1.3;text-align:center}
+.form .fl{font-size:var(--text-xs);color:var(--color-muted)}
+.form .sil{display:flex;align-items:center;justify-content:center;width:52px;height:52px;color:var(--color-muted)}
+.memo{position:absolute;left:var(--space-sm);top:var(--space-sm);z-index:2;font-size:var(--text-xs);padding:var(--space-3xs) var(--space-xs);border-radius:var(--radius-pill);background:var(--color-paper);color:var(--color-accent);border:var(--rule-hair) solid var(--color-rule)}
+
+/* ---------- responsive layout: follows the window live ---------- */
+body{--appw:560px}
+#app{max-width:var(--appw)}
+.dock>div{max-width:calc(var(--appw) - 2 * var(--space-md))}
+.sheet{max-width:var(--appw)}
+.home-grid,.split{display:block}
+@media (max-width:359px){
+  #app{padding-left:var(--space-sm);padding-right:var(--space-sm)}
+  .say .stage svg{width:56px;height:56px}
+  .forms{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media (min-width:700px){
+  body{--appw:720px}
+  #app{padding-left:var(--space-lg);padding-right:var(--space-lg)}
+  .grid2{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .say .stage svg{width:104px;height:104px}
+  .bubble{font-size:var(--text-md)}
+}
+@media (min-width:1024px){
+  body{--appw:1180px}
+  body:not([data-v=home]):not([data-v=bosses]):not([data-v=pets]):not([data-v=room]):not([data-v=map]){--appw:780px}
+  .home-grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:var(--space-lg);align-items:start}
+  .home-grid>.hcol:first-child{position:sticky;top:var(--space-md)}
+  .home-grid .sec:first-child{margin-top:0}
+  .split{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--space-lg);align-items:start}
+  .split>div:first-child{position:sticky;top:var(--space-md)}
+  .split .sec:first-child{margin-top:0}
+  .grid2{grid-template-columns:repeat(4,minmax(0,1fr))}
+  body[data-v=map] #app{--appw:900px;max-width:900px}
+}
+@media (orientation:landscape) and (max-height:520px){
+  .bstage svg{width:auto;height:110px}
+  .battle{padding:var(--space-sm)}
+  .room-svg{max-height:62vh;width:auto;margin:0 auto}
+  .say .stage svg{width:64px;height:64px}
+  .dock{padding-top:var(--space-xs);padding-bottom:calc(var(--space-xs) + env(safe-area-inset-bottom))}
+}
+
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
 }
@@ -7258,8 +7317,8 @@ const EVO={
 function petStage(){ let L=1; try{ if(PROF.cur) L=lvl().i; }catch(e){} let s=0; for(let i=0;i<STAGE_LV.length;i++) if(L>=STAGE_LV[i]) s=i; return s; }
 const curPet=()=>{ let id=S&&S.set&&S.set.pet; if(id==='cat') id='husky'; return PETS[id]?id:'crab'; };
 function petVar(id){ const k=(PROF.cur||'x')+':'+id; let h=7; for(let i=0;i<k.length;i++) h=(h*31+k.charCodeAt(i))>>>0; return h%3; }
-function mascot(mood='idle',size=64,pid){
-  const id=pid||curPet(), P=PETS[id]||PETS.crab, st=petStage(), E=EVO[id].f(st,petVar(id)), map=Object.assign({},P.map,E.map||{}); let out='';
+function mascot(mood='idle',size=64,pid,stO){
+  const id=pid||curPet(), P=PETS[id]||PETS.crab, st=(stO!=null?stO:petStage()), E=EVO[id].f(st,petVar(id)), map=Object.assign({},P.map,E.map||{}); let out='';
   const px=(x,y,c,w=1,h=1,cls='')=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" class="p${c}${cls?' '+cls:''}"/>`;
   const R=P.rows, at=(x,y)=>(y<0||y>15||x<0||x>15)?'.':R[y][x], solid=c=>c!=='.'&&c!=='o', ink=c=>PAL[map[c]||'w'];
   for(let y=0;y<16;y++){ let x=0; while(x<16){ const ch=R[y][x]; if(ch==='.'){ x++; continue; }
@@ -7275,7 +7334,34 @@ function mascot(mood='idle',size=64,pid){
   const sc=[0.78,0.86,0.93,1,1][st];
   return `<svg class="pet${mood==='happy'?' hop':''}" viewBox="-4 -8 24 24" shape-rendering="crispEdges" style="width:${size}px;height:${size}px" role="img" aria-label="${P.name}"><g transform="translate(8 15) scale(${sc}) translate(-8 -15)"><g class="body">${out}<g class="${mood==='idle'||mood==='care'?'blink':''}">${eyes}</g>${acc}${fx}</g></g></svg>`;
 }
-function say(mood,html,size=72){ const P=PETS[curPet()]; return `<div class="say"><button class="stage" data-act="go" data-v="pets" aria-label="夥伴${P.name}，點一下換夥伴">${mascot(mood,size)}</button><div class="bubble"><span class="who">${P.name}</span>${html}</div></div>`; }
+function say(mood,html,size=72,tap){ const P=PETS[curPet()]; return `<div class="say"><button class="stage" data-act="go" data-v="pets" aria-label="夥伴${P.name}，點一下換夥伴">${mascot(mood,size)}</button><div class="bubble${tap?' tap'+(HOMETIP.anim?' fresh':''):''}"${tap?` data-act="saynext" role="button" tabindex="0" aria-label="${P.name}說的話，點一下換一句 SA 小知識"`:''}><span class="who">${P.name}</span>${html}</div></div>`; }
+/* Home speech bubble: greeting by default; each tap swaps in a random SA tidbit drawn from the
+   cards (key points, analogies, mnemonics). Endless; avoids repeating the last 40. */
+const HOMETIP={cur:null,recent:[],n:0,anim:false};
+const TIP_KAO=['(・ω・)','(・_・)','(・o・)','(｀・ω・´)','(´・ω・`)','(￣ー￣)'];
+const TIP_PRE=['小知識','你知道嗎','考前提醒','記一下','我剛剛想到','偷偷告訴你'];
+let TIPS=null;
+function tipPool(){
+  if(TIPS) return TIPS; TIPS=[];
+  const len=t=>String(t).replace(/[*`]/g,'').length;
+  for(const c of CLIST){
+    for(const b of c.b) if(len(b)>=10&&len(b)<=90) TIPS.push({c,t:b,k:'b'});
+    if(c.a&&len(c.a)<=90) TIPS.push({c,t:c.a,k:'a'});
+    if(c.m&&len(c.m)<=90) TIPS.push({c,t:c.m,k:'m'});
+  }
+  return TIPS;
+}
+function nextTip(){
+  const P=tipPool(); if(!P.length) return null;
+  const mine=P.filter(x=>cardStarted(x.c)), src=(mine.length>=15&&Math.random()<0.6)?mine:P;
+  let x=null; for(let g=0;g<30;g++){ x=src[Math.random()*src.length|0]; if(!HOMETIP.recent.includes(x)&&x!==HOMETIP.cur) break; }
+  HOMETIP.recent.push(x); if(HOMETIP.recent.length>40) HOMETIP.recent.shift();
+  const pre=x.k==='m'?'口訣時間':x.k==='a'?'打個比方':TIP_PRE[Math.random()*TIP_PRE.length|0];
+  return Object.assign({},x,{pre,kao:Math.random()<0.4?TIP_KAO[Math.random()*TIP_KAO.length|0]:''});
+}
+function tipHTML(x){
+  return `<span class="tiphead"><span class="tipk">${esc(x.pre)}</span><span>·</span>${chTag(x.c.ch)}<span>${md(x.c.t)}</span></span>${md(x.t)}${x.kao?' '+x.kao:''}<button class="tiplink" data-act="card" data-c="${x.c.id}">看這張卡 ${icon('right')}</button>${HOMETIP.n<=2?'<span class="hint">再點一下換一個</span>':''}`;
+}
 /* 8-bit style sound effects, synthesised with WebAudio (no files) */
 const SFX={ctx:null,played:false,master:null,el:null,unlocked:false};
 /* iPhone/iPad: Web Audio is silenced by the side Ring/Silent switch and stays suspended until it is started
@@ -7451,6 +7537,11 @@ function sfx(n,k=0){
   }catch(e){}
 }
 function homeSay(D,goal,ms){
+  if(HOMETIP.cur){ const x=HOMETIP.cur; const out=say(HOMETIP.n%2?'happy':'idle',tipHTML(x),72,true); HOMETIP.anim=false; return out; }
+  const g=homeGreet(D,goal,ms); return say(g[0],g[1]+'<span class="hint">點我聽一個 SA 小知識 ›</span>',72,true);
+}
+function homeGreet(D,goal,ms){
+  const say=(m,h)=>[m,h];
   const h=new Date().getHours(), late=(h>=23||h<5), st=streak();
   if(D.n>=goal) return say('happy','今天的目標完成了，辛苦啦！'+(late?'很晚了，早點休息，明天我在這裡等你。':'想加碼的話我也陪你 (・ω・)'));
   if(!ms.n) return say('happy','嗨，'+PETS[curPet()].intro+'從第一張卡開始，我陪你慢慢冒險，不用急。');
@@ -7689,13 +7780,20 @@ function roomTick(){
   if(fresh.length){ for(const it of fresh) S.room.seen[it.id]=1; S.room.t=now(); save(); setTimeout(()=>{ toast(icon('box')+' 小房間解鎖新家具：'+fresh.map(i=>i.name).join('、'),3200); sfx('coin'); },600); }
 }
 function viewRoom(){
-  const P=PETS[curPet()], got=ROOM_ITEMS.filter(roomUnlocked).length;
+  const P=PETS[curPet()], st=petStage(), N=EVO[curPet()].names, got=ROOM_ITEMS.filter(roomUnlocked).length;
   const rows=ROOM_ITEMS.map(it=>{ const ch=CHMAP[it.ch], u=roomUnlocked(it), shown=roomShown(it), m=pct(chMastery(ch));
     return `<div class="li"><span class="ic-tile">${u?icon('box'):icon('lock')}</span><span class="grow"><span class="t">${u?esc(it.name):'？？？'}</span><span class="m">${chTag(ch)} ${u?esc(ch.t):`擊敗 ${esc(BOSSES[it.ch][2])}，或本章掌握 60%（目前 ${m}%）`}</span></span>${u?`<button class="btn sm${shown?'':' pri'}" data-act="roomtoggle" data-i="${it.id}" aria-pressed="${shown}">${shown?'收起':'擺上'}</button>`:''}</div>`; }).join('');
   return topbar(P.name+'的小房間',`<span class="combo small">${got}/${ROOM_ITEMS.length}</span>`)+`
-  <div class="room">${roomSVG()}<button class="room-pet" data-act="roompet" aria-label="摸摸${P.name}">${mascot(VIEW.happy?'happy':'idle',96)}</button></div>
+  <div class="split"><div>
+  <div class="room">${VIEW.form!=null?`<span class="memo">回憶：${esc(N[VIEW.form])}</span>`:''}${roomSVG()}<button class="room-pet" data-act="roompet" aria-label="摸摸${P.name}">${mascot(VIEW.happy?'happy':'idle',96,null,VIEW.form)}</button></div>
   <div class="small muted mt-sm">每章一件家具。打倒那章的魔王，或把那章練到 60%，就會解鎖。點夥伴可以摸摸它。</div>
-  <div class="sec">家具</div><div class="card">${rows}</div>`;
+  <div class="sec">成長相簿<span class="note">點一下，讓${P.name}變回那時候的樣子</span></div>
+  <div class="card"><div class="forms">${N.map((n,i)=>{ const got=i<=st, on=(VIEW.form??st)===i;
+    return `<button class="form${on?' on':''}" ${got?`data-act="roomform" data-i="${i}"`:'disabled'} aria-pressed="${on}" aria-label="${got?n:'還沒解鎖的型態'}">${got?mascot('idle',52,null,i):`<span class="sil" aria-hidden="true">${icon('lock','lg')}</span>`}<span class="fn">${got?esc(n):'？？？'}</span><span class="fl">${i===st?'現在':'Lv.'+STAGE_LV[i]}</span></button>`; }).join('')}</div>
+  ${VIEW.form!=null&&VIEW.form!==st?`<button class="btn sm block mt-sm" data-act="roomform" data-i="${st}">回到現在的樣子</button>`:''}</div>
+  </div><div>
+  <div class="sec">家具</div><div class="card">${rows}</div>
+  </div></div>`;
 }
 
 /* ═════════════════════ 5. AI TUTOR (sample capability) ═════════════════════ */
@@ -7724,7 +7822,7 @@ let RUN=null; // active practice run
 function BUSY(){ return !!(RUN&&RUN.active)||VIEW.name==='blitz'; }
 function go(name,params={},push=true){ if(push) STACK.push(VIEW); VIEW={name,...params}; window.scrollTo(0,0); render(); }
 function back(){ if(RUN&&RUN.active&&!RUN.endless&&!confirmLeave()) return; RUN=null; stopBlitz(); VIEW=STACK.pop()||{name:'home'}; render(); }
-function home(){ RUN=null; stopBlitz(); STACK.length=0; VIEW={name:'home'}; window.scrollTo(0,0); render(); }
+function home(){ HOMETIP.cur=null; HOMETIP.n=0; RUN=null; stopBlitz(); STACK.length=0; VIEW={name:'home'}; window.scrollTo(0,0); render(); }
 let leaveArmed=0;
 function confirmLeave(){ if(now()-leaveArmed<2500) return true; leaveArmed=now(); toast('再按一次返回就結束這回合（進度已保存）'); return false; }
 function render(){
@@ -7732,6 +7830,7 @@ function render(){
   if(!PROF.cur&&VIEW.name!=='who'&&VIEW.name!=='loading') VIEW={name:'who'};
   const V=VIEWS[VIEW.name]||VIEWS.home;
   a.innerHTML=V();
+  document.body.dataset.v=VIEW.name;
   const after=AFTER[VIEW.name]; if(after) after();
   try{ musicSync(); }catch(e){}
 }
@@ -7765,6 +7864,7 @@ VIEWS.home=()=>{
     <button class="who-btn" data-act="who" aria-label="切換帳號，目前是 ${esc(P.name||'')}">${avHTML(P)}<span><span class="h2" style="display:block">${esc(P.name||'')}</span><span class="small muted">切換帳號</span></span></button>
     <span class="row"><button class="iconbtn${S.set.bgm?' on':''}" data-act="togglebgm" aria-label="背景音樂" aria-pressed="${!!S.set.bgm}">${icon('note','lg')}</button><button class="iconbtn" data-act="go" data-v="settings" aria-label="設定">${icon('gear','lg')}</button></span>
   </div>
+  <div class="home-grid"><div class="hcol">
   ${homeSay(D,goal,ms)}
   <section class="card status" aria-label="今日狀態">
     <div class="hp-head"><span class="hp-label">${icon('heart')} 記憶血量</span><span class="hp-val">${ms.n?pct(ms.avg):'--'}<small>%</small></span></div>
@@ -7783,6 +7883,7 @@ VIEWS.home=()=>{
   ${expPanel()}
   ${weak?`<div class="card alert"><span class="ic-tile">${icon('heal')}</span><div class="grow"><div class="h2">${md(weak.c.t)}</div><div class="small muted">盲點：${esc(weak.why.join('、'))}</div></div><button class="btn sm warn" data-act="rescue" data-c="${weak.c.id}">30 秒救援</button></div>`:''}
   ${exam}
+  </div><div class="hcol">
   <div class="sec">指令選單<span class="note">想專攻某一項時再用</span></div>
   <nav class="card menu" aria-label="練習模式">
     <button class="mi" data-act="go" data-v="bosses">${icon('sword')}<span class="grow"><span class="t">魔王戰</span><span class="d">每章一隻魔王，答對就攻擊</span></span><span class="r">${CH.filter(ch=>bossRec(ch.id)?.w).length}/${CH.length}</span></button>
@@ -7800,7 +7901,8 @@ VIEWS.home=()=>{
     <div class="row between"><div class="small muted">已見過 ${learnedQ} / ${QLIST.length} 題，共 ${CLIST.length} 張觀念卡</div><div class="small"><b>${pct(mAll)}%</b> 掌握</div></div>
     <div class="bar mt-xs"><i style="--v:${(learnedQ/QLIST.length).toFixed(3)}"></i></div>
     <div class="row between mt-sm"><span class="tiny muted row" id="syncb">${syncLabel()}</span><span class="tiny muted">內容 v${CONTENT_VERSION}</span></div>
-  </div>`;
+  </div>
+  </div></div>`;
 };
 
 /* ---------- LOADING ---------- */
@@ -7826,6 +7928,32 @@ VIEWS.who=()=>{
 };
 AFTER.who=()=>{ const a=$('#pname'), b=$('#ppin'); if(a) a.oninput=()=>{ VIEW.nm=a.value; }; if(b) b.oninput=()=>{ VIEW.pn=b.value; }; };
 
+
+/* ---------- ACCOUNT ---------- */
+VIEWS.account=()=>{
+  const p=curProf()||{}; if(VIEW.anm==null){ VIEW.anm=p.name||''; VIEW.aem=p.em||EMO[avIdx(p)]; }
+  const prev=Object.assign({},p,{name:VIEW.anm||p.name,em:VIEW.aem});
+  const made=p.t?new Date(p.t).toLocaleDateString('zh-TW'):'';
+  return topbar('帳戶設定')+`
+  <div class="card"><div class="row">${avHTML(prev)}<div class="grow"><div class="h2">${esc(VIEW.anm||'（未命名）')}</div><div class="tiny muted">${S.xp||0} XP，已學 ${Object.keys(S.q||{}).length} 題${made?'<span class="sep"></span>建立於 '+made:''}</div></div></div></div>
+  <div class="card"><h2 class="h2">暱稱與頭像</h2>
+    <label class="small muted mt-sm" style="display:block" for="anm">暱稱</label>
+    <input class="field mt-2xs" id="anm" maxlength="12" value="${esc(VIEW.anm)}" autocomplete="off">
+    <div class="small muted mt-sm">頭像顏色</div>
+    <div class="row wrap mt-2xs" role="radiogroup" aria-label="頭像顏色">${EMO.slice(0,6).map((e,i)=>`<button class="swatch av${i}${e===VIEW.aem?' on':''}" role="radio" aria-checked="${e===VIEW.aem}" aria-label="顏色 ${i+1}" data-act="aem" data-e="${e}">${e===VIEW.aem?icon('check'):''}</button>`).join('')}</div>
+    <button class="btn pri block mt-md" data-act="acctsave">儲存</button>
+  </div>
+  <div class="card"><h2 class="h2">密碼</h2><div class="small muted mt-2xs">${p.pin?'目前有設密碼。要更改或移除，先輸入目前的密碼。':'目前沒有密碼，任何人都能直接點進這個帳號。'}</div>
+    ${p.pin?`<label class="small muted mt-sm" style="display:block" for="aold">目前密碼</label><input class="field mono mt-2xs" id="aold" inputmode="numeric" maxlength="6" autocomplete="off">`:''}
+    <label class="small muted mt-sm" style="display:block" for="anew">${p.pin?'新密碼':'設定密碼'}</label>
+    <input class="field mono mt-2xs" id="anew" inputmode="numeric" maxlength="6" placeholder="4 到 6 位數字" autocomplete="off">
+    <div class="row wrap mt-sm"><button class="btn sm pri" data-act="pinset">${p.pin?'更改密碼':'設定密碼'}</button>${p.pin?'<button class="btn sm" data-act="pindel">移除密碼</button>':''}</div>
+    <div class="tiny muted mt-xs">密碼只是避免點錯帳號，不是加密保護</div>
+  </div>
+  <div class="card"><h2 class="h2">其他</h2><div class="row wrap mt-sm"><button class="btn sm" data-act="who">切換 / 新增帳號</button><button class="btn sm danger" data-act="profdel">刪除此帳號</button></div></div>`;
+};
+AFTER.account=()=>{ const a=$('#anm'); if(a) a.oninput=()=>{ VIEW.anm=a.value; }; };
+
 /* ---------- PETS ---------- */
 VIEWS.pets=()=>{
   const cur=curPet(), P=PETS[cur], st=petStage(), L=lvl(), nxL=STAGE_LV[st+1], N=EVO[cur].names;
@@ -7844,7 +7972,7 @@ VIEWS.settings=()=>{
   const s=S.set;
   const seg=(key,vals,lab=x=>x)=>`<div class="seg">${vals.map(v=>`<button class="${s[key]===v?'on':''}" data-act="set" data-k="${key}" data-val="${v}">${lab(v)}</button>`).join('')}</div>`;
   return topbar('設定')+`
-  <div class="card"><div class="row">${avHTML(curProf()||{},'sm')}<h2 class="h2 grow">帳號：${esc((curProf()||{}).name||'')}</h2></div><div class="row wrap mt-sm"><button class="btn sm" data-act="who">切換 / 新增帳號</button><button class="btn sm danger" data-act="profdel">刪除此帳號</button></div></div>
+  <div class="card"><div class="row">${avHTML(curProf()||{},'sm')}<h2 class="h2 grow">帳號：${esc((curProf()||{}).name||'')}</h2></div><div class="row wrap mt-sm"><button class="btn sm pri" data-act="go" data-v="account">${icon('pencil')} 帳戶設定</button><button class="btn sm" data-act="who">切換 / 新增帳號</button><button class="btn sm danger" data-act="profdel">刪除此帳號</button></div></div>
   <div class="card row"><div class="grow"><div class="h2">夥伴：${PETS[curPet()].name}</div><div class="small muted">隨時可換，成長階段不會歸零</div></div><button class="btn sm" data-act="go" data-v="pets">更換</button></div>
   <div class="card row"><div class="grow"><div class="h2">音效</div><div class="small muted">8-bit 風格的小音效。沒聲音的話，先調高媒體音量再點一下「開啟」試聽</div></div><button class="btn sm ${s.snd?'pri':''}" data-act="togglesnd">${s.snd?'開啟':'關閉'}</button></div>
   <div class="card"><div class="row"><div class="grow"><div class="h2">背景音樂</div><div class="small muted">慢速的環境音樂，即時合成，每段和弦上的鈴聲都隨機。切到別的 app 會自動停</div></div><button class="btn sm ${s.bgm?'pri':''}" data-act="togglebgm" aria-pressed="${!!s.bgm}">${s.bgm?'開啟':'關閉'}</button></div><div class="row mt-sm"><div class="grow"><div class="h2">魔王戰音樂</div><div class="small muted">進入魔王戰才會響，緊張一點的 8-bit 戰鬥曲。魔王剩 3 格血時會加快</div></div><button class="btn sm ${s.bbgm?'pri':''}" data-act="togglebbgm" aria-pressed="${!!s.bbgm}">${s.bbgm?'開啟':'關閉'}</button></div>${(s.bgm||s.bbgm)?`<div class="small muted" style="margin:var(--space-sm) 0 var(--space-xs)">音量</div>${seg('bgmv',[1,2,3],v=>['','小','中','大'][v])}`:''}</div>
@@ -8315,6 +8443,20 @@ const ACT={
   rrate:d=>{ const r=+d.r; rateCard(RUN.items[RUN.pos].c,r); RUN.xp+=2; RUN.res[RUN.pos]=r?2:0; toast(r===2?'記得！這張卡先放心':r===1?'有點模糊，相關題目會早一點回來':'沒關係，相關題目已排進接下來的複習'); next(); },
   chestok:()=>{ const x=RUN.items[RUN.pos].xp; S.xp+=x; const D=S.days[today()]||(S.days[today()]={n:0,c:0,x:0,nw:0}); D.x+=x; RUN.xp+=x; save(); next(); },
   who:()=>go('who'),
+  saynext:()=>{ const x=nextTip(); if(!x) return; HOMETIP.cur=x; HOMETIP.n++; HOMETIP.anim=true; sfx('flip'); render(); },
+  aem:d=>{ VIEW.aem=d.e; render(); },
+  acctsave:()=>{ const p=curProf(); if(!p) return; const name=(VIEW.anm||'').trim();
+    if(!name){ toast('暱稱不能是空的'); return; }
+    if(activeProfiles().some(x=>x.id!==p.id&&x.name===name)){ toast('這個暱稱已經有人用了'); return; }
+    p.name=name; p.em=VIEW.aem||p.em; p.t=Date.now(); pushMeta(); toast('已儲存'); render(); },
+  pinset:()=>{ const p=curProf(); if(!p) return; const nw=($('#anew')?.value||'').trim();
+    if(p.pin&&($('#aold')?.value||'').trim()!==p.pin){ toast('目前的密碼不對'); return; }
+    if(!/^\d{4,6}$/.test(nw)){ toast('密碼要是 4 到 6 位數字'); return; }
+    p.pin=nw; p.t=Date.now(); pushMeta(); toast('密碼已更新'); render(); },
+  pindel:()=>{ const p=curProf(); if(!p) return;
+    if(($('#aold')?.value||'').trim()!==p.pin){ toast('先輸入目前的密碼'); return; }
+    delete p.pin; p.t=Date.now(); pushMeta(); toast('已移除密碼'); render(); },
+  roomform:d=>{ const i=+d.i; VIEW.form=(i===petStage())?null:i; VIEW.happy=true; sfx('pet'); render(); clearTimeout(ACT._rf); ACT._rf=setTimeout(()=>{ if(VIEW.name==='room'){ VIEW.happy=false; render(); } },1200); },
   pem:d=>{ VIEW.em=d.e; render(); },
   prof:d=>{ const p=PROF.list.find(x=>x.id===d.p); if(!p) return; if(p.pin){ sheet(`<div class="row between"><div class="row">${avHTML(p,'sm')}<h2 class="h2">${esc(p.name)}</h2></div><button class="iconbtn" data-act="closesheet" aria-label="關閉">${icon('x')}</button></div><input class="field mono" id="pinin" inputmode="numeric" maxlength="6" placeholder="輸入密碼" style="margin-top:var(--space-sm)" autocomplete="off"><button class="btn pri block" style="margin-top:var(--space-sm)" data-act="pinok" data-p="${esc(p.id)}">進入</button>`); setTimeout(()=>{ try{ $('#pinin').focus(); }catch(e){} },80); } else selectProfile(p.id); },
   pinok:d=>{ const p=PROF.list.find(x=>x.id===d.p); if(p&&($('#pinin')?.value||'')===p.pin) selectProfile(p.id); else toast('密碼不對'); },
@@ -8402,6 +8544,7 @@ document.addEventListener('click',e=>{
   if(el.dataset.act==='closesheet'&&e.target.closest('[data-stop]')&&!e.target.closest('button[data-act="closesheet"]')) return;
   const fn=ACT[el.dataset.act]; if(fn){ e.preventDefault(); SFX.played=false; runAct(el.dataset.act,el.dataset); if(!SFX.played) sfx('tap'); }
 });
+document.addEventListener('keydown',e=>{ const rb=e.target&&e.target.closest&&e.target.closest('[role=button][data-act]'); if(rb&&(e.key==='Enter'||e.key===' ')&&e.target===rb){ e.preventDefault(); rb.click(); } });
 document.addEventListener('keydown',e=>{
   if(VIEW.name!=='run'||!RUN||!RUN.active) return; if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
   const st=RUN.st; const it=RUN.items[RUN.pos];
