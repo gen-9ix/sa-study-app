@@ -8304,9 +8304,14 @@ const ACT={
   togglesnd:()=>{ S.set.snd=S.set.snd?0:1; S.set.t=now(); save(); if(S.set.snd){ unlockAudio(); sfx('coin'); } else if(SFX.el){ try{ SFX.el.pause(); }catch(e){} } render(); },
   pet:d=>{ if(!PETS[d.p]) return; S.set.pet=d.p; S.set.t=now(); save(); sfx('pet'); render(); toast(PETS[d.p].name+'：請多指教！'); },
   toggleai:()=>{ S.set.ai=S.set.ai?0:1; S.set.t=now(); save(); render(); },
-  export:async()=>{ const code=btoa(unescape(encodeURIComponent(JSON.stringify(S)))); try{ await navigator.clipboard.writeText(code); toast('備份碼已複製，貼到記事本保存'); }catch(e){ $('#importbox').innerHTML=`<textarea class="field" style="margin-top:var(--space-sm);min-height:96px" readonly>${esc(code)}</textarea><div class="tiny faint">無法自動複製，請手動全選複製</div>`; } },
-  importui:()=>{ $('#importbox').innerHTML=`<textarea class="field" id="imp" style="margin-top:var(--space-sm);min-height:96px" placeholder="貼上備份碼"></textarea><button class="btn sm pri" style="margin-top:var(--space-xs)" data-act="importgo">合併匯入</button>`; },
-  importgo:()=>{ try{ const o=JSON.parse(decodeURIComponent(escape(atob(($('#imp').value||'').trim())))); S=mergeState(S,o); save(); toast('已匯入並合併'); render(); }catch(e){ toast('備份碼格式不正確'); } },
+  export:async()=>{ const code=btoa(unescape(encodeURIComponent(JSON.stringify(S)))); let ok=false; try{ await navigator.clipboard.writeText(code); ok=true; }catch(e){}
+    $('#importbox').innerHTML=`<div class="small mt-sm">${ok?'已複製到剪貼簿。':'無法自動複製，請長按下面的框框全選後複製。'}這份備份包含 ${S.xp||0} XP、${Object.keys(S.q||{}).length} 題紀錄</div><textarea class="field mono" id="expbox" style="margin-top:var(--space-xs);min-height:96px" readonly>${esc(code)}</textarea><div class="tiny muted mt-2xs">到另一個版本的「設定 → 進度與備份 → 匯入」貼上就好</div>`;
+    const t=$('#expbox'); if(t){ t.onfocus=()=>t.select(); } toast(ok?'備份碼已複製':'請手動複製備份碼'); },
+  importui:()=>{ $('#importbox').innerHTML=`<textarea class="field mono" id="imp" style="margin-top:var(--space-sm);min-height:96px" placeholder="貼上備份碼" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><button class="btn sm pri" style="margin-top:var(--space-xs)" data-act="importgo">合併匯入</button>`; const t=$('#imp'); if(t) t.focus(); },
+  importgo:()=>{ let o=null; try{ const raw=($('#imp').value||'').replace(/\s+/g,''); o=JSON.parse(decodeURIComponent(escape(atob(raw)))); }catch(e){}
+    if(!o||typeof o!=='object'||!('q' in o||'xp' in o)){ toast('備份碼格式不正確，確認有整段複製到'); return; }
+    const before=Object.keys(S.q||{}).length; S=normState(mergeState(S,normState(o))); save(); flush();
+    toast(`已合併匯入：現在 ${S.xp||0} XP、${Object.keys(S.q).length} 題（多了 ${Object.keys(S.q).length-before} 題）`,3200); render(); },
   reset:()=>{ if(now()-leaveArmed>3000){ leaveArmed=now(); toast('確定要清除？3 秒內再按一次'); return; } S=normState(null); S.cv=CONTENT_VERSION; save(); flush(); toast('已清除'); home(); },
 };
 let lastTouchAct=0;
