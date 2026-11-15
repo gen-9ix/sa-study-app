@@ -6932,7 +6932,7 @@ const CHMAP=Object.fromEntries(CH.map(c=>[c.id,c]));
 
 /* ═════════════════════ 2. STATE & PERSISTENCE ═════════════════════ */
 const LS_KEY='sa-study-v1', DAY=864e5, MIN=6e4;
-function fresh(){ return {v:1,q:{},c:{},xp:0,days:{},bm:{},set:{size:10,newPer:3,ai:1,exam:'',t:0,goal:20,pet:'crab',snd:1,bgm:0,bgmv:2},cv:0,best:{blitz:0},fz:{n:1,used:{},t:0},boss:{},exp:null,room:{hide:{},seen:{},t:0},u:0}; }
+function fresh(){ return {v:1,q:{},c:{},xp:0,days:{},bm:{},set:{size:10,newPer:3,ai:1,exam:'',t:0,goal:20,pet:'crab',snd:1,bgm:0,bgmv:2,bbgm:1},cv:0,best:{blitz:0},fz:{n:1,used:{},t:0},boss:{},exp:null,room:{hide:{},seen:{},t:0},u:0}; }
 function lsRead(k){ try{ const t=localStorage.getItem(k); return t?JSON.parse(t):null; }catch(e){ return null; } }
 function lsWrite(k,o){ try{ localStorage.setItem(k,JSON.stringify(o)); }catch(e){} }
 /* profiles: several in-app accounts, each with its own progress.
@@ -7291,17 +7291,18 @@ function audioCtx(){
   return SFX.ctx;
 }
 function unlockAudio(){
-  if(!S||!S.set||!(S.set.snd||S.set.bgm)) return;
+  if(!S||!S.set||!(S.set.snd||S.set.bgm||S.set.bbgm)) return;
   try{ if(navigator.audioSession) navigator.audioSession.type='playback'; }catch(e){}
   try{ if(!SFX.el){ const a=document.createElement('audio'); a.setAttribute('playsinline',''); a.setAttribute('x-webkit-airplay','deny'); a.loop=true; a.preload='auto'; a.src=silentWav(); SFX.el=a; }
        if(SFX.el.paused){ const p=SFX.el.play(); if(p&&p.catch) p.catch(()=>{}); } }catch(e){}
   const c=audioCtx(); if(!c) return;
   if(!SFX.unlocked){ try{ const buf=c.createBuffer(1,1,22050), src=c.createBufferSource(); src.buffer=buf; src.connect(c.destination); src.start(0); }catch(e){} }
   if(c.state==='running') SFX.unlocked=true;
-  if(S.set.bgm&&!BGM.on&&!document.hidden) bgmStart();
+  if(S.set.bgm&&!BGM.on&&!BM.on&&!document.hidden&&!inBattle()) bgmStart();
+  musicSync();
 }
 ['pointerdown','touchend','keydown','click'].forEach(ev=>document.addEventListener(ev,unlockAudio,{capture:true,passive:true}));
-document.addEventListener('visibilitychange',()=>{ if(document.hidden){ bgmStop(); if(SFX.el){ try{ SFX.el.pause(); }catch(e){} } } });
+document.addEventListener('visibilitychange',()=>{ if(document.hidden){ bgmStop(); bossMusicStop(true); if(SFX.el){ try{ SFX.el.pause(); }catch(e){} } } });
 
 /* Background music: a slow generative ambient piece, synthesised live (no audio files).
    Soft detuned pads through a low-pass filter and a generated reverb, a quiet bass, and sparse
@@ -7345,7 +7346,7 @@ function bgmSchedule(){
   }
 }
 function bgmStart(){
-  if(BGM.on) return; const c=bgmBus(); if(!c) return;
+  if(BGM.on||(typeof BM!=='undefined'&&BM.on)) return; const c=bgmBus(); if(!c) return;
   BGM.on=true; BGM.next=c.currentTime+0.1;
   const v=BGM_VOL[S.set.bgmv||2]; BGM.bus.gain.cancelScheduledValues(c.currentTime); BGM.bus.gain.setValueAtTime(Math.max(0.0001,BGM.bus.gain.value),c.currentTime); BGM.bus.gain.exponentialRampToValueAtTime(v,c.currentTime+3);
   bgmSchedule(); clearInterval(BGM.timer); BGM.timer=setInterval(bgmSchedule,500);
@@ -7356,6 +7357,80 @@ function bgmStop(){
 }
 function bgmVolume(){ const c=SFX.ctx; if(c&&BGM.on&&BGM.bus){ BGM.bus.gain.cancelScheduledValues(c.currentTime); BGM.bus.gain.setTargetAtTime(BGM_VOL[S.set.bgmv||2],c.currentTime,0.4); } }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&BGM.on&&!/INPUT|TEXTAREA/.test(e.target.tagName)){ S.set.bgm=0; S.set.t=now(); save(); bgmStop(); render(); } });
+
+/* Boss battle music: a short generative chiptune loop in D minor (i–VI–VII–V), synthesised live.
+   Pulse bass, a 16th-note arpeggio, soft drums and an 8-bar lead that rests every other pass.
+   When the boss is down to 3 HP a higher arpeggio and busier hats join in. Plays only inside a
+   battle; ambient music (if on) pauses for the fight and comes back afterwards. */
+const BM={on:false,bus:null,lp:null,timer:null,next:0,step:0,noise:null};
+const BM_BPM=138, BM_16=60/BM_BPM/4;
+const BM_CH=[[62,65,69],[58,62,65],[60,64,67],[57,61,64]]; // Dm Bb C A
+// lead in 8ths: number = new note, 0 = hold, -1 = rest
+const BM_LEAD=[74,-1,72,74,77,0,76,74, 72,0,70,0,69,0,65,0, 67,0,69,72,0,70,69,67, 69,0,0,0,73,0,76,0,
+               74,-1,72,74,77,0,79,0, 81,0,79,77,0,74,77,0, 79,0,77,76,0,72,76,0, 76,0,73,0,69,0,0,-1];
+function bmBus(){
+  const c=audioCtx(); if(!c) return null;
+  if(!BM.bus){
+    BM.bus=c.createGain(); BM.bus.gain.value=0.0001; BM.bus.connect(c.destination);
+    BM.lp=c.createBiquadFilter(); BM.lp.type='lowpass'; BM.lp.frequency.value=3200; BM.lp.Q.value=0.4; BM.lp.connect(BM.bus);
+    const len=c.sampleRate|0, nb=c.createBuffer(1,len,c.sampleRate), d=nb.getChannelData(0); for(let i=0;i<len;i++) d[i]=Math.random()*2-1; BM.noise=nb;
+  }
+  return c;
+}
+function bmNote(c,f,t,dur,v,type,vib){
+  const o=c.createOscillator(), g=c.createGain(); o.type=type; o.frequency.setValueAtTime(f,t);
+  if(vib){ const l=c.createOscillator(), lg=c.createGain(); l.frequency.value=5.5; lg.gain.setValueAtTime(0,t); lg.gain.linearRampToValueAtTime(f*0.012,t+Math.min(dur,0.35)); l.connect(lg); lg.connect(o.frequency); l.start(t); l.stop(t+dur+0.05); }
+  g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(v,t+0.008); g.gain.setValueAtTime(v,t+Math.max(0.01,dur*0.6)); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g); g.connect(BM.lp); o.start(t); o.stop(t+dur+0.02);
+}
+function bmNoise(c,t,dur,v,type,freq){
+  const s=c.createBufferSource(), f=c.createBiquadFilter(), g=c.createGain(); s.buffer=BM.noise; f.type=type; f.frequency.value=freq;
+  g.gain.setValueAtTime(v,t); g.gain.exponentialRampToValueAtTime(0.0001,t+dur); s.connect(f); f.connect(g); g.connect(BM.lp); s.start(t,Math.random()*0.5); s.stop(t+dur+0.02);
+}
+function bmKick(c,t){ const o=c.createOscillator(), g=c.createGain(); o.type='sine'; o.frequency.setValueAtTime(140,t); o.frequency.exponentialRampToValueAtTime(45,t+0.12); g.gain.setValueAtTime(0.32,t); g.gain.exponentialRampToValueAtTime(0.0001,t+0.2); o.connect(g); g.connect(BM.lp); o.start(t); o.stop(t+0.22); }
+function bmSchedule(){
+  const c=SFX.ctx; if(!BM.on||!c||c.state!=='running') return;
+  const B=RUN&&RUN.boss, rage=!!(B&&B.hp<=3), low=!!(B&&B.php<=1);
+  BM.lp.frequency.setTargetAtTime(low?1500:3200,c.currentTime,0.6);
+  while(BM.next<c.currentTime+0.25){
+    const t=Math.max(BM.next,c.currentTime+0.02), s=BM.step, i16=s%16, bar=(s>>4), ch=BM_CH[bar%4], pass=(bar>>3)%2;
+    // bass: 8th-note octave pulse
+    if(i16%2===0){ const m=ch[0]-24+(i16%4===2?12:0); bmNote(c,mtof(m),t,BM_16*1.7,0.11,'triangle'); bmNote(c,mtof(m),t,BM_16*1.2,0.022,'square'); }
+    // arpeggio
+    const ar=[0,1,2,1,0,1,2,3, 2,1,0,1,2,3,2,1][i16], am=ar===3?ch[0]+12:ch[ar];
+    bmNote(c,mtof(am),t,BM_16*0.9,pass?0.03:0.022,'square');
+    if(rage) bmNote(c,mtof(am+12),t+BM_16*0.5,BM_16*0.6,0.014,'square');
+    // drums
+    if(i16===0||i16===8||(i16===10&&bar%2)) bmKick(c,t);
+    if(i16===4||i16===12) bmNoise(c,t,0.16,0.09,'bandpass',1800);
+    if(rage? true : i16%2===0) bmNoise(c,t,0.04,i16%4===2?0.035:0.022,'highpass',7000);
+    // lead (rests every other 8-bar pass; a soft pad holds the chord instead)
+    if(i16%2===0){
+      const k=((bar%8)*8+(i16>>1)), m=BM_LEAD[k];
+      if(!pass&&m>0){ let n=1; while(k+n<BM_LEAD.length&&BM_LEAD[k+n]===0&&(k+n)%8!==0) n++; const d=n*BM_16*2*0.95; bmNote(c,mtof(m),t,d,0.05,'square',true); bmNote(c,mtof(m),t,d,0.035,'triangle'); }
+      if(pass&&i16===0) ch.forEach(m=>bmNote(c,mtof(m+12),t,BM_16*15,0.016,'triangle'));
+    }
+    BM.step++; BM.next=t+BM_16;
+  }
+}
+function bossMusicStart(){
+  if(BM.on) return; const c=bmBus(); if(!c||c.state!=='running') return;
+  BM.on=true; BM.step=0; BM.next=c.currentTime+0.15;
+  const v=BGM_VOL[S.set.bgmv||2]*1.15; BM.bus.gain.cancelScheduledValues(c.currentTime); BM.bus.gain.setValueAtTime(0.0001,c.currentTime); BM.bus.gain.exponentialRampToValueAtTime(v,c.currentTime+0.6);
+  bmSchedule(); clearInterval(BM.timer); BM.timer=setInterval(bmSchedule,60);
+}
+function bossMusicStop(fast){
+  if(!BM.on) return; BM.on=false; clearInterval(BM.timer);
+  const c=SFX.ctx; if(c&&BM.bus){ BM.bus.gain.cancelScheduledValues(c.currentTime); BM.bus.gain.setValueAtTime(Math.max(0.0001,BM.bus.gain.value),c.currentTime); BM.bus.gain.exponentialRampToValueAtTime(0.0001,c.currentTime+(fast?0.25:0.9)); }
+}
+function inBattle(){ return VIEW&&VIEW.name==='run'&&RUN&&RUN.boss&&!RUN.boss.won&&!RUN.boss.lost; }
+// decides which music should be playing right now; called after every render and audio unlock
+function musicSync(){
+  const c=SFX.ctx; if(!c||c.state!=='running'||document.hidden) return;
+  if(inBattle()&&S.set.bbgm){ if(BGM.on) bgmStop(); bossMusicStart(); if(BM.on) bmVolume(); }
+  else { const was=BM.on; bossMusicStop(RUN&&RUN.boss&&(RUN.boss.won||RUN.boss.lost)); if(S.set.bgm&&!BGM.on) setTimeout(()=>{ if(!BM.on&&S.set.bgm&&!document.hidden) bgmStart(); },was?1200:0); }
+}
+function bmVolume(){ const c=SFX.ctx; if(c&&BM.on&&BM.bus){ BM.bus.gain.setTargetAtTime(BGM_VOL[S.set.bgmv||2]*1.15,c.currentTime,0.3); } }
 
 function tone(f,t0,d,type='square',v=0.05){ const c=SFX.ctx, o=c.createOscillator(), g=c.createGain(), t=c.currentTime+0.01+t0; v*=1.8; o.type=type; o.frequency.setValueAtTime(f,t); g.gain.setValueAtTime(v,t); g.gain.exponentialRampToValueAtTime(0.0001,t+d); o.connect(g); g.connect(SFX.master); o.start(t); o.stop(t+d+0.02); }
 function sfx(n,k=0){
@@ -7658,6 +7733,7 @@ function render(){
   const V=VIEWS[VIEW.name]||VIEWS.home;
   a.innerHTML=V();
   const after=AFTER[VIEW.name]; if(after) after();
+  try{ musicSync(); }catch(e){}
 }
 function topbar(title,right=''){ return `<div class="topbar"><button class="back" data-act="back" aria-label="返回">${icon('left')}</button><h1 class="grow h2">${title}</h1>${right}</div>`; }
 
@@ -7771,7 +7847,7 @@ VIEWS.settings=()=>{
   <div class="card"><div class="row">${avHTML(curProf()||{},'sm')}<h2 class="h2 grow">帳號：${esc((curProf()||{}).name||'')}</h2></div><div class="row wrap mt-sm"><button class="btn sm" data-act="who">切換 / 新增帳號</button><button class="btn sm danger" data-act="profdel">刪除此帳號</button></div></div>
   <div class="card row"><div class="grow"><div class="h2">夥伴：${PETS[curPet()].name}</div><div class="small muted">隨時可換，成長階段不會歸零</div></div><button class="btn sm" data-act="go" data-v="pets">更換</button></div>
   <div class="card row"><div class="grow"><div class="h2">音效</div><div class="small muted">8-bit 風格的小音效。沒聲音的話，先調高媒體音量再點一下「開啟」試聽</div></div><button class="btn sm ${s.snd?'pri':''}" data-act="togglesnd">${s.snd?'開啟':'關閉'}</button></div>
-  <div class="card"><div class="row"><div class="grow"><div class="h2">背景音樂</div><div class="small muted">慢速的環境音樂，即時合成，每段和弦上的鈴聲都隨機。切到別的 app 會自動停</div></div><button class="btn sm ${s.bgm?'pri':''}" data-act="togglebgm" aria-pressed="${!!s.bgm}">${s.bgm?'開啟':'關閉'}</button></div>${s.bgm?`<div class="small muted" style="margin:var(--space-sm) 0 var(--space-xs)">音量</div>${seg('bgmv',[1,2,3],v=>['','小','中','大'][v])}`:''}</div>
+  <div class="card"><div class="row"><div class="grow"><div class="h2">背景音樂</div><div class="small muted">慢速的環境音樂，即時合成，每段和弦上的鈴聲都隨機。切到別的 app 會自動停</div></div><button class="btn sm ${s.bgm?'pri':''}" data-act="togglebgm" aria-pressed="${!!s.bgm}">${s.bgm?'開啟':'關閉'}</button></div><div class="row mt-sm"><div class="grow"><div class="h2">魔王戰音樂</div><div class="small muted">進入魔王戰才會響，緊張一點的 8-bit 戰鬥曲。魔王剩 3 格血時會加快</div></div><button class="btn sm ${s.bbgm?'pri':''}" data-act="togglebbgm" aria-pressed="${!!s.bbgm}">${s.bbgm?'開啟':'關閉'}</button></div>${(s.bgm||s.bbgm)?`<div class="small muted" style="margin:var(--space-sm) 0 var(--space-xs)">音量</div>${seg('bgmv',[1,2,3],v=>['','小','中','大'][v])}`:''}</div>
   <div class="card"><div class="h2">每日目標</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">答到這個題數就算今天打卡。目標小一點，比較容易天天做到</div>${seg('goal',[10,20,30,50],v=>v+' 題')}</div>
   <div class="card"><div class="h2">專項練習每回合題數</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">工具箱裡各模式一回合的長度</div>${seg('size',[5,10,15,20])}</div>
   <div class="card"><div class="h2">每回合新觀念卡</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">章節地圖「學下一批新卡」一次學幾張</div>${seg('newPer',[1,2,3,4,6])}</div>
@@ -8299,8 +8375,9 @@ const ACT={
   examone:d=>startRun([{t:'q',id:d.q}],{mode:'exam'}),
   examrun:d=>{ const g=examGroups().find(x=>x[0]===d.tab); const pool=g[1].slice().sort((a,b)=>qMastery(a.id)-qMastery(b.id)+ (Math.random()-.5)*0.3); startRun(pool.slice(0,5).map(q=>({t:'q',id:q.id})),{mode:'exam'}); },
   weakrun:()=>{ const items=[]; for(const w of weakCards(10)){ for(const q of w.c.q.filter(q=>seen(q.id)).sort((a,b)=>qMastery(a.id)-qMastery(b.id)).slice(0,2)) items.push({t:'q',id:q.id}); } startRun(shuffle(items).slice(0,S.set.size),{mode:'weak'}); },
-  set:d=>{ S.set[d.k]=+d.val; S.set.t=now(); save(); if(d.k==='bgmv') bgmVolume(); render(); },
+  set:d=>{ S.set[d.k]=+d.val; S.set.t=now(); save(); if(d.k==='bgmv'){ bgmVolume(); bmVolume(); } render(); },
   togglebgm:()=>{ S.set.bgm=S.set.bgm?0:1; S.set.t=now(); save(); if(S.set.bgm){ unlockAudio(); bgmStart(); toast(icon('note')+' 背景音樂開啟，再點一次或按 Esc 可關閉',2200); } else bgmStop(); SFX.played=true; render(); },
+  togglebbgm:()=>{ S.set.bbgm=S.set.bbgm?0:1; S.set.t=now(); save(); if(S.set.bbgm){ unlockAudio(); toast(icon('sword')+' 魔王戰音樂開啟',1800); } else bossMusicStop(true); SFX.played=true; render(); },
   togglesnd:()=>{ S.set.snd=S.set.snd?0:1; S.set.t=now(); save(); if(S.set.snd){ unlockAudio(); sfx('coin'); } else if(SFX.el){ try{ SFX.el.pause(); }catch(e){} } render(); },
   pet:d=>{ if(!PETS[d.p]) return; S.set.pet=d.p; S.set.t=now(); save(); sfx('pet'); render(); toast(PETS[d.p].name+'：請多指教！'); },
   toggleai:()=>{ S.set.ai=S.set.ai?0:1; S.set.t=now(); save(); render(); },
