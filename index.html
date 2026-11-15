@@ -27,6 +27,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" href="icon-192.png">
 <script>window.SA_STANDALONE = true;</script>
+<script>window.SA_FB = {"apiKey": "AIzaSyBvMkkk_SxUuxEJaZemml2k8HYHtYDq0hI", "projectId": "sa-study-app"};</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500&family=Huninn&family=Instrument+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -7045,6 +7046,52 @@ async function flush(){
   if(SYNC.dirty){ clearTimeout(SYNC.timer); SYNC.timer=setTimeout(flush,3000); }
 }
 document.addEventListener('visibilitychange',()=>{ if(document.hidden){ clearTimeout(SYNC.timer); flush(); } });
+/* ═════════════════ STANDALONE CROSS-DEVICE SYNC (GitHub version) ═════════════════
+   No login: each person gets a secret 20-character sync code. Every device that knows the code
+   reads and writes the same documents in Firestore (REST API, no SDK) at sync/<code>/d/<name>.
+   This file pretends to be Claude's db/user capabilities, so the same merge logic as the Claude
+   version runs unchanged: pull, merge per item (newest wins), push; poll every 30 s and on return. */
+const FBS={code:(lsRead('sa-sync')||{}).code||'',on:false};
+function fbOK(){ return !!(window.SA_STANDALONE&&window.SA_FB&&window.SA_FB.apiKey&&window.SA_FB.projectId); }
+function fbURL(path,code){ const c=code||FBS.code, pre='data/users/'+c+'/', name=path.startsWith(pre)?path.slice(pre.length):path;
+  return `https://firestore.googleapis.com/v1/projects/${window.SA_FB.projectId}/databases/(default)/documents/sync/${c}/d/${encodeURIComponent(name)}?key=${encodeURIComponent(window.SA_FB.apiKey)}`; }
+async function fbReq(method,path,body,code){
+  let r; try{ r=await fetch(fbURL(path,code),{method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,cache:'no-store'}); }catch(e){ throw {code:'unavailable'}; }
+  if(r.status===404&&method==='GET') return null;
+  if(!r.ok) throw {code:r.status>=500||r.status===429?'unavailable':'denied',status:r.status};
+  return method==='GET'?r.json():null;
+}
+function fbSnap(j){ let d=null; try{ d=j&&j.fields&&j.fields.j?JSON.parse(j.fields.j.stringValue):null; }catch(e){} return {exists:!!d,data:()=>d,metadata:{hasPendingWrites:false}}; }
+function fbDoc(path){
+  return {
+    get:async()=>fbSnap(await fbReq('GET',path)),
+    set:async o=>{ await fbReq('PATCH',path,{fields:{j:{stringValue:JSON.stringify(o)},u:{integerValue:String(Date.now())}}}); },
+    delete:async()=>{ await fbReq('DELETE',path); },
+    onSnapshot:(cb)=>{ let last=''; const poll=async()=>{ if(document.hidden) return; try{ const j=await fbReq('GET',path); const u=j&&j.fields&&j.fields.u?j.fields.u.integerValue:''; if(u&&u!==last){ const first=!last; last=u; if(!first) cb(fbSnap(j)); } }catch(e){} };
+      poll(); const t=setInterval(poll,30000), v=()=>{ if(!document.hidden) setTimeout(poll,400); }; document.addEventListener('visibilitychange',v);
+      return ()=>{ clearInterval(t); document.removeEventListener('visibilitychange',v); }; }
+  };
+}
+if(fbOK()&&FBS.code&&!window.claude){ FBS.on=true; window.claude={use:async n=>n==='db'?{doc:fbDoc}:n==='user'?{id:async()=>FBS.code}:null}; }
+const SYNC_ABC='abcdefghjkmnpqrstuvwxyz23456789';
+function newSyncCode(){ const r=crypto.getRandomValues(new Uint32Array(20)); return Array.from(r,x=>SYNC_ABC[x%SYNC_ABC.length]).join(''); }
+const fmtCode=c=>String(c).replace(/(.{5})(?=.)/g,'$1-');
+const cleanCode=v=>String(v||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+function syncJoinForm(){ return `<label class="small muted mt-sm" style="display:block" for="syncin">同步碼（20 個字，大小寫、連字號都沒關係）</label>
+  <input class="field mono mt-2xs" id="syncin" placeholder="xxxxx-xxxxx-xxxxx-xxxxx" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <button class="btn pri block mt-sm" data-act="syncjoin">連線並載入</button>`; }
+function syncCard(){
+  if(!window.SA_STANDALONE) return '';
+  if(!fbOK()) return `<div class="card"><div class="h2">跨裝置同步</div><div class="small muted mt-2xs">雲端還沒設定好，目前只能用下面的備份碼搬進度。</div></div>`;
+  if(!FBS.on) return `<div class="card"><div class="h2">跨裝置同步</div><div class="small muted mt-2xs" style="margin-bottom:var(--space-sm)">目前只存在這台裝置。建立一組同步碼，再到其他裝置輸入同一組，帳號和進度就會自動互通。</div>
+    <div class="row wrap"><button class="btn sm pri" data-act="synccreate">${icon('cloud')} 建立同步碼</button><button class="btn sm" data-act="syncjoinui">我已經有同步碼</button></div><div id="syncbox"></div></div>`;
+  return `<div class="card"><div class="h2">跨裝置同步</div><div class="small muted mt-2xs" id="syncb2">${syncLabel()}${SYNC.last?'，上次同步 '+new Date(SYNC.last).toLocaleTimeString():''}</div>
+    <div class="small muted mt-sm">你的同步碼（像密碼一樣，別貼到公開的地方）</div>
+    <div class="row mt-2xs"><code class="grow" style="padding:var(--space-xs);font-size:var(--text-md);letter-spacing:.04em">${VIEW.showcode?fmtCode(FBS.code):fmtCode(FBS.code).replace(/[a-z0-9](?=.{6})/g,'•')}</code><button class="btn sm" data-act="synccode">${VIEW.showcode?'隱藏':'顯示'}</button></div>
+    <div class="row wrap mt-sm"><button class="btn sm" data-act="synccopy">${icon('copy')} 複製同步碼</button><button class="btn sm danger" data-act="syncoff">這台裝置停止同步</button></div>
+    <div class="tiny muted mt-xs">在其他裝置的「設定 → 跨裝置同步 → 我已經有同步碼」輸入它。進度每次變動後幾秒內上傳，其他裝置打開 app 或每 30 秒會抓最新的。</div></div>`;
+}
+
 async function initSync(){
   if(!window.claude||!window.claude.use) return;
   try{
@@ -7924,7 +7971,7 @@ VIEWS.who=()=>{
     <input class="field mono mt-2xs" id="ppin" inputmode="numeric" maxlength="6" placeholder="4 到 6 位數字" value="${esc(VIEW.pn||'')}" autocomplete="off">
     <button class="btn pri block mt-md" data-act="profnew" data-e="${em}">建立並開始</button>
   </div>
-  ${window.SA_STANDALONE?'<div class="small muted mt-sm">從 Claude 版搬過來：先建立帳號，再到「設定」匯入備份碼。</div>':''}<div class="tiny muted mt-sm row wrap">${syncLabel()}<span class="sep"></span>密碼只是避免點錯帳號，不是加密保護</div>`;
+  ${window.SA_STANDALONE&&fbOK()&&!FBS.on?`<div class="card mt-md"><h2 class="h2">在別的裝置用過？</h2><div class="small muted mt-2xs">輸入同步碼，就能載入那邊的帳號和進度。</div>${syncJoinForm()}</div>`:''}${window.SA_STANDALONE?'<div class="small muted mt-sm">從 Claude 版搬過來：先建立帳號，再到「設定」匯入備份碼。</div>':''}<div class="tiny muted mt-sm row wrap">${syncLabel()}<span class="sep"></span>密碼只是避免點錯帳號，不是加密保護</div>`;
 };
 AFTER.who=()=>{ const a=$('#pname'), b=$('#ppin'); if(a) a.oninput=()=>{ VIEW.nm=a.value; }; if(b) b.oninput=()=>{ VIEW.pn=b.value; }; };
 
@@ -7981,8 +8028,9 @@ VIEWS.settings=()=>{
   <div class="card"><div class="h2">每回合新觀念卡</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">章節地圖「學下一批新卡」一次學幾張</div>${seg('newPer',[1,2,3,4,6])}</div>
   <div class="card"><div class="h2">筆試日期</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">設定後首頁會倒數並建議每天的新題量</div><input class="field" type="date" id="examdate" value="${esc(s.exam)}"></div>
   ${window.SA_STANDALONE?"":`<div class="card row"><div class="grow"><div class="h2">AI 家教（Claude）</div><div class="small muted">批改簡答題、換個比喻講解、回答你的問題${AI.ready?'':'（此檢視目前無法使用）'}</div></div><button class="btn sm ${s.ai?'pri':''}" data-act="toggleai">${s.ai?'開啟':'關閉'}</button></div>`}
+  ${syncCard()}
   <div class="card"><div class="h2">進度與備份</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)" id="syncb">${syncLabel()}${SYNC.last?'，上次同步 '+new Date(SYNC.last).toLocaleTimeString():''}</div>
-    <div class="small muted" style="margin-bottom:var(--space-sm)">${window.SA_STANDALONE?"獨立版：進度存在這支手機的 app 裡（沒有雲端）。換裝置、或要和 Claude 裡的版本互通，用備份碼搬：一邊複製、另一邊匯入，進度會合併，不會覆蓋。":"進度會存在你的帳號（雲端）與這台裝置。要搬到主畫面的獨立版，或保險起見，可以複製備份碼，到另一邊匯入（會合併，不會覆蓋）。"}</div>
+    <div class="small muted" style="margin-bottom:var(--space-sm)">${window.SA_STANDALONE?(FBS.on?"跨裝置同步已開啟。要和 Claude 裡的版本互通，或保險起見留一份，可以用備份碼：一邊複製、另一邊匯入，進度會合併，不會覆蓋。":"獨立版：進度存在這台裝置的 app 裡。要和 Claude 裡的版本互通，用備份碼搬：一邊複製、另一邊匯入，進度會合併，不會覆蓋。"):"進度會存在你的帳號（雲端）與這台裝置。要搬到主畫面的獨立版，或保險起見，可以複製備份碼，到另一邊匯入（會合併，不會覆蓋）。"}</div>
     <div class="row"><button class="btn sm" data-act="export">${icon('copy')} 複製備份碼</button><button class="btn sm" data-act="importui">${icon('import')} 匯入</button></div>
     <div id="importbox"></div></div>
   <div class="card"><div class="h2">內容版本</div>${CHANGELOG.slice().reverse().map(c=>`<div class="small mt-xs"><b>v${c.v}</b> <span class="muted">${c.date}</span><br><span class="muted">${esc(c.note)}</span></div>`).join('')}</div>
@@ -8457,6 +8505,17 @@ const ACT={
     if(($('#aold')?.value||'').trim()!==p.pin){ toast('先輸入目前的密碼'); return; }
     delete p.pin; p.t=Date.now(); pushMeta(); toast('已移除密碼'); render(); },
   roomform:d=>{ const i=+d.i; VIEW.form=(i===petStage())?null:i; VIEW.happy=true; sfx('pet'); render(); clearTimeout(ACT._rf); ACT._rf=setTimeout(()=>{ if(VIEW.name==='room'){ VIEW.happy=false; render(); } },1200); },
+  synccreate:()=>{ if(!fbOK()) return; const c=newSyncCode(); lsWrite('sa-sync',{code:c}); toast('建立好了，正在上傳…'); setTimeout(()=>location.reload(),500); },
+  syncjoinui:()=>{ const b=$('#syncbox'); if(b){ b.innerHTML=syncJoinForm(); const i=$('#syncin'); if(i) i.focus(); } },
+  syncjoin:async()=>{ const c=cleanCode($('#syncin')?.value); if(c.length!==20){ toast('同步碼要是 20 個字，確認有貼完整'); return; }
+    toast('<span class="spin"></span> 確認中…',3000); let j=null;
+    try{ j=await fbReq('GET','meta',null,c); }catch(e){ toast(e&&e.code==='unavailable'?'連不上網路，等一下再試':'這組同步碼不能用'); return; }
+    if(!j){ toast('找不到這組同步碼，確認一下有沒有打錯'); return; }
+    lsWrite('sa-sync',{code:c}); toast('連上了，正在載入…'); setTimeout(()=>location.reload(),500); },
+  synccode:()=>{ VIEW.showcode=!VIEW.showcode; render(); },
+  synccopy:async()=>{ try{ await navigator.clipboard.writeText(fmtCode(FBS.code)); toast('同步碼已複製'); }catch(e){ VIEW.showcode=true; render(); toast('無法自動複製，請長按同步碼複製'); } },
+  syncoff:()=>{ if(now()-leaveArmed>3000){ leaveArmed=now(); toast('這台裝置會停止同步（資料留在這台，雲端也不會刪）。3 秒內再按一次確認',3200); return; }
+    flush(); try{ localStorage.removeItem('sa-sync'); }catch(e){} toast('已停止同步'); setTimeout(()=>location.reload(),600); },
   pem:d=>{ VIEW.em=d.e; render(); },
   prof:d=>{ const p=PROF.list.find(x=>x.id===d.p); if(!p) return; if(p.pin){ sheet(`<div class="row between"><div class="row">${avHTML(p,'sm')}<h2 class="h2">${esc(p.name)}</h2></div><button class="iconbtn" data-act="closesheet" aria-label="關閉">${icon('x')}</button></div><input class="field mono" id="pinin" inputmode="numeric" maxlength="6" placeholder="輸入密碼" style="margin-top:var(--space-sm)" autocomplete="off"><button class="btn pri block" style="margin-top:var(--space-sm)" data-act="pinok" data-p="${esc(p.id)}">進入</button>`); setTimeout(()=>{ try{ $('#pinin').focus(); }catch(e){} },80); } else selectProfile(p.id); },
   pinok:d=>{ const p=PROF.list.find(x=>x.id===d.p); if(p&&($('#pinin')?.value||'')===p.pin) selectProfile(p.id); else toast('密碼不對'); },
