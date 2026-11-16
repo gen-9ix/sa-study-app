@@ -244,6 +244,28 @@ details summary{cursor:pointer}
 .pet .tw{animation:ptw .8s steps(1) infinite}
 @keyframes ptw{50%{opacity:0}}
 
+
+.pet.sick{filter:saturate(.45) brightness(.92)}
+.pet.sick .body{animation:pshiver .5s steps(2) infinite}
+@keyframes pshiver{50%{transform:translateX(.35px)}}
+.pet.tired .body{animation:pidle 4.2s steps(1) infinite}
+.cond{display:inline-flex;align-items:center;gap:var(--space-3xs);margin-left:var(--space-xs);font-size:var(--text-xs);padding:0 var(--space-xs);border-radius:var(--radius-pill);border:var(--rule-hair) solid var(--color-rule);color:var(--color-muted)}
+.cond.c-great{color:var(--color-success)} .cond.c-tired{color:var(--color-warning)} .cond.c-sick{color:var(--color-error)}
+.evo-need{text-align:left}
+.bstage{position:relative;overflow:hidden}
+.boss-spr.dead{transform:translateY(10px) rotate(-8deg);filter:saturate(.3) brightness(.95) contrast(1.15)}
+.boss-spr.dying{animation:bdie 1.8s steps(12) forwards}
+@keyframes bdie{0%{filter:brightness(3)}8%{filter:none}16%{filter:brightness(3)}24%{filter:none;transform:translateX(-3px)}32%{transform:translateX(3px)}40%{transform:translateX(-2px)}48%{transform:translateX(0)}100%{transform:translateY(10px) rotate(-8deg);filter:saturate(.3) brightness(.95) contrast(1.15)}}
+.dust{position:absolute;inset:0;pointer-events:none}
+.dust i{position:absolute;left:50%;top:55%;width:5px;height:5px;background:var(--color-muted);opacity:0;animation:pdust 1.3s ease-out .95s forwards}
+@keyframes pdust{0%{opacity:.9;transform:translate(0,0)}100%{opacity:0;transform:translate(var(--dx),var(--dy))}}
+.ko{position:absolute;left:50%;top:var(--space-xs);transform:translateX(-50%);font:var(--display-weight) var(--text-lg)/1 var(--font-display);color:var(--color-accent);letter-spacing:.08em;opacity:0;animation:pko .4s ease-out 1.5s forwards}
+@keyframes pko{to{opacity:1}}
+.blv{font-size:var(--text-xs);color:var(--color-accent)}
+.mods{display:flex;flex-wrap:wrap;gap:var(--space-3xs);margin-top:var(--space-2xs)}
+.check .auto{margin-left:auto;font-size:var(--text-xs);color:var(--color-muted)}
+@media (prefers-reduced-motion: reduce){ .boss-spr.dying{animation:none;transform:translateY(10px) rotate(-8deg);filter:saturate(.3) brightness(.95) contrast(1.15)} .dust i{animation:none} .ko{animation:none;opacity:1} }
+
 /* practice */
 .prog{display:flex;gap:var(--space-2xs);flex:1}
 .prog i{flex:1;height:6px;background:var(--color-paper-3)}
@@ -10871,7 +10893,7 @@ function lsGet(){ return PROF.cur?lsRead(pKey(PROF.cur)):null; }
 function lsSet(o){ if(PROF.cur) lsWrite(pKey(PROF.cur),o); }
 // cloud documents arrive frozen (read-only); always work on a deep, writable copy
 function dclone(o){ return o==null?o:JSON.parse(JSON.stringify(o)); }
-function normState(o){ const s=Object.assign(fresh(),dclone(o)||{}); s.set=Object.assign(fresh().set,s.set||{}); s.fz=Object.assign(fresh().fz,s.fz||{}); s.fz.used=s.fz.used||{}; s.best=s.best||{blitz:0}; s.boss=s.boss||{}; s.room=Object.assign({hide:{},seen:{},t:0},s.room||{}); return s; }
+function normState(o){ const s=Object.assign(fresh(),dclone(o)||{}); s.set=Object.assign(fresh().set,s.set||{}); s.fz=Object.assign(fresh().fz,s.fz||{}); s.fz.used=s.fz.used||{}; s.best=s.best||{blitz:0}; s.boss=s.boss||{}; s.room=Object.assign({hide:{},seen:{},t:0},s.room||{}); if(!s.evo){ const T=[0,150,400,800,1400,2200,3200,4500,6500,9000], OLD=[1,2,4,6,8]; let L=1; while(L<T.length&&(s.xp||0)>=T[L]) L++; let o=0; for(let i=0;i<OLD.length;i++) if(L>=OLD[i]) o=i; s.evo={s:o,t:0}; } return s; }
 if(!PROF.list.length){ const old=lsRead(LS_KEY); if(old&&(old.u||Object.keys(old.q||{}).length)){ PROF={list:[{id:'main',name:'我',em:'🐧',t:Date.now()}],cur:'main'}; lsWrite(LS_PROF,PROF); } }
 const activeProfiles=()=>PROF.list.filter(p=>!p.del);
 const curProf=()=>PROF.list.find(p=>p.id===PROF.cur&&!p.del);
@@ -10895,7 +10917,8 @@ function mergeState(a,b){ // pure merge of two progress states (per-item newest 
   o.cv=Math.max(a.cv||0,b.cv||0);
   o.best={blitz:Math.max(a.best?.blitz||0,b.best?.blitz||0)};
   o.fz=((b.fz?.t||0)>=(a.fz?.t||0)?b.fz:a.fz)||fresh().fz;
-  for(const k of new Set([...Object.keys(a.boss||{}),...Object.keys(b.boss||{})])){ const x=a.boss?.[k]||{}, y=b.boss?.[k]||{}; o.boss[k]={w:Math.max(x.w||0,y.w||0),l:Math.max(x.l||0,y.l||0),t:Math.max(x.t||0,y.t||0)}; }
+  for(const k of new Set([...Object.keys(a.boss||{}),...Object.keys(b.boss||{})])){ const x=a.boss?.[k]||{}, y=b.boss?.[k]||{}; o.boss[k]={w:Math.max(x.w||0,y.w||0),l:Math.max(x.l||0,y.l||0),t:Math.max(x.t||0,y.t||0),best:Math.max(x.best||0,y.best||0),fz:Object.assign({},x.fz||{},y.fz||{})}; }
+  o.evo={s:Math.max(a.evo?.s||0,b.evo?.s||0),t:Math.max(a.evo?.t||0,b.evo?.t||0)};
   o.exp=((b.exp?.t||0)>=(a.exp?.t||0)?b.exp:a.exp)||null;
   { const ra=a.room||{}, rb=b.room||{}; const nw=(rb.t||0)>=(ra.t||0)?rb:ra; o.room={hide:Object.assign({},nw.hide||{}),seen:Object.assign({},ra.seen||{},rb.seen||{}),t:Math.max(ra.t||0,rb.t||0)}; }
   o.u=Math.max(a.u||0,b.u||0);
@@ -11086,7 +11109,7 @@ function grade(id,g,opt={}){
   const xp = opt.xp!=null?opt.xp : (g>=2?10:g===1?5:2);
   D.x+=xp; S.xp+=xp;
   if(D.n===1){ const st=streak(); if(st>0&&st%7===0&&S.fz.n<2){ S.fz.n++; S.fz.t=t; setTimeout(()=>toast(icon('ice')+' 連續 '+st+' 天！獲得 1 張補簽卡',2800),900); } }
-  if(lvl().i>L0) setTimeout(()=>{ const ev=petStage()>P0; toast(ev?icon('star')+' '+PETS[curPet()].name+' 進化了！新型態：'+EVO[curPet()].names[petStage()]:icon('trophy')+' 升級！Lv.'+lvl().i+' '+esc(lvl().name),ev?3600:2800); confetti(); sfx('fanfare'); },350);
+  if(lvl().i>L0||petStage()>P0) setTimeout(()=>{ const ev=petStage()>P0; toast(ev?icon('star')+' '+PETS[curPet()].name+' 進化了！新型態：'+EVO[curPet()].names[petStage()]:icon('trophy')+' 升級！Lv.'+lvl().i+' '+esc(lvl().name),ev?3600:2800); confetti(); sfx('fanfare'); },350);
   grade.last={i0,i1:s.i,R,el,wasNew};
   save();
   return xp;
@@ -11209,7 +11232,16 @@ const PETS={
 };
 /* Evolution: the stage index comes from the account level (so it is shared by every pet and never resets),
    but each pet has its own line of forms, and some forms branch by a per-account hash (v = 0..2). */
-const STAGE_LV=[1,2,4,6,8];
+const STAGE_LV=[1,3,5,7,9];            // level needed for each form
+const STAGE_M=[0,0.05,0.15,0.3,0.5];    // …and share of all cards mastered (card mastery ≥ 70%)
+const STAGE_LV_OLD=[1,2,4,6,8];
+let MFCACHE={k:'',v:0};
+function masteredFrac(){ const k=S.xp+'|'+Math.floor(now()/20000); if(MFCACHE.k===k) return MFCACHE.v;
+  let m=0; for(const c of CLIST) if(c.q.length&&cardMastery(c)>=0.7) m++; const v=CLIST.length?m/CLIST.length:0; MFCACHE={k,v}; return v; }
+function lvFromXp(x){ let i=0; while(i+1<LEVELS.length&&x>=LEVELS[i+1][0]) i++; return i+1; }
+function stageRaw(){ let L=1; try{ if(PROF.cur) L=lvl().i; }catch(e){} let mf=0; try{ mf=masteredFrac(); }catch(e){}
+  let st=0; for(let i=0;i<STAGE_LV.length;i++) if(L>=STAGE_LV[i]&&mf>=STAGE_M[i]) st=i; return st; }
+function stageNeed(st){ const n=st+1; if(n>=STAGE_LV.length) return null; return {lv:STAGE_LV[n],m:STAGE_M[n]}; }
 const EVO={
   crab:{names:['幼年期','插旗殼','彩繪殼','珊瑚殼','城堡殼'],f:(s,v)=>{ const c=['r','g','s'][v], flag=[[11,-2,'s',1,3],[12,-2,'r',2,1],[12,-1,'r']];
     if(s===1) return {px:flag};
@@ -11248,7 +11280,7 @@ const EVO={
     if(s===4) return {map:{b:'x'},px:[...hat('d'),[10,-5,'y',1,1,'tw'],[0,8,'r',2,3],[14,8,'r',2,3],[-2,5,'y',1,9],[-3,4,'y',3,1],[-2,3,'r'],[17,3,'w',1,1,'tw'],[16,13,'w',1,1,'tw'],[-4,12,'w',1,1,'tw']]};
     return {}; }}
 };
-function petStage(){ let L=1; try{ if(PROF.cur) L=lvl().i; }catch(e){} let s=0; for(let i=0;i<STAGE_LV.length;i++) if(L>=STAGE_LV[i]) s=i; return s; }
+function petStage(){ if(typeof S==='undefined'||!S) return 0; const r=stageRaw(), k=(S.evo&&S.evo.s)||0; if(r>k){ S.evo={s:r,t:now()}; } return Math.max(r,k); }
 const curPet=()=>{ let id=S&&S.set&&S.set.pet; if(id==='cat') id='husky'; return PETS[id]?id:'crab'; };
 function petVar(id){ const k=(PROF.cur||'x')+':'+id; let h=7; for(let i=0;i<k.length;i++) h=(h*31+k.charCodeAt(i))>>>0; return h%3; }
 function mascot(mood='idle',size=64,pid,stO){
@@ -11262,11 +11294,11 @@ function mascot(mood='idle',size=64,pid,stO){
       let w=1; while(x+w<16&&R[y][x+w]===ch) w++; out+=px(x,y,ink(ch),w); x+=w; } }
   if(P.alpha) out=`<g opacity="${P.alpha}">${out}</g>`;
   let eyes='';
-  for(const [ex,ey] of P.eyes){ eyes+= mood==='happy'?px(ex,ey,PAL.o)+px(ex-1,ey+1,PAL.o)+px(ex+1,ey+1,PAL.o) : mood==='sleep'?px(ex-0.5,ey+1,PAL.o,2,1) : px(ex,ey,PAL.o,1,2); }
+  for(const [ex,ey] of P.eyes){ eyes+= (mood==='happy'||mood==='great')?px(ex,ey,PAL.o)+px(ex-1,ey+1,PAL.o)+px(ex+1,ey+1,PAL.o) : mood==='sleep'?px(ex-0.5,ey+1,PAL.o,2,1) : mood==='tired'?px(ex-0.5,ey+0.5,PAL.o,2,1)+px(ex,ey+1,PAL.o) : mood==='sick'?px(ex-1,ey,PAL.o)+px(ex,ey+1,PAL.o)+px(ex+1,ey,PAL.o) : px(ex,ey,PAL.o,1,2); }
   const acc=(E.px||[]).map(a=>px(a[0],a[1],PAL[a[2]],a[3]||1,a[4]||1,a[5]||'')).join('');
-  const fx = mood==='care'?px(14,-5,PAL.r)+px(16,-5,PAL.r)+px(14,-4,PAL.r,3,1)+px(15,-3,PAL.r) : mood==='sleep'?px(14,-5,PAL.w,2,1)+px(15,-4,PAL.w)+px(14,-3,PAL.w,2,1) : '';
+  const fx = mood==='tired'?px(15,-2,PAL.s)+px(15,-1,PAL.s,1,1)+px(14,-1,PAL.s) : mood==='sick'?px(15,-3,PAL.s)+px(15,-2,PAL.s)+px(14,-2,PAL.s)+px(-1,0,PAL.s)+px(-1,1,PAL.s)+px(13,-6,PAL.w,3,1)+px(14,-7,PAL.w,1,3) : mood==='great'?px(15,-5,PAL.y,1,1,'tw')+px(-2,-2,PAL.y,1,1,'tw')+px(16,1,PAL.y,1,1,'tw') : mood==='care'?px(14,-5,PAL.r)+px(16,-5,PAL.r)+px(14,-4,PAL.r,3,1)+px(15,-3,PAL.r) : mood==='sleep'?px(14,-5,PAL.w,2,1)+px(15,-4,PAL.w)+px(14,-3,PAL.w,2,1) : '';
   const sc=[0.78,0.86,0.93,1,1][st];
-  return `<svg class="pet${mood==='happy'?' hop':''}" viewBox="-4 -8 24 24" shape-rendering="crispEdges" style="width:${size}px;height:${size}px" role="img" aria-label="${P.name}"><g transform="translate(8 15) scale(${sc}) translate(-8 -15)"><g class="body">${out}<g class="${mood==='idle'||mood==='care'?'blink':''}">${eyes}</g>${acc}${fx}</g></g></svg>`;
+  return `<svg class="pet${(mood==='happy'||mood==='great')?' hop':''}${mood==='sick'?' sick':''}${mood==='tired'?' tired':''}" viewBox="-4 -8 24 24" shape-rendering="crispEdges" style="width:${size}px;height:${size}px" role="img" aria-label="${P.name}"><g transform="translate(8 15) scale(${sc}) translate(-8 -15)"><g class="body">${out}<g class="${mood==='idle'||mood==='care'?'blink':''}">${eyes}</g>${acc}${fx}</g></g></svg>`;
 }
 function say(mood,html,size=72,tap){ const P=PETS[curPet()]; return `<div class="say"><button class="stage" data-act="go" data-v="pets" aria-label="夥伴${P.name}，點一下換夥伴">${mascot(mood,size)}</button><div class="bubble${tap?' tap'+(HOMETIP.anim?' fresh':''):''}"${tap?` data-act="saynext" role="button" tabindex="0" aria-label="${P.name}說的話，點一下換一句 SA 小知識"`:''}><span class="who">${P.name}</span>${html}</div></div>`; }
 /* Home speech bubble: greeting by default; each tap swaps in a random SA tidbit drawn from the
@@ -11467,12 +11499,20 @@ function sfx(n,k=0){
     else if(n==='pet'){ tone(700,0,.05,'square',.04); tone(1050,.05,.05,'square',.04); tone(1400,.1,.1,'square',.04); }
     else if(n==='hit'){ tone(392,0,.05,'square',.07); tone(262,.05,.06,'square',.07); tone(131,.11,.14,'square',.06); }
     else if(n==='hurt'){ tone(147,0,.12,'sawtooth',.05); tone(110,.1,.22,'sawtooth',.05); }
+    else if(n==='die'){ tone(392,0,.06,'square',.07); tone(330,.07,.06,'square',.07); tone(262,.14,.06,'square',.07); tone(196,.21,.08,'square',.07); tone(98,.3,.45,'triangle',.08); }
     else if(n==='fanfare'){ [523,659,784,1047].forEach((f,i)=>tone(f,i*.1,.12)); tone(1319,.42,.35); }
   }catch(e){}
 }
+/* The pet's condition follows the memory HP bar (average recall probability of learned items). */
+function petCond(){ const ms=memStats(); if(!ms.n) return {k:'fine',hp:null,low:0};
+  const hp=Math.round(ms.avg*100); return {k:hp>=80?'great':hp>=60?'fine':hp>=40?'tired':'sick',hp,low:ms.low}; }
+const COND_TXT={great:'精神飽滿',fine:'狀態不錯',tired:'有點頭暈',sick:'生病了'};
+function pm(base='idle'){ const c=petCond().k; if(base==='sleep') return base;
+  if(c==='sick') return base==='happy'?'tired':'sick'; if(c==='tired') return base==='happy'?'idle':'tired';
+  if(c==='great'&&base==='idle') return 'great'; return base; }
 function homeSay(D,goal,ms){
-  if(HOMETIP.cur){ const x=HOMETIP.cur; const out=say(HOMETIP.n%2?'happy':'idle',tipHTML(x),72,true); HOMETIP.anim=false; return out; }
-  const g=homeGreet(D,goal,ms); return say(g[0],g[1]+'<span class="hint">點我聽一個 SA 小知識 ›</span>',72,true);
+  if(HOMETIP.cur){ const x=HOMETIP.cur; const out=say(pm(HOMETIP.n%2?'happy':'idle'),tipHTML(x),72,true); HOMETIP.anim=false; return out; }
+  const g=homeGreet(D,goal,ms); return say(pm(g[0]),g[1]+'<span class="hint">點我聽一個 SA 小知識 ›</span>',72,true);
 }
 function homeGreet(D,goal,ms){
   const say=(m,h)=>[m,h];
@@ -11480,6 +11520,8 @@ function homeGreet(D,goal,ms){
   if(D.n>=goal) return say('happy','今天的目標完成了，辛苦啦！'+(late?'很晚了，早點休息，明天我在這裡等你。':'想加碼的話我也陪你 (・ω・)'));
   if(!ms.n) return say('happy','嗨，'+PETS[curPet()].intro+'從第一張卡開始，我陪你慢慢冒險，不用急。');
   if(late) return say('sleep','這麼晚還來看我呀。學一點點就好，累了就去睡，記憶我幫你顧著。');
+  { const c=petCond(); if(c.k==='sick') return say('sick',`嗚……我好不舒服，記憶血量只剩 <b>${c.hp}%</b>。${c.low?`有 <b>${c.low}</b> 個記憶快忘了，`:''}先陪我複習幾題，我就會慢慢好起來 (・_・)`);
+    if(c.k==='tired') return say('tired',`我有點頭暈，記憶血量 <b>${c.hp}%</b>。${c.low?`把 <b>${c.low}</b> 個快忘的記憶接回來`:'陪我複習幾題'}，我就會恢復精神。`); }
   if(!D.n&&st>=2) return say('idle',`${greeting()}！我們已經連續 ${st} 天了。今天也一起前進一點點吧。`);
   if(ms.low) return say('idle',`${greeting()}！有 <b>${ms.low}</b> 個記憶在跟我招手，我們去把它們接回來吧。`);
   return say('idle',`${greeting()}！記憶都顧得好好的，來認識幾個新朋友吧。`);
@@ -11516,6 +11558,24 @@ const BOSSES={
   hw3:['reaper','y','中間人憑證死神','握著一把被算出來的 CA 私鑰']
 };
 const BOSS_HP=8, BOSS_HEARTS=4;
+/* Bosses get stronger every time you beat them (Lv.1 → Lv.10). */
+function bossLv(chId){ const r=bossRec(chId); return Math.min(10,((r&&r.w)||0)+1); }
+function bossCfg(L){ return {hp:Math.min(20,BOSS_HP+2*(L-1)), hearts:L>=8?2:L>=5?3:4, half:L<3, heal:L>=4, crit:L>=6?4:3}; }
+function bossMods(L){ const c=bossCfg(L), m=[`HP ${c.hp}`,`你的心 ${c.hearts}`];
+  if(!c.half) m.push('半對不造成傷害'); if(c.heal) m.push('答錯時它回 1 HP'); if(c.crit>3) m.push(`連對 ${c.crit} 題才會心一擊`); return m; }
+function bossReward(L,first){ return first?60:20+10*(L-1); }
+/* dead sprite: eyes become X marks */
+function deadSprite(A){
+  const rows=A.rows.map(r=>r.split('')), extra=[], seenE=new Set(), eyes=[];
+  for(let y=0;y<16;y++) for(let x=0;x<16;x++){ if(rows[y][x]!=='e'||seenE.has(x+','+y)) continue;
+    let w=0; while(x+w<16&&rows[y][x+w]==='e'){ seenE.add((x+w)+','+y); w++; }
+    const bg=(rows[y][x-1]&&rows[y][x-1]!=='o'&&rows[y][x-1]!=='e')?rows[y][x-1]:'b';
+    for(let k=0;k<w;k++) rows[y][x+k]=bg;
+    eyes.push({cx:x<8?x+w-1:x,y,col:bg==='n'?'w':'o'}); }
+  // keep a one-pixel gap between the two X marks so they do not merge into a checkerboard
+  if(eyes.length===2&&eyes[0].y===eyes[1].y&&Math.abs(eyes[1].cx-eyes[0].cx)<5){ const [l,r]=eyes[0].cx<eyes[1].cx?eyes:[eyes[1],eyes[0]]; const need=5-(r.cx-l.cx); l.cx-=Math.ceil(need/2); r.cx+=Math.floor(need/2); }
+  for(const e of eyes) for(const [dx,dy] of [[-1,-1],[1,-1],[0,0],[-1,1],[1,1]]) extra.push([e.cx+dx,e.y+dy,e.col]);
+  return {rows:rows.map(r=>r.join('')),extra}; }
 function spriteSVG(rows,map,size,extra,cls){
   const at=(x,y)=>(y<0||y>15||x<0||x>15)?'.':rows[y][x], solid=c=>c!=='.'&&c!=='o', ink=c=>PAL[map[c]||'w'];
   const px=(x,y,c,w=1,h=1,k='')=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" class="p${c}${k?' '+k:''}"/>`;
@@ -11527,7 +11587,9 @@ function spriteSVG(rows,map,size,extra,cls){
   for(const a of (extra||[])) out+=px(a[0],a[1],a[2],a[3]||1,a[4]||1);
   return `<svg class="pet ${cls||''}" viewBox="-6 -2 28 20" shape-rendering="crispEdges" style="width:${size}px;height:${size*20/28}px" aria-hidden="true">${out}</svg>`;
 }
-function bossSVG(chId,size,cls){ const B=BOSSES[chId]||BOSSES.shell, A=BOSS_ARCH[B[0]]; return spriteSVG(A.rows,{b:B[1],e:'y',n:'o',h:A.h,w:'w'},size,A.extra,'boss-spr '+(cls||'')); }
+function bossSVG(chId,size,cls,dead){ const B=BOSSES[chId]||BOSSES.shell, A=BOSS_ARCH[B[0]];
+  if(dead){ const D=deadSprite(A); const xs=D.extra.map(e=>[e[0],e[1],e[2]]); return spriteSVG(D.rows,{b:B[1],e:'y',n:'o',h:A.h,w:'w'},size,[...(A.extra||[]).map(e=>[e[0],e[1],e[2],e[3],e[4]]),...xs],'boss-spr '+(cls||'')); }
+  return spriteSVG(A.rows,{b:B[1],e:'y',n:'o',h:A.h,w:'w'},size,A.extra,'boss-spr '+(cls||'')); }
 function bossRec(chId){ return (S.boss||{})[chId]||null; }
 function bossItems(ch,n){
   const pool=QLIST.filter(q=>q.card.ch===ch&&q.k!=='sa');
@@ -11537,32 +11599,37 @@ function bossItems(ch,n){
 }
 function startBoss(chId){
   const ch=CHMAP[chId]; if(!ch) return;
-  const items=bossItems(ch,BOSS_HP*3);
+  const L=bossLv(chId), C=bossCfg(L); const items=bossItems(ch,C.hp*3);
   if(items.length<4){ toast('這一章的題目還不夠開打 (・_・)'); return; }
   startRun(items,{mode:'boss',ch:chId});
-  RUN.boss={ch:chId,hp:BOSS_HP,php:BOSS_HEARTS,line:`* ${BOSSES[chId][2]} 擋住了去路。\n* ${BOSSES[chId][3]}。答對就能攻擊它！`,anim:'',combo:0};
+  RUN.boss={ch:chId,lv:L,cfg:C,hpMax:C.hp,phMax:C.hearts,hp:C.hp,php:C.hearts,line:`* Lv.${L} ${BOSSES[chId][2]} 擋住了去路。\n* ${L>1?'它比上次更強了。':BOSSES[chId][3]+'。'}答對就能攻擊它！`,anim:'',combo:0};
   render(); sfx('hurt');
 }
 function bossOnAnswer(R,g,ok){
   const B=R.boss, name=BOSSES[B.ch][2];
-  if(ok||g===1){ B.combo=ok?B.combo+1:0; const crit=ok&&B.combo>=3; const dmg=crit?2:1; B.hp=Math.max(0,B.hp-dmg); B.anim='hit';
+  const C=B.cfg||bossCfg(1);
+  if(!ok&&g===1&&!C.half){ B.combo=0; B.anim='';
+    B.line=`* 半對……${name} 用盔甲擋下了攻擊。\n* 要完全答對才會造成傷害。`; setTimeout(()=>sfx('mid'),60); }
+  else if(ok||g===1){ B.combo=ok?B.combo+1:0; const crit=ok&&B.combo>=C.crit; const dmg=crit?2:1; B.hp=Math.max(0,B.hp-dmg); B.anim='hit';
     B.line=crit?`* 會心一擊！連續答對 ${B.combo} 題。\n* ${name} 受到 ${dmg} 點傷害。`:`* 答對了！你攻擊了 ${name}。\n* 它受到 ${dmg} 點傷害。`;
-    if(B.hp<=0){ B.won=true; B.line=`* ${name} 倒下了。\n* 你贏了！`; } setTimeout(()=>sfx('hit'),60); }
+    if(B.hp<=0){ B.won=true; B.anim='die'; B.line=`* ${name} 倒下了。\n* 你贏了！`; setTimeout(()=>sfx('die'),80); } else setTimeout(()=>sfx('hit'),60); }
   else { B.combo=0; B.php=Math.max(0,B.php-1); B.anim='hurt';
-    B.line=`* ${name} 的反擊！\n* 你失去 1 顆心。看一下下面的解析再繼續。`;
+    const healed=C.heal&&B.hp<B.hpMax; if(healed) B.hp++;
+    B.line=`* ${name} 的反擊！\n* 你失去 1 顆心${healed?'，它還回復了 1 HP':''}。看一下下面的解析再繼續。`;
     if(B.php<=0){ B.lost=true; B.line=`* 你的心碎了……\n* 但答錯的題目都記下來了，下次會更強。`; } setTimeout(()=>sfx('hurt'),60); }
   if(!B.won&&!B.lost&&R.items.length-R.pos<3){ const ch=CHMAP[B.ch]; const more=bossItems(ch,8).filter(x=>!R.items.slice(R.pos).some(y=>y.id===x.id)); R.items.push(...more); }
 }
 function battleHead(R){
-  const B=R.boss, b=BOSSES[B.ch], hpCells=Array.from({length:BOSS_HP},(_,i)=>`<i${i<B.hp?' class="on"':''}></i>`).join('');
-  const hearts=Array.from({length:BOSS_HEARTS},(_,i)=>`<span class="ht${i<B.php?' on':''}">${icon('heart')}</span>`).join('');
+  const B=R.boss, b=BOSSES[B.ch], HM=B.hpMax||BOSS_HP, PM=B.phMax||BOSS_HEARTS, hpCells=Array.from({length:HM},(_,i)=>`<i${i<B.hp?' class="on"':''}></i>`).join('');
+  const hearts=Array.from({length:PM},(_,i)=>`<span class="ht${i<B.php?' on':''}">${icon('heart')}</span>`).join('');
+  const dust=Array.from({length:14},(_,i)=>{ const a=i/14*Math.PI*2, r=40+((i*37)%30); return `<i style="--dx:${Math.round(Math.cos(a)*r)}px;--dy:${Math.round(Math.sin(a)*r*0.7-20)}px;animation-delay:${(0.95+(i%5)*0.05).toFixed(2)}s"></i>`; }).join('');
   const html=`<div class="topbar"><button class="back" data-act="back" aria-label="逃跑">${icon('x')}</button><div class="grow small muted">魔王戰：${esc(CHMAP[B.ch].t)}</div><span class="combo small">+${R.xp}</span></div>
   <section class="battle${B.anim==='hurt'?' hurt':''}" aria-label="魔王戰">
-    <div class="row between"><span class="bname">${esc(b[2])}</span><span class="tiny muted num">HP ${B.hp}/${BOSS_HP}</span></div>
-    <div class="bhp" role="meter" aria-label="魔王血量" aria-valuemin="0" aria-valuemax="${BOSS_HP}" aria-valuenow="${B.hp}">${hpCells}</div>
-    <div class="bstage">${bossSVG(B.ch,190,B.anim==='hit'?'hit':'')}</div>
+    <div class="row between"><span class="bname">${esc(b[2])} <span class="blv">Lv.${B.lv||1}</span></span><span class="tiny muted num">HP ${B.hp}/${HM}</span></div>
+    <div class="bhp" role="meter" aria-label="魔王血量" aria-valuemin="0" aria-valuemax="${HM}" aria-valuenow="${B.hp}">${hpCells}</div>
+    <div class="bstage">${B.won?bossSVG(B.ch,190,B.anim==='die'?'dying':'dead',true)+(B.anim==='die'?`<div class="dust" aria-hidden="true">${dust}</div><div class="ko">K.O.</div>`:''):bossSVG(B.ch,190,B.anim==='hit'?'hit':'')}</div>
     <div class="utbox" aria-live="polite"><span class="utt" data-full="${esc(B.line)}">${esc(B.line).replace(/\n/g,'<br>')}</span></div>
-    <div class="row between mt-xs"><span class="hearts" aria-label="你的心 ${B.php}/${BOSS_HEARTS}">${hearts}</span><span class="tiny muted">${B.combo>=2?'連擊 '+B.combo:''}</span></div>
+    <div class="row between mt-xs"><span class="hearts" aria-label="你的心 ${B.php}/${PM}">${hearts}</span><span class="tiny muted">${B.combo>=2?'連擊 '+B.combo:''}</span></div>
   </section>`;
   B.anim=''; return html;
 }
@@ -11577,9 +11644,10 @@ function bossSummary(R){
   const wrongIds=[...new Set(R.items.filter((it,i)=>it.t==='q'&&R.res[i]===0).map(it=>it.id))];
   return `<div class="topbar"><h1 class="grow h2">${won?'勝利！':'這次先撤退'}</h1></div>
   <section class="battle center">
-    <div class="bstage">${bossSVG(B.ch,170,won?'down':'')}</div>
-    <div class="utbox"><span>${won?`* 你打倒了 ${esc(b[2])}！<br>* 拿到「${esc(CHMAP[B.ch].t)}」的徽章。`:`* ${esc(b[2])} 還站著。<br>* 答錯的題目已排進複習，練好再回來。`}</span></div>
-    <div class="stats"><span class="chip g">+${R.xp} XP</span>${won&&B.bonus?`<span class="chip y">${icon('trophy')} 勝利獎勵 +${B.bonus} XP</span>`:''}<span class="chip">${icon('heart')} 剩 ${B.php} 顆心</span></div>
+    <div class="bstage">${won?bossSVG(B.ch,170,'dead',true)+'<div class="ko" style="animation:none;opacity:1">K.O.</div>':bossSVG(B.ch,170,'')}</div>
+    <div class="utbox"><span>${won?`* 你打倒了 Lv.${B.lv||1} 的 ${esc(b[2])}！<br>* ${(B.lv||1)<10?`它記住你了。下次會以 Lv.${(B.lv||1)+1} 的姿態回來。`:'它已經是最強的型態了。'}`:`* Lv.${B.lv||1} 的 ${esc(b[2])} 還站著。<br>* 答錯的題目已排進複習，練好再回來。`}</span></div>
+    <div class="stats"><span class="chip g">+${R.xp} XP</span>${won&&B.bonus?`<span class="chip y">${icon('trophy')} 勝利獎勵 +${B.bonus} XP</span>`:''}${won&&B.fzGift?`<span class="chip">${icon('ice')} 補簽卡 +1</span>`:''}<span class="chip">${icon('heart')} 剩 ${B.php} 顆心</span></div>
+    ${won?`<div class="tiny muted mt-xs">下一戰：${bossMods(Math.min(10,(B.lv||1)+1)).join('、')}</div>`:''}
   </section>
   ${wrongIds.length?`<div class="card"><h2 class="h2">這場的盲點</h2><div class="small muted">已排進複習</div>${[...new Set(wrongIds.map(id=>Q[id].card))].map(cardRow).join('')}</div>`:''}
   <div class="sp-dock"></div>
@@ -11589,14 +11657,16 @@ function bossFinish(R){
   const B=R.boss; if(B.done) return; B.done=true;
   if(!S.boss) S.boss={};
   const rec=S.boss[B.ch]||{w:0,l:0,t:0};
-  if(B.won){ B.bonus=rec.w?20:60; S.xp+=B.bonus; const D=S.days[today()]||(S.days[today()]={n:0,c:0,x:0,nw:0}); D.x+=B.bonus; rec.w++; setTimeout(()=>{ confetti(); sfx('fanfare'); },200); }
+  if(B.won){ const L=B.lv||1; B.bonus=bossReward(L,!rec.w); rec.best=Math.max(rec.best||0,L);
+    if([3,6,9].includes(L)&&!(rec.fz&&rec.fz[L])){ rec.fz=Object.assign({},rec.fz,{[L]:1}); if(S.fz.n<5){ S.fz.n++; S.fz.t=now(); B.fzGift=1; } }
+    S.xp+=B.bonus; const D=S.days[today()]||(S.days[today()]={n:0,c:0,x:0,nw:0}); D.x+=B.bonus; rec.w++; setTimeout(()=>{ confetti(); sfx('fanfare'); },200); }
   else rec.l++;
   rec.t=now(); S.boss[B.ch]=rec; save();
 }
 function viewBosses(){
   const won=CH.filter(ch=>bossRec(ch.id)?.w).length;
-  return topbar('魔王一覽')+`<div class="small muted" style="margin-bottom:var(--space-sm)">每章一隻魔王。答對攻擊、連對 3 題會心一擊，答錯會失去一顆心。題目優先出你這章最弱的。已擊敗 ${won} / ${CH.length}</div>
-  <div class="grid2">${CH.map(ch=>{ const r=bossRec(ch.id), p=chProgress(ch); return `<button class="tile${r?.w?' on':''}" data-act="boss" data-ch="${ch.id}">${bossSVG(ch.id,110)}<span class="t">${esc(BOSSES[ch.id][2])}</span><span class="d">${chTag(ch)} ${esc(ch.t)}</span><span class="d">${r?.w?`${icon('trophy')} 已擊敗 ${r.w} 次`:p.s?'見過 '+p.s+'/'+p.n+' 題':'還沒學過，硬打也可以'}</span></button>`; }).join('')}</div>`;
+  return topbar('魔王一覽')+`<div class="small muted" style="margin-bottom:var(--space-sm)">每章一隻魔王。答對攻擊、連對會心一擊，答錯會失去一顆心。每打倒一次它就升一級（最高 Lv.10），血更厚、規則更嚴，獎勵也更多；Lv.3、6、9 第一次打贏各送一張補簽卡。已擊敗 ${won} / ${CH.length}</div>
+  <div class="grid2">${CH.map(ch=>{ const r=bossRec(ch.id), p=chProgress(ch); return `<button class="tile${r?.w?' on':''}" data-act="boss" data-ch="${ch.id}">${bossSVG(ch.id,110)}<span class="t">${esc(BOSSES[ch.id][2])}</span><span class="d">${chTag(ch)} ${esc(ch.t)}</span><span class="d blv">下一戰 Lv.${bossLv(ch.id)}</span><span class="d">${r?.w?`${icon('trophy')} 最高通關 Lv.${r.best||r.w}`:p.s?'見過 '+p.s+'/'+p.n+' 題':'還沒學過，硬打也可以'}</span></button>`; }).join('')}</div>`;
 };
 
 /* ═════════════════════ EXPEDITIONS ═════════════════════
@@ -11629,7 +11699,7 @@ function expPanel(){
   const E=S.exp; if(!E) return '';
   const P=PETS[curPet()], ch=CHMAP[E.ch]; if(!ch) return '';
   if(E.st==='away'){ const tot=E.back-E.t0, done=Math.min(1,(now()-E.t0)/tot);
-    return `<div class="card exp"><div class="row"><span class="exp-pet">${mascot('idle',44)}</span><div class="grow"><div class="h2">${P.name}去探險了</div><div class="small muted">正在 ${chTag(ch)} ${esc(ch.t)} 裡找你快忘記的東西，大約 ${expLeft(E.back-now())}後回來</div></div></div><div class="bar thin mt-sm"><i style="--v:${done.toFixed(3)}"></i></div></div>`; }
+    return `<div class="card exp"><div class="row"><span class="exp-pet">${mascot(pm('idle'),44)}</span><div class="grow"><div class="h2">${P.name}去探險了</div><div class="small muted">正在 ${chTag(ch)} ${esc(ch.t)} 裡找你快忘記的東西，大約 ${expLeft(E.back-now())}後回來</div></div></div><div class="bar thin mt-sm"><i style="--v:${done.toFixed(3)}"></i></div></div>`; }
   const c=CARD[E.card]; if(!c) return '';
   const gift=E.gift?.k==='fz'?`<span class="chip y">${icon('ice')} 補簽卡 +1</span>`:`<span class="chip y">+${E.gift?.n||10} XP</span>`;
   return `<div class="card exp ret"><div class="row"><span class="exp-pet">${mascot('happy',56)}</span><div class="grow"><div class="h2">${P.name}從 ${esc(ch.t)} 回來了！</div><div class="small">${E.kind==='new'?'它發現了一張你還沒學過的觀念卡：':'它帶回一張你快忘記的卡：'}<b>${md(c.t)}</b></div><div class="row wrap mt-xs">${gift}</div></div></div>
@@ -11725,7 +11795,7 @@ function viewRoom(){
     return `<div class="li"><span class="ic-tile">${u?icon('box'):icon('lock')}</span><span class="grow"><span class="t">${u?esc(it.name):'？？？'}</span><span class="m">${chTag(ch)} ${u?esc(ch.t):`擊敗 ${esc(BOSSES[it.ch][2])}，或本章掌握 60%（目前 ${m}%）`}</span></span>${u?`<button class="btn sm${shown?'':' pri'}" data-act="roomtoggle" data-i="${it.id}" aria-pressed="${shown}">${shown?'收起':'擺上'}</button>`:''}</div>`; }).join('');
   return topbar(P.name+'的小房間',`<span class="combo small">${got}/${ROOM_ITEMS.length}</span>`)+`
   <div class="split"><div>
-  <div class="room">${VIEW.form!=null?`<span class="memo">回憶：${esc(N[VIEW.form])}</span>`:''}${roomSVG()}<button class="room-pet" data-act="roompet" aria-label="摸摸${P.name}">${mascot(VIEW.happy?'happy':'idle',96,null,VIEW.form)}</button></div>
+  <div class="room">${VIEW.form!=null?`<span class="memo">回憶：${esc(N[VIEW.form])}</span>`:''}${roomSVG()}<button class="room-pet" data-act="roompet" aria-label="摸摸${P.name}">${mascot(VIEW.happy?'happy':pm('idle'),96,null,VIEW.form)}</button></div>
   <div class="small muted mt-sm">每章一件家具。打倒那章的魔王，或把那章練到 60%，就會解鎖。點夥伴可以摸摸它。</div>
   <div class="sec">成長相簿<span class="note">點一下，讓${P.name}變回那時候的樣子</span></div>
   <div class="card"><div class="forms">${N.map((n,i)=>{ const got=i<=st, on=(VIEW.form??st)===i;
@@ -11809,7 +11879,7 @@ VIEWS.home=()=>{
   <section class="card status" aria-label="今日狀態">
     <div class="hp-head"><span class="hp-label">${icon('heart')} 記憶血量</span><span class="hp-val">${ms.n?pct(ms.avg):'--'}<small>%</small></span></div>
     <div class="hp${hpC}" role="meter" aria-label="記憶保留率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${ms.n?pct(ms.avg):0}">${Array.from({length:20},(_,i)=>`<i${i<hpN?' class="on"':''}></i>`).join('')}</div>
-    <div class="hp-note">${!ms.n?'還沒有記憶。學會第一張卡，血條就會亮起來。':ms.low?`有 <b>${ms.low}</b> 個記憶正在流失，先替它們補血。`:'記憶都很穩，可以去認識新觀念。'}</div>
+    <div class="hp-note">${!ms.n?'還沒有記憶。學會第一張卡，血條就會亮起來。':ms.low?`有 <b>${ms.low}</b> 個記憶正在流失，先替它們補血。`:'記憶都很穩，可以去認識新觀念。'}${ms.n?`<span class="cond c-${petCond().k}">${esc(PETS[curPet()].name)}：${COND_TXT[petCond().k]}</span>`:''}</div>
     <div class="stats3">
       <div class="stat"><div class="k">${icon('flame')} 連續</div><div class="v${st?' hot':''}">${st} 天</div></div>
       <div class="stat"><div class="k">${icon('check')} 今日</div><div class="v">${D.n}/${goal}</div></div>
@@ -11899,15 +11969,17 @@ AFTER.account=()=>{ const a=$('#anm'); if(a) a.oninput=()=>{ VIEW.anm=a.value; }
 
 /* ---------- PETS ---------- */
 VIEWS.pets=()=>{
-  const cur=curPet(), P=PETS[cur], st=petStage(), L=lvl(), nxL=STAGE_LV[st+1], N=EVO[cur].names;
-  return topbar('夥伴')+`<div class="card center"><div class="stage inl">${mascot('happy',150)}</div>
-    <h2 class="h1 mt-sm">${P.name}</h2><div class="small muted">${P.kind}，目前型態：${N[st]}</div>
-    <div class="bar mt-sm"><i style="--v:${nxL?Math.min(1,(L.i-STAGE_LV[st]+L.p)/(nxL-STAGE_LV[st])).toFixed(3):1}"></i></div>
-    <div class="tiny muted mt-2xs">${nxL?`Lv.${nxL} 會進化成 ？？？（目前 Lv.${L.i}）`:'已達最終型態'}</div>
+  const cur=curPet(), P=PETS[cur], st=petStage(), L=lvl(), N=EVO[cur].names;
+  return topbar('夥伴')+`<div class="card center"><div class="stage inl">${mascot(pm('happy'),150)}</div>
+    <h2 class="h1 mt-sm">${P.name}</h2><div class="small muted">${P.kind}，目前型態：${N[st]}</div>${(()=>{ const c=petCond(); return c.hp==null?'':`<div class="mt-2xs"><span class="cond c-${c.k}">${icon('heart')} 記憶血量 ${c.hp}%：${COND_TXT[c.k]}</span></div>`; })()}
+    ${(()=>{ const nd=stageNeed(st); if(!nd) return '<div class="tiny muted mt-sm">已達最終型態</div>'; const mf=masteredFrac();
+      return `<div class="evo-need mt-sm"><div class="tiny muted">進化條件（兩個都要達成）</div>
+      <div class="row mt-2xs"><span class="tiny grow">等級 Lv.${L.i} / Lv.${nd.lv}</span>${L.i>=nd.lv?`<span class="chip g">${icon('check')}</span>`:''}</div><div class="bar thin"><i style="--v:${Math.min(1,(L.i-1+L.p)/(nd.lv-1)).toFixed(3)}"></i></div>
+      <div class="row mt-xs"><span class="tiny grow">已熟練的卡 ${pct(mf)}% / ${Math.round(nd.m*100)}%</span>${mf>=nd.m?`<span class="chip g">${icon('check')}</span>`:''}</div><div class="bar thin"><i style="--v:${Math.min(1,mf/nd.m).toFixed(3)}"></i></div></div>`; })()}
     <div class="row wrap mt-sm" style="justify-content:center">${N.map((n,i)=>`<span class="chip ${i===st?'y':''}">${i<=st?n:'？？？'}</span>`).join('')}</div></div>
   <div class="sec">換一位夥伴</div>
   <div class="grid2">${Object.keys(PETS).map(id=>`<button class="tile ${id===cur?'on':''}" data-act="pet" data-p="${id}" aria-pressed="${id===cur}">${mascot('idle',92,id)}<span class="t">${PETS[id].name}</span><span class="d">${PETS[id].kind}，${EVO[id].names[st]}</span></button>`).join('')}</div>
-  <div class="small muted mt-md">進化階段跟著你的等級走，所以換夥伴不會歸零。每隻夥伴的進化路線都不一樣，有些型態的顏色還會因帳號而異，要升上去才知道會變成什麼。</div>`;
+  <div class="small muted mt-md">進化要同時達到等級與「熟練的卡片比例」，練得越紮實長得越大；進化過的型態不會退回，換夥伴也不會歸零。每隻夥伴的進化路線都不一樣，有些型態的顏色還會因帳號而異，要升上去才知道會變成什麼。</div>`;
 };
 
 /* ---------- SETTINGS ---------- */
@@ -12130,8 +12202,8 @@ function questionHTML(q,st,o={}){
       ${st.ai?`<div class="fb ${st.ai.score>=80?'ok':st.ai.score>=45?'mid':'no'}" style="box-shadow:none"><div class="ttl">${icon('spark')} Claude 評分：${st.ai.score} / 100</div><div class="ai">${mdBlock(st.ai.feedback||'')}</div></div>`:''}
       ${st.aiLoading?`<div class="fb" style="box-shadow:none" role="status"><span class="spin"></span> Claude 批改中…</div>`:''}
       <div class="sec">參考答案</div><div class="ref well">${mdBlock(q.a)}</div>
-      <div class="sec">得分點<span class="note">勾選你有答到的</span></div>${q.p.map((p,i)=>`<button class="check ${st.hit&&st.hit[i]?'on':''}" data-act="sahit" data-i="${i}" role="checkbox" aria-checked="${!!(st.hit&&st.hit[i])}"><span class="bx">${st.hit&&st.hit[i]?icon('check'):''}</span><span>${md(p)}</span></button>`).join('')}`
-      :`<textarea class="field" id="ans" aria-label="你的答案" placeholder="先用自己的話寫寫看（也可以只在心裡回想，直接看答案）">${esc(st.val||'')}</textarea><div class="tiny muted mt-2xs">${q.p.length} 個得分點，閉書作答，寫關鍵字就好</div><div class="row mt-sm">${aiOn()?`<button class="btn" data-act="sareveal">${icon('book')} 看參考答案</button><button class="btn pri grow" data-act="saai">${icon('spark')} Claude 批改</button>`:`<button class="btn pri grow" data-act="sareveal">${icon('book')} 看參考答案自評</button>`}</div>`;
+      <div class="sec">得分點<span class="note">勾選你有答到的</span></div>${q.p.map((p,i)=>`<button class="check ${st.hit&&st.hit[i]?'on':''}" data-act="sahit" data-i="${i}" role="checkbox" aria-checked="${!!(st.hit&&st.hit[i])}"><span class="bx">${st.hit&&st.hit[i]?icon('check'):''}</span><span>${md(p)}</span>${st.auto&&st.auto[i]?'<span class="auto">關鍵字命中</span>':''}</button>`).join('')}${st.auto&&!st.ai?'<div class="tiny muted mt-2xs">已依關鍵字自動勾選，意思不對的請取消、漏判的請補勾</div>':''}`
+      :`<textarea class="field" id="ans" aria-label="你的答案" placeholder="先用自己的話寫寫看（也可以只在心裡回想，直接看答案）">${esc(st.val||'')}</textarea><div class="tiny muted mt-2xs">${q.p.length} 個得分點。閉書作答，用自己的話寫出「是什麼」和「為什麼」</div><div class="row mt-sm">${aiOn()?`<button class="btn" data-act="sasubmit">${icon('check')} 送出並對答案</button><button class="btn pri grow" data-act="saai">${icon('spark')} Claude 批改</button>`:`<button class="btn pri grow" data-act="sasubmit">${icon('check')} 送出並對答案</button>`}</div><button class="btn sm ghost mt-xs" data-act="sareveal">想不出來，直接看答案</button>`;
   }
   let fb='';
   if(st.done&&q.k!=='sa'){
@@ -12289,18 +12361,18 @@ function blzAnswer(v){
 }
 
 /* ---------- EXAM DOJO ---------- */
-function examGroups(){ const g={}; for(const q of QLIST){ if(!q.src) continue; const k=q.src.replace(/\s*(Q\d.*|Part.*)$/,'').trim(); (g[k]||(g[k]=[])).push(q); }
-  for(const k in g) g[k].sort((a,b)=>{ const na=parseInt((a.src.match(/Q(\d+)/)||[])[1]||0), nb=parseInt((b.src.match(/Q(\d+)/)||[])[1]||0); return na-nb; });
-  return Object.entries(g).sort((a,b)=>b[0].localeCompare(a[0])); }
+function examGroups(){ const g={}; for(const q of QLIST){ if(q.k==='sa'&&!q.src){ (g['模擬題']||(g['模擬題']=[])).push(q); continue; } if(!q.src) continue; const k=q.src.replace(/\s*(Q\d.*|Part.*)$/,'').trim(); (g[k]||(g[k]=[])).push(q); }
+  for(const k in g) g[k].sort((a,b)=>{ if(!a.src||!b.src) return CH.indexOf(a.card.ch)-CH.indexOf(b.card.ch); const na=parseInt((a.src.match(/Q(\d+)/)||[])[1]||0), nb=parseInt((b.src.match(/Q(\d+)/)||[])[1]||0); return na-nb; });
+  return Object.entries(g).sort((a,b)=>(a[0]==='模擬題')-(b[0]==='模擬題')||b[0].localeCompare(a[0])); }
 VIEWS.exam=()=>{
   const groups=examGroups(); const tab=VIEW.tab||groups[0][0];
   const list=(groups.find(g=>g[0]===tab)||groups[0])[1];
-  const st=q=>{ const s=S.q[q.id]; if(!s||!s.n) return '<span class="chip">未作答</span>'; const m=qMastery(q.id); return m>=0.6?'<span class="chip g">已掌握</span>':m>=0.3?'<span class="chip y">再練練</span>':'<span class="chip r">待加強</span>'; };
+  const st=q=>{ const s=S.q[q.id]; if(!s||!s.n) return '<span class="chip">未作答</span>'; if(q.k==='sa'&&s.sb!=null) return `<span class="chip ${s.sb>=0.8?'g':s.sb>=0.4?'y':'r'}">最佳 ${Math.round(s.sb*100)}%</span>`; const m=qMastery(q.id); return m>=0.6?'<span class="chip g">已掌握</span>':m>=0.3?'<span class="chip y">再練練</span>':'<span class="chip r">待加強</span>'; };
   const done=list.filter(q=>seen(q.id)).length;
-  return topbar('考古題道場')+`<div class="small muted" style="margin-bottom:var(--space-sm)">這位教授的筆試以「簡答 + 解釋原因」為主。先寫關鍵字，再對照得分點自評${aiOn()?'，或請 Claude 逐點批改':''}。今年範圍未上傳的主題放在「考古延伸」章節。</div>
+  return topbar('考古題道場')+`<div class="small muted" style="margin-bottom:var(--space-sm)">這位教授的筆試以「簡答 + 解釋原因」為主。先寫下答案再對照得分點：系統會依關鍵字先幫你勾一次，你再自己確認${aiOn()?'，或請 Claude 逐點批改':''}。「模擬題」是依今年簡報與作業出的簡答題。</div>
   <div class="seg" role="tablist">${groups.map(g=>`<button role="tab" aria-selected="${g[0]===tab}" class="${g[0]===tab?'on':''}" data-act="examtab" data-tab="${esc(g[0])}">${esc(g[0])}</button>`).join('')}</div>
   <div class="row between" style="margin:var(--space-sm) 0 var(--space-xs)"><span class="small muted">完成 ${done}/${list.length}</span><button class="btn sm pri" data-act="examrun" data-tab="${esc(tab)}">隨機考我 5 題</button></div>
-  <div class="card">${list.map(q=>`<button class="li" data-act="examone" data-q="${q.id}"><span class="grow"><span class="t" style="display:block">${md(q.q.length>70?q.q.slice(0,70)+'…':q.q)}</span><span class="m">${esc(q.src)}<span class="sep"></span>${KIND[q.k]}<span class="sep"></span>${chTag(q.card.ch)} ${esc(q.card.ch.t)}</span></span>${st(q)}</button>`).join('')}</div>`;
+  <div class="card">${list.map(q=>`<button class="li" data-act="examone" data-q="${q.id}"><span class="grow"><span class="t" style="display:block">${md(q.q.length>70?q.q.slice(0,70)+'…':q.q)}</span><span class="m">${esc(q.src||'模擬題')}<span class="sep"></span>${KIND[q.k]}<span class="sep"></span>${chTag(q.card.ch)} ${esc(q.card.ch.t)}</span></span>${st(q)}</button>`).join('')}</div>`;
 };
 
 /* ---------- RADAR ---------- */
@@ -12364,12 +12436,22 @@ async function aiGradeSA(){
   }catch(e){ toast(aiErrMsg(e),2600); }
   st.aiLoading=false; if(RUN===R) render();
 }
+/* Rough keyword check for a scoring point: share of its English terms and Chinese bigrams found in the answer. */
+const SA_STOP=new Set('的是與和在了或及要會可能這那一個用以為對於中時就也都把被讓所並且而如果因為所以可以使用需要'.split(''));
+function saKeyHit(ans,point){
+  const A=ans.toLowerCase(), P=String(point).replace(/[*`]/g,'').toLowerCase();
+  const en=[...new Set((P.match(/[a-z0-9_.\/-]{2,}/g)||[]).filter(w=>!/^(the|and|or|to|of|in|is|on|a|an)$/.test(w)))];
+  const zh=[]; for(const run of (P.match(/[\u4e00-\u9fff]+/g)||[])) for(let i=0;i+1<run.length;i++){ const b=run.slice(i,i+2); if(!SA_STOP.has(b[0])||!SA_STOP.has(b[1])) zh.push(b); }
+  const zs=[...new Set(zh)];
+  const enHit=en.filter(w=>A.includes(w)).length, zhHit=zs.filter(b=>A.includes(b)).length;
+  const tot=en.length+zs.length; if(!tot) return false;
+  return (enHit+zhHit)/tot>=0.34 || (en.length&&enHit/en.length>=0.6); }
 function scoreSA(){
   const R=RUN, st=R.st, q=Q[R.items[R.pos].id];
   const hits=(st.hit||[]).filter(Boolean).length; const ratio=hits/q.p.length;
   const g= ratio>=0.8?2: ratio>=0.4?1:0;
   st.done=true; st.ok=g===2; st.g=g;
-  const xp=grade(q.id,g,{xp:Math.round(5+15*ratio)}); R.xp+=xp; R.res[R.pos]=g;
+  const xp=grade(q.id,g,{xp:Math.round(5+15*ratio)}); R.xp+=xp; R.res[R.pos]=g; { const sq=S.q[q.id]; if(sq){ sq.sb=Math.max(sq.sb||0,ratio); save(); } }
   if(g===0&&!R.requeued[q.id]){ R.requeued[q.id]=1; }
   toast(g===2?icon('star')+' 得分點都掌握了':g===1?'抓到一部分，會再排複習':'這題會很快再回來找你');
   next();
@@ -12460,6 +12542,9 @@ const ACT={
   mtl:d=>{ const st=RUN.st; const i=+d.i; if(st.pairs[i]!=null){ delete st.pairs[i]; st.sel=null; } else st.sel=i; render(); },
   mtr:d=>{ const st=RUN.st; if(st.sel==null){ toast('先點左邊的項目'); return; } const r=+d.i; for(const k in st.pairs) if(st.pairs[k]===r) delete st.pairs[k]; st.pairs[st.sel]=r; st.sel=null; render(); },
   mtcheck:()=>{ const st=RUN.st, q=Q[RUN.items[RUN.pos].id]; let wrong=0; q.o.forEach((p,i)=>{ if(q.o[st.pairs[i]]?.[1]!==p[1]) wrong++; }); const ok=wrong===0; const mid=wrong===1&&q.o.length>=4; answer(ok?2:mid?1:0,ok,mid); },
+  sasubmit:()=>{ blurInput(); const st=RUN.st, q=Q[RUN.items[RUN.pos].id]; const v=($('#ans')?.value||st.val||'').trim(); st.val=v;
+    if(!v){ toast('先寫幾個關鍵字吧；真的想不出來，就按「直接看答案」'); return; }
+    st.reveal=true; st.auto=q.p.map(p=>saKeyHit(v,p)); st.hit=st.auto.slice(); render(); },
   sareveal:()=>{ blurInput(); const st=RUN.st; st.val=($('#ans')?.value||st.val||'').trim(); st.reveal=true; st.hit=Q[RUN.items[RUN.pos].id].p.map(()=>false); render(); },
   saai:()=>{ blurInput(); aiGradeSA(); },
   sahit:d=>{ const st=RUN.st; st.hit[+d.i]=!st.hit[+d.i]; render(); },
