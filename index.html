@@ -4443,6 +4443,7 @@ B> **ps -o pid,ppid,stat,etime,time,args -p $$**
 B> **%CPU**：CPU 時間 ÷ 存活時間；**TIME** 累積 CPU 時間；**ELAPSED** 經過的實際時間
 B> **VSZ** 虛擬大小、**RSS** 常駐記憶體（KiB）；共享頁面可能被算進多個 RSS
 B> **STAT** 狀態加旗標（s、+、l）；**ARGS** 可能含敏感資料
+B> **PSS**（Proportional Set Size）：共享頁面依共用的 process 數**平均分攤**後的記憶體，加總起來比 RSS 更接近真實用量：**ps -o vsz,rss,pss,cmd**
 ?cmd 列出所有 process 的 pid、ppid、stat、ni 與完整指令（ps -eo 寫法）：
 = ps -eo pid,ppid,stat,ni,args
 = ps -eo pid,ppid,stat,ni,cmd
@@ -4460,6 +4461,12 @@ E> Debian procps-ng 同時支援 BSD 與 UNIX 風格。
 > TIME :: 累積使用的 CPU 時間
 > ELAPSED :: 啟動至今經過的時間
 E> VSZ 包含 mappings 與保留空間，通常比 RSS 大。
+?mc 10 個 process 共用同一個 4 MiB 的函式庫。為什麼把它們的 RSS 加起來會高估總記憶體用量，PSS 又如何改善？
++ RSS 讓每個 process 都算一次完整的 4 MiB；PSS 把共享頁面平均分攤，每個只算 0.4 MiB
+- RSS 不含共享函式庫，PSS 才含
+- PSS 只計算 swap 中的頁面
+- 兩者一樣，只是單位不同
+E> 投影片：Shared pages can appear in several RSS totals。
 
 @CARD proc.top | top、htop、load average
 A> load average 不是 CPU 百分比，而是「排隊的人數平均」，包含正在用 CPU 的、等 CPU 的、以及卡在 I/O（D 狀態）的人。4 核心機器 load 4 代表剛好滿。
@@ -5742,6 +5749,336 @@ E> 觸發 StartLimitBurst 後會進入 start-limit-hit 狀態。
 - 需要先 systemctl enable 才能執行
 - 服務必須用 Type=forking
 E> 服務環境很乾淨：用絕對路徑或在 Environment= 設 PATH。
+
+@CARD systemd.p_query | 實作：給腳本用的 systemctl 查詢
+A> 寫腳本或檢查作業時，不要用眼睛讀 systemctl status 的彩色輸出，而是問「是或不是」的問題：is-active、is-enabled、is-failed，它們用 exit code 回答，最適合放進 if。
+B> **systemctl is-active x**：active 回 0；**is-enabled x**：enabled 回 0；**is-failed x**：failed 回 0；加 **-q** 不印字
+B> **systemctl --failed**（= list-units --state=failed）：一眼看出哪些 unit 壞掉
+B> **systemctl list-unit-files --state=enabled**：哪些會開機自動啟動
+B> **systemctl show x -p ActiveState,SubState,MainPID,ExecMainStatus**：取單一屬性（-p 指定、--value 只印值）
+B> **systemctl list-units --type=service**：目前載入的服務；**--all** 連 inactive 也列
+X> if systemctl is-active -q nginx; then echo up; fi
+X> systemctl show sftp_watchd -p MainPID --value
+X> systemctl --failed
+?cmd 安靜地（不印出文字）檢查 nginx 是否正在執行，只用 exit code 表示結果：
+= systemctl is-active -q nginx
+= systemctl is-active --quiet nginx
+= systemctl -q is-active nginx
+= systemctl --quiet is-active nginx
+E> 0 代表 active，適合寫在 if 或 && 後面。
+?cmd 列出所有處於 failed 狀態的 unit：
+= systemctl --failed
+= systemctl list-units --failed
+= systemctl list-units --state=failed
+E> 開機後第一個該跑的檢查指令。
+?mc 想在腳本裡取得 myapp.service 的主 process PID（只要數字），最合適的是？
++ systemctl show myapp -p MainPID --value
+- systemctl status myapp | grep PID
+- pidof systemctl
+- cat /run/myapp.pid
+E> show 輸出 key=value，--value 只留下值；status 的格式是給人看的，不適合解析。
+
+@CARD systemd.p_analyze | 實作：systemd-analyze 開機與安全分析
+A> systemd-analyze 是 systemd 的「健檢報告」：開機哪一段最慢（blame、critical-chain）、時間格式寫對沒（calendar）、unit 寫對沒（verify）、服務有多少攻擊面（security）。
+B> **systemd-analyze**：總開機時間（firmware、loader、kernel、userspace）
+B> **systemd-analyze blame**：各 unit 啟動花多久（由慢到快）
+B> **systemd-analyze critical-chain [unit]**：卡住開機的那條關鍵路徑
+B> **systemd-analyze verify 檔案**、**calendar '…'**、**timespan '1h30m'**
+B> **systemd-analyze security [unit]**：依沙箱設定給服務打「暴露分數」
+?mt 配對 systemd-analyze 子指令：
+> blame :: 列出每個 unit 啟動花費的時間
+> critical-chain :: 顯示決定開機時間的關鍵依賴鏈
+> verify :: 檢查 unit 檔錯誤
+> calendar :: 驗證 OnCalendar 時間格式
+> security :: 評估服務的沙箱與暴露程度
+E> blame 只看單一 unit 的耗時；真正拖慢開機的要看 critical-chain（平行啟動時慢的不一定擋路）。
+?mc 開機變慢時，為什麼 critical-chain 比 blame 更能找出真正的瓶頸？
++ unit 大多平行啟動，耗時長的 unit 不一定擋住其他人；critical-chain 只顯示真正位在等待路徑上的 unit
+- blame 只顯示 kernel 的時間
+- critical-chain 會自動修正問題
+- blame 不包含 service
+E> 例如 apt-daily 花 30 秒但沒人等它，就不影響登入時間。
+?cmd 列出各 unit 開機時啟動花費的時間：
+= systemd-analyze blame
+E> 由耗時最長的排到最短。
+
+@CARD systemd.p_socket | 實作：Socket 與 Path activation
+A> socket activation 是「先派總機接電話，有人打來才叫醒員工」：systemd 先替服務佔住 port，有連線時才啟動服務。所以 port 是寫在 .socket 裡，而不是服務自己的設定檔，這點在改 SSH port 時特別容易踩雷。
+B> **foo.socket** 監聽（ListenStream=22），有連線時啟動 **foo.service**；開機快、服務可以晚點起來
+B> **ssh.socket**：有些發行版（如 Ubuntu 新版）用它啟動 sshd，此時**監聽的 port 由 ssh.socket 的 ListenStream 決定**，sshd_config 的 Port 可能不是唯一依據
+B> 檢查：**systemctl status ssh.socket ssh.service**、**ss -tlnp** 看是誰在聽（systemd 或 sshd）
+B> **foo.path**：監看檔案或目錄（PathChanged=、PathExists=、DirectoryNotEmpty=），條件成立就啟動 foo.service
+B> 投影片的 list-dependencies 也看得到 **.path**（systemd-ask-password-wall.path）、**.mount**（tmp.mount）、**.slice** 等其他 unit 類型
+X> # 監看 /srv/inbox，有新檔就跑處理程式
+X> # inbox.path
+X> [Path]
+X> PathChanged=/srv/inbox
+X> [Install]
+X> WantedBy=multi-user.target
+?mc 把 sshd_config 改成 Port 22 並 reload，但 ss -tlnp 顯示 2222 仍被 systemd 監聽。最可能的原因？
++ 系統使用 ssh.socket 做 socket activation，監聽的 port 寫在 ssh.socket 的 ListenStream=
+- sshd_config 語法錯誤
+- 需要重開機
+- 2222 是 Docker 佔用的
+E> HW2 要求只聽 22：除了 sshd_config，也要檢查 ssh.socket 與 sshd_config.d/。
+?mt 配對 unit 類型：
+> .socket :: 有連線時才啟動對應的 service
+> .path :: 監看的檔案或目錄變動時啟動 service
+> .mount :: 由 systemd 管理的掛載點
+> .timer :: 定時啟動 service
+E> Linux 上每種 unit 類型都由副檔名區分，常見的還有 .slice、.scope、.target、.device。
+?tf ss -tlnp 顯示某個 port 的 process 是 systemd，代表那個 port 可能是 socket activation 由 systemd 代為監聽。
+=T
+E> 有連線進來時 systemd 才把 socket 交給真正的服務。
+
+@CARD systemd.p_mount | 實作：fstab 也是 systemd unit
+A> 開機時 systemd 會把 /etc/fstab 每一行「翻譯」成一個 .mount unit（由 fstab generator 產生）。所以改完 fstab 要 daemon-reload，否則 systemd 還拿著舊版翻譯；而 fstab 某行壞掉，開機就可能卡進 emergency mode。
+B> **systemd-fstab-generator** 把 fstab 轉成 .mount unit：/mnt/hw2/sftp → **mnt-hw2-sftp.mount**（路徑的 / 變成 -）
+B> 改 fstab 後：**systemctl daemon-reload**，再 **mount -a** 測試；**findmnt --verify** 檢查語法
+B> 掛載失敗（裝置不存在）預設會讓開機進 **emergency mode**；非必要的磁碟加 **nofail**
+B> 服務需要某個掛載點存在：**RequiresMountsFor=/mnt/hw2/sftp**（自動加上 Requires + After 對應的 .mount）
+B> 其他選項：**x-systemd.automount**（第一次存取才掛）、x-systemd.device-timeout=
+X> systemctl status mnt-hw2-sftp.mount
+X> findmnt --verify
+X> # sftp_watchd.service
+X> [Unit]
+X> RequiresMountsFor=/mnt/hw2/sftp
+?fill /mnt/hw2/pool1 對應的 systemd mount unit 名稱是 ＿＿.mount
+= mnt-hw2-pool1
+E> 開頭的 / 省略，其餘的 / 換成 -（含特殊字元時用 systemd-escape -p 轉換）。
+?mc 監看 /mnt/hw2/sftp 的 sftp_watchd 在開機時比掛載更早啟動、結果監看到空目錄。最正確的修法？
++ 在 [Unit] 加 RequiresMountsFor=/mnt/hw2/sftp
+- 在 ExecStartPre 加 sleep 30
+- 改用 Type=oneshot
+- 在 crontab 用 @reboot 啟動
+E> RequiresMountsFor 會自動加上對應 .mount 的依賴與順序。
+?mc 在 fstab 加了一個 USB 硬碟的掛載，但開機時沒插 USB，系統直接進 emergency mode。應該怎麼調整？
++ 在該行選項加 nofail
+- 把 pass 欄位改成 2
+- 改成 x-systemd.automount 以外的任何選項都沒用，只能刪掉
+- 把它移到 /etc/rc.local
+E> nofail：掛不上也不影響開機；常與 x-systemd.device-timeout= 搭配。
+?cmd 檢查 /etc/fstab 的語法與設定是否有問題：
+= findmnt --verify
+= sudo findmnt --verify
+E> 加 --verbose 會顯示每一行的檢查結果。
+
+@CARD systemd.p_kill | 實作：停止服務時發生什麼事（KillMode）
+A> systemctl stop 的流程像「下班廣播」：先執行 ExecStop（如果有），再對 process 送 KillSignal（預設 SIGTERM）請它收拾；等 TimeoutStopSec（預設 90 秒）還沒走，就送 SIGKILL 強制清場。KillMode 決定廣播給「誰」。
+B> 停止流程：**ExecStop=** → 送 **KillSignal=**（預設 **SIGTERM**）→ 等 **TimeoutStopSec=**（預設 90s）→ 仍在就送 **SIGKILL**（SendSIGKILL=yes）
+B> **KillMode=control-group**（預設）：cgroup 裡**所有** process 都收到訊號
+B> **KillMode=mixed**：SIGTERM 只給主 process，最後的 SIGKILL 給整個 cgroup
+B> **KillMode=process**：只殺主 process（sshd 用它保留既有連線）；**none**：不建議
+B> 手動送訊號：**systemctl kill -s HUP x**（也可 --kill-whom=main）
+X> systemctl kill -s SIGHUP nginx
+X> systemctl show nginx -p KillMode,KillSignal,TimeoutStopUSec
+?ord 預設情況下 systemctl stop 的順序：
+> 執行 ExecStop=（若有設定）
+> 對 cgroup 內 process 送 SIGTERM
+> 等待 TimeoutStopSec
+> 仍未結束則送 SIGKILL
+E> 這也是 trap TERM 能做清理的原因：先收到的是 SIGTERM。
+?mt 配對 KillMode：
+> control-group :: 預設，cgroup 內所有 process 都收到訊號
+> mixed :: SIGTERM 給主 process，SIGKILL 給全部
+> process :: 只對主 process 送訊號
+E> none 不會殺任何 process，留下的 process 容易失控，不建議使用。
+?cmd 對 nginx.service 的 process 送 SIGHUP（讓它重新讀設定）：
+= systemctl kill -s HUP nginx
+= systemctl kill -s SIGHUP nginx
+= systemctl kill --signal=HUP nginx
+= systemctl kill --signal=SIGHUP nginx
+= systemctl kill -s HUP nginx.service
+E> 一般重新讀設定用 systemctl reload 更好（會執行 ExecReload）。
+
+@CARD systemd.p_foreground | 實作：daemon 要跑在前景（-D、-f、-n）
+A> 傳統 daemon 會「自己 fork 到背景再讓爸爸離開」，systemd 要猜哪個才是主 process，很麻煩。現代作法是叫 daemon「別躲到背景」（前景模式），讓 systemd 直接當它的爸爸，最乾淨。投影片 cgroup 樹裡的 sshd -D、cron -f、rsyslogd -n 都是前景模式。
+B> 前景旗標：**sshd -D**、**cron -f**、**rsyslogd -n**、nginx 的 daemon off;、dbus-daemon --nofork
+B> 前景執行 + **Type=simple / exec / notify**：主 process 就是 ExecStart 啟動的那一個，最好管理
+B> 傳統背景 daemon：**Type=forking** + **PIDFile=**（systemd 讀 PID 檔判斷主 process）
+B> 自己寫的服務（例如 sftp_watchd）**不要自己 daemonize**（不要 &、nohup、setsid），直接在前景跑，輸出到 stdout/stderr 就會進 journal
+B> 輸出被 buffer：Python 用 **python3 -u** 或 PYTHONUNBUFFERED=1，否則 journalctl 可能很久才看到 log
+?mc 自己寫的 bash daemon 在腳本最後用 while 迴圈 & 丟到背景，搭配 Type=simple。會發生什麼？
++ 腳本的主 process 立刻結束，systemd 認為服務已停止並清掉整個 cgroup（迴圈也被殺）
+- 一切正常
+- systemd 會自動改成 Type=forking
+- 迴圈會變成 PID 1 的子行程繼續跑
+E> 在 systemd 底下不要自己 daemonize，直接前景執行。
+?mc Python 寫的服務用 print() 輸出 log，但 journalctl -u 很久都看不到。最可能的原因？
++ stdout 不是 tty 時 Python 會 buffer 輸出，要用 python3 -u、flush=True 或 PYTHONUNBUFFERED=1
+- journald 只收 stderr
+- 要先 systemctl enable 才有 log
+- print 不會寫到 stdout
+E> 同理，C 程式可能要 setvbuf 或 fflush。
+?mt 配對前景執行的旗標：
+> sshd :: -D
+> cron :: -f
+> rsyslogd :: -n
+E> 投影片 CGroup 樹中可以看到這些參數。
+
+@CARD systemd.p_user | 實作：User units 與 linger
+A> 每個登入的使用者也有一個自己的小 systemd（user@UID.service），可以用 systemctl --user 管自己的服務，不需要 root。但使用者登出後它會跟著關掉，除非開啟 linger（「人走了也幫他留燈」）。
+B> 使用者自己的服務：**systemctl --user start/enable x**，unit 放 **~/.config/systemd/user/**
+B> 每位登入使用者有 **user@UID.service**，cgroup 在 user.slice/user-UID.slice
+B> 登出後 user manager 會停止 → 要開機就跑、登出也不停：**loginctl enable-linger 使用者**
+B> 查看 log：**journalctl --user -u x**
+?cmd 讓使用者 alice 的 user units 在她沒有登入時也能執行（開機即啟動）：
+= loginctl enable-linger alice
+= sudo loginctl enable-linger alice
+E> linger 狀態存在 /var/lib/systemd/linger/。
+?mc 一般使用者想讓自己的服務開機自動啟動、不需要 root，該怎麼做？
++ 寫在 ~/.config/systemd/user/ 並 systemctl --user enable，再由管理員開啟 loginctl enable-linger
+- 寫進 /etc/systemd/system 再 enable
+- 放進 /etc/rc.local
+- 一般使用者無法做到
+E> User unit 的搜尋路徑包含 ~/.config/systemd/user（$XDG_CONFIG_HOME）。
+
+@CARD systemd.p_run | 實作：systemd-run 與暫時性 unit
+A> systemd-run 是「臨時工」：不用寫 unit 檔，直接把一個指令包成暫時的 service 或 scope，順便套上資源限制。很適合拿來實驗 cgroups：例如讓一個吃記憶體的程式在 100M 的籠子裡跑，看它被 OOM kill。
+B> **systemd-run 指令**：建立暫時的 .service 在背景執行（名稱如 run-u123.service）
+B> **--scope**：在目前終端機前景執行，但放進新的 .scope cgroup
+B> **-p 屬性=值**：套用資源限制，例如 **-p MemoryMax=100M**、**-p CPUQuota=20%**
+B> **--on-calendar=… / --on-active=5m**：建立暫時 timer（一次性排程，類似 at）
+B> **--user**：以使用者的 manager 執行
+X> sudo systemd-run --scope -p MemoryMax=100M -p CPUQuota=20% stress --vm 1 --vm-bytes 200M
+X> sudo systemd-run --on-active=10m /usr/local/bin/backup.sh
+?cmd 在新的 scope 中以最多 100M 記憶體的限制執行 ./memhog：
+= systemd-run --scope -p MemoryMax=100M ./memhog
+= sudo systemd-run --scope -p MemoryMax=100M ./memhog
+= systemd-run -p MemoryMax=100M --scope ./memhog
+E> 超過 100M 就會在該 scope 內觸發 OOM kill，不影響其他程式。
+?mc systemd-run --on-active=10m backup.sh 的效果最接近哪個傳統工具？
++ at（一次性延後執行）
+- cron
+- nice
+- nohup
+E> 它建立一個暫時的 timer，10 分鐘後觸發一次。
+
+@CARD systemd.p_harden | 實作：服務沙箱化（Hardening）
+A> 給服務「最小的房間」：只能寫它需要的資料夾、看不到別人的 /home、/tmp 是自己獨立的、不能透過 setuid 偷升權限。就算服務被攻破，攻擊者能碰到的東西也很少。systemd-analyze security 會幫你打分數。
+B> **NoNewPrivileges=yes**：不能透過 setuid / file capabilities 提升權限
+B> **PrivateTmp=yes**：服務有自己獨立的 /tmp、/var/tmp
+B> **ProtectSystem=strict**：整個檔案系統唯讀，只開放 **ReadWritePaths=** 列出的路徑；full 只保護 /usr、/boot、/etc
+B> **ProtectHome=yes**：看不到 /home、/root、/run/user
+B> **CapabilityBoundingSet=**、**AmbientCapabilities=CAP_NET_BIND_SERVICE**（非 root 綁 80 port）、**User=** / **DynamicUser=**
+B> 評分：**systemd-analyze security 服務**（數字越低越安全）
+X> [Service]
+X> User=app
+X> NoNewPrivileges=yes
+X> PrivateTmp=yes
+X> ProtectSystem=strict
+X> ReadWritePaths=/var/lib/app
+X> ProtectHome=yes
+?mt 配對 hardening 選項：
+> NoNewPrivileges=yes :: 禁止透過 setuid 提升權限
+> PrivateTmp=yes :: 服務擁有獨立的 /tmp
+> ProtectSystem=strict :: 整個檔案系統唯讀（除了 ReadWritePaths）
+> ProtectHome=yes :: 看不到使用者家目錄
+> AmbientCapabilities=CAP_NET_BIND_SERVICE :: 非 root 也能綁定 1024 以下的 port
+E> 這些選項由 systemd 透過 namespace、mount 與 capability 實作，不需要改程式碼。
+?mc 服務設定了 PrivateTmp=yes。另一個程式在 /tmp/foo 放了檔案，服務讀得到嗎？
++ 讀不到，服務看到的是自己專屬的 /tmp
+- 讀得到，PrivateTmp 只影響寫入
+- 只有 root 讀得到
+- 要看檔案權限
+E> 這也是「服務寫到 /tmp 的檔案，自己在 shell 找不到」的常見原因。
+?tf ProtectSystem=strict 時，服務若要寫入 /var/lib/app，必須用 ReadWritePaths= 或 StateDirectory= 開放。
+=T
+E> StateDirectory=app 會自動建立並開放 /var/lib/app。
+
+@CARD systemd.p_journal2 | 實作：journal 的空間、格式與欄位過濾
+A> journal 會越長越大，要會「量體重、減肥」：--disk-usage 看用量、--vacuum 刪舊的。它是結構化的，每筆都有欄位（_PID、_SYSTEMD_UNIT、SYSLOG_IDENTIFIER），可以用欄位精準過濾，輸出也能變成 JSON。
+B> 用量：**journalctl --disk-usage**；清理：**--vacuum-size=200M**、**--vacuum-time=2weeks**；上限設定：journald.conf 的 **SystemMaxUse=**
+B> 持久化：**Storage=persistent**（或建立 /var/log/journal）後 **systemctl restart systemd-journald**
+B> 欄位過濾：**journalctl _PID=1234**、**_SYSTEMD_UNIT=ssh.service**、**SYSLOG_IDENTIFIER=internal-sftp**（= **-t internal-sftp**）、**_UID=1000**
+B> 時間：**--since "2026-11-16 10:00" --until "1 hour ago"**；看上次開機：**-b -1**；列出開機紀錄：**--list-boots**
+B> 輸出格式：**-o json-pretty**、**-o cat**（只印訊息）、**-o verbose**（看全部欄位）；**-n 50**、**--no-pager**
+B> journald 也可轉給 rsyslog（**ForwardToSyslog=** 或 rsyslog 的 imjournal）
+X> journalctl --disk-usage
+X> sudo journalctl --vacuum-time=7d
+X> journalctl -t internal-sftp -o verbose -n 1
+X> journalctl -b -1 -p warning
+?cmd 把 journal 刪到只剩最近兩週的紀錄：
+= journalctl --vacuum-time=2weeks
+= sudo journalctl --vacuum-time=2weeks
+= journalctl --vacuum-time=14d
+= sudo journalctl --vacuum-time=14d
+= journalctl --vacuum-time=2w
+E> 也可以用 --vacuum-size= 依大小清理。
+?mc journalctl -t internal-sftp 是依哪個欄位過濾？
++ SYSLOG_IDENTIFIER（程式送 syslog 時的識別字）
+- _SYSTEMD_UNIT
+- _PID
+- PRIORITY
+E> HW2 的 sftp log 就是靠這個欄位分出 internal-sftp 與 sftp-server。
+?cmd 查看「上一次」開機的 journal 紀錄：
+= journalctl -b -1
+= journalctl --boot=-1
+= journalctl --boot -1
+E> 先用 --list-boots 看有幾次開機紀錄（需持久化才會跨開機保存）。
+?cmd 查看目前 journal 佔用的磁碟空間：
+= journalctl --disk-usage
+= sudo journalctl --disk-usage
+E> --vacuum-* 只會刪已封存的 journal 檔，正在寫入的不會被刪。
+
+@CARD systemd.p_cgdebug | 實作：用 cgroup 檔案查資源問題
+A> 服務被殺了卻不知道為什麼？去 cgroup 的「事件簿」翻：memory.events 記錄撞到上限幾次、被 OOM kill 幾次。cgroup.controllers 告訴你這層有哪些控制器可用，subtree_control 決定子層能不能用。
+B> **cgroup.controllers**：這個 cgroup **可用**的 controller（cpu io memory pids…）
+B> **cgroup.subtree_control**：開放給**子 cgroup**的 controller（寫 +memory 啟用）
+B> **memory.current**：目前用量；**memory.events**：**high**（超過 MemoryHigh 次數）、**max**、**oom**、**oom_kill** 計數
+B> **memory.stat**、**cpu.stat**（usage_usec、**nr_throttled**、throttled_usec → CPUQuota 造成的節流）、**pids.current / pids.max**
+B> 被 OOM kill 的證據也會出現在 **journalctl -k**（kernel log：Out of memory: Killed process …）與 systemctl status（Result: oom-kill）
+X> cat /sys/fs/cgroup/system.slice/myapp.service/memory.events
+X> cat /sys/fs/cgroup/system.slice/myapp.service/cpu.stat
+X> journalctl -k | grep -i 'out of memory'
+?mc 懷疑 myapp.service 被 MemoryMax 限制而遭 OOM kill，該看 cgroup 的哪個檔案？
++ memory.events 的 oom_kill 計數
+- cgroup.procs
+- cpu.max
+- cgroup.subtree_control
+E> oom_kill 大於 0 表示該 cgroup 內有 process 被 OOM killer 殺過。
+?mc 服務設定 CPUQuota=20% 後變很慢，想確認是不是被節流，可以看？
++ cpu.stat 中的 nr_throttled 與 throttled_usec
+- memory.current
+- cgroup.events 的 populated
+- pids.max
+E> 次數持續增加就代表一直撞到 CPU 配額。
+?mt 配對 cgroup 檔案：
+> cgroup.controllers :: 這層可用的 controller
+> cgroup.subtree_control :: 開放給子 cgroup 的 controller
+> memory.events :: 撞上限與 OOM kill 的次數
+> pids.current :: 目前的 process 數
+E> 投影片 cgroups v2 interface 的延伸。
+
+@CARD systemd.p_timer2 | 實作：timer 的各種時間與測試方法
+A> 除了「日曆鬧鐘」（OnCalendar），timer 還有「計時器」：開機後幾分鐘（OnBootSec）、上次跑完後隔多久（OnUnitActiveSec）。測試時別傻等，直接 systemctl start 對應的 service 看會不會成功，再看 list-timers 確認下次時間。
+B> 單調時間（相對）：**OnBootSec=5min**、**OnStartupSec=**、**OnActiveSec=**、**OnUnitActiveSec=1h**（上次啟動後隔多久）、**OnUnitInactiveSec=**
+B> **AccuracySec=**：觸發時間的誤差容許（預設 1 分鐘，為了合併喚醒省電）；需要精準時設 1s
+B> 測試：**systemctl start x.service** 先確認工作本身正確 → **systemctl list-timers x.timer** 看 NEXT
+B> timer 觸發的 service 一般**沒有 [Install]**，不需要 enable service
+B> 與 cron 對照：cron 的 log 在 syslog；timer 的 log 在 **journalctl -u x.service**
+X> [Timer]
+X> OnBootSec=5min
+X> OnUnitActiveSec=1h
+X> AccuracySec=1s
+?mt 配對 timer 設定：
+> OnCalendar= :: 依日曆時間觸發
+> OnBootSec= :: 開機後經過多久觸發
+> OnUnitActiveSec= :: 該 service 上次啟動後經過多久再觸發
+> AccuracySec= :: 觸發時間允許的誤差
+E> OnCalendar 是「牆上的時鐘」，On*Sec 是「碼錶」，兩者可以同時寫在一個 timer 裡。
+?mc 每小時要執行一次清理，但不在乎是整點，只要「開機 5 分鐘後開始、之後每隔一小時」。最適合的設定是？
++ OnBootSec=5min 搭配 OnUnitActiveSec=1h
+- OnCalendar=hourly 搭配 Persistent=true
+- OnCalendar=*-*-* 05:00
+- RandomizedDelaySec=1h
+E> 單調時間計時器不受時鐘調整影響。
+?mc timer 設定 OnCalendar=*-*-* 10:00:00，log 卻顯示 10:00:42 才執行。原因？
++ AccuracySec 預設 1 分鐘，systemd 會在容許範圍內合併喚醒
+- 系統時間錯誤
+- service 啟動很慢
+- RandomizedDelaySec 預設 42 秒
+E> 需要精準到秒就設 AccuracySec=1s。
 </script>
 <script type="text/plain" class="sa-src" data-ch="fs">
 @CH fs | 檔案系統與權限 | 📁 | 10_FileSystem.pdf
@@ -7493,6 +7830,346 @@ E> YAML 寫錯、變數沒替換、縮排問題都能從這裡看出來。
 = docker compose up -d --build
 = docker compose up --build -d
 E> 只有 up -d 不會重新 build 已存在的 image。
+
+@CARD docker2.p_pid1 | 實作：exec form、PID 1 與 docker stop
+A> 容器裡的第一個 process 是 PID 1，它要負責「接電話」（收 SIGTERM）和「收屍」（回收 zombie）。用 shell form 寫 CMD 時，PID 1 是 /bin/sh，它不會把 SIGTERM 轉給你的程式，於是 docker stop 只好等 10 秒後硬拔插頭（SIGKILL）。
+B> **exec form**：CMD ["python","main.py"] → 程式本身是 **PID 1**，直接收到訊號
+B> **shell form**：CMD python main.py → 實際是 **/bin/sh -c "python main.py"**，PID 1 是 sh，**SIGTERM 不一定傳給程式**
+B> **docker stop**：送 **SIGTERM**（或 STOPSIGNAL 指定的訊號），等 **10 秒**（-t / stop_grace_period）後送 **SIGKILL**
+B> entrypoint.sh 最後用 **exec "$@"**：讓 CMD 取代 shell 成為 PID 1
+B> PID 1 預設不會處理沒寫 handler 的 SIGTERM，也要負責回收 zombie → 用 **docker run --init**（tini）或 compose 的 **init: true**
+X> #!/bin/sh
+X> # entrypoint.sh
+X> set -e
+X> mkdir -p /data/cache
+X> exec "$@"
+?mc 容器用 CMD python app.py（shell form），docker stop 總要等 10 秒才結束。原因？
++ PID 1 是 /bin/sh，SIGTERM 沒有傳給 python，10 秒後被 SIGKILL
+- python 不支援 SIGTERM
+- docker stop 本來就固定等 10 秒
+- 容器沒有設定 healthcheck
+E> 改成 exec form：CMD ["python", "app.py"]，或加 --init。
+?fill entrypoint.sh 的最後一行，讓 CMD 取代 shell 成為 PID 1：＿＿ "$@"
+= exec
+E> exec 會把目前的 shell process 換成指定的程式，所以程式繼承 PID 1，可以直接收到 docker stop 的訊號。
+?cmd 執行 myimg 容器時加上一個小型 init process 負責轉送訊號與回收 zombie：
+= docker run --init myimg
+= docker run --rm --init myimg
+= docker run -d --init myimg
+E> Compose 中寫 init: true。
+?tf docker stop 會先送 SIGTERM，逾時後才送 SIGKILL。
+=T
+E> 逾時預設 10 秒，可用 docker stop -t 30 或 stop_grace_period 調整。
+
+@CARD docker2.p_more | 實作：其他 Dockerfile 指令
+A> 除了常用的幾個，Dockerfile 還有幾個「說明書欄位」與「安全開關」：EXPOSE 只是在說明書寫「我會用這個 port」（不會真的開）；USER 讓程式不要用 root 跑；VOLUME 標示「這裡放資料」；ADD 是會自動解壓縮、能抓網址的 COPY，但通常用 COPY 比較可預期。
+B> **EXPOSE 8000**：**只是文件說明**，不會發布 port；要 -p 或 compose ports 才會對外
+B> **USER app**：之後的 RUN / CMD 以非 root 執行（降低被攻破時的權限）；搭配 RUN useradd
+B> **COPY --chown=app:app src/ /app/**：複製時設定擁有者
+B> **ADD**：類似 COPY，但會**自動解壓本地 tar**、可下載 URL → 一般用 **COPY**
+B> **VOLUME /data**：宣告資料目錄（沒指定時會自動建立匿名 volume）；**LABEL**：metadata；**STOPSIGNAL**；**SHELL**；**HEALTHCHECK**
+B> Debian 新版的 pip 預設禁止裝進系統 Python（PEP 668），投影片用 **pip install --break-system-packages**；更好的作法是 venv 或用 python 官方 image
+?mc Dockerfile 寫了 EXPOSE 8080，docker run 時沒有加 -p，從 host 能用 localhost:8080 連到嗎？
++ 不能，EXPOSE 只是說明，要用 -p 8080:8080 才會發布
+- 能，EXPOSE 會自動發布 port
+- 只有 root 可以
+- 只能從另一台機器連
+E> EXPOSE 的用途是文件，以及 docker run -P 時決定要發布哪些 port。
+?mt 配對 Dockerfile 指令：
+> EXPOSE :: 說明容器會使用的 port（不會真的發布）
+> USER :: 之後的指令以指定使用者執行
+> VOLUME :: 宣告資料存放位置
+> ADD :: 類似 COPY，還會自動解壓 tar、可下載 URL
+> LABEL :: 加上 metadata
+E> EXPOSE、LABEL 屬於 metadata；USER、VOLUME 會影響執行時的行為。
+?mc 為什麼建議在 Dockerfile 用 USER 切換成非 root？
++ 容器被攻破時，攻擊者拿到的不是 root，能做的事更少（尤其容器逃逸時）
+- 非 root 執行比較快
+- Docker 不允許 root 執行 CMD
+- 為了讓 COPY 可以運作
+E> 容器內的 root 與 host 的 root 預設是同一個 UID 0。
+
+@CARD docker2.p_registry | 實作：image 命名、registry 與私有 CA
+A> image 的全名像「國家/城市/街道/門牌」：registry 主機/命名空間/repo:tag。沒寫主機就是 Docker Hub。推到自己的 registry 前要先 docker tag 成那個全名、docker login，而且 Docker 要信任該 registry 的憑證。
+B> 完整名稱：**[registry/][namespace/]repo[:tag][@sha256:digest]**；沒寫 registry → docker.io；沒寫 tag → **latest**
+B> 推送流程：**docker tag 本地名 registry/ns/repo:tag** → **docker login registry** → **docker push**
+B> **tag 可以被覆蓋**，**digest（@sha256:…）固定不變** → 要可重現就用 digest 或明確版本，不要依賴 latest
+B> 私有 CA 簽的 registry：把 CA 放到 **/etc/docker/certs.d/<registry 主機>/ca.crt**（或加入系統信任後重啟 docker），否則出現 **x509: certificate signed by unknown authority**
+B> 帳密存在 **~/.docker/config.json**（可用 credential helper）
+X> docker tag lmsp:dev git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+X> docker login git.19.cs.nycu
+X> docker push git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+X> sudo mkdir -p /etc/docker/certs.d/git.19.cs.nycu && sudo cp root.crt /etc/docker/certs.d/git.19.cs.nycu/ca.crt
+?mc docker pull nginx 實際上拉的是哪個 image？
++ docker.io/library/nginx:latest
+- 本機 /var/lib/docker 中的 nginx
+- nginx 官網提供的 tar 檔
+- registry.ta.cs.nycu/nginx
+E> 省略 registry 是 Docker Hub、官方 image 在 library 命名空間、省略 tag 是 latest。
+?mc 為什麼在正式環境不建議用 :latest？
++ latest 只是一個可以被覆蓋的 tag，不同時間拉到的可能是不同 image，無法重現也難以回滾
+- latest 一定是測試版
+- latest 不能 push
+- latest 會停用 layer cache
+E> HW3 的 CI/CD 用版本 tag（v1.2.3）部署正是這個道理。
+?fill 讓 Docker 信任 registry git.19.cs.nycu 的私有 CA：把 CA 放到 /etc/docker/certs.d/git.19.cs.nycu/＿＿
+= ca.crt
+E> 目錄名稱要和 registry 主機名稱（含 port）完全一致。
+?mc docker push 出現 x509: certificate signed by unknown authority，最可能的原因？
++ Docker daemon 不信任簽發 registry 憑證的 CA
+- 帳號密碼錯誤
+- image 太大
+- tag 名稱有大寫字母
+E> 帳密錯誤會是 unauthorized；x509 錯誤一定跟憑證信任有關。
+
+@CARD docker2.p_inspect | 實作：inspect、history、stats 等觀察工具
+A> 容器是黑盒子時，這些指令是「透視鏡」：inspect 看全部設定與狀態（IP、掛載、重啟次數、是不是被 OOM 殺掉）；history 看 image 每一層多大；stats 看即時資源；system df 看 Docker 吃掉多少硬碟。
+B> **docker inspect 容器**：JSON 格式的完整資訊；**-f '{{.State.Status}}'**、**'{{.NetworkSettings.Networks}}'**、**'{{.State.OOMKilled}}'**、**'{{.RestartCount}}'**、**'{{json .Mounts}}'**
+B> **docker image history image**：每一層由哪個指令產生、多大 → 找出肥大的層
+B> **docker stats**：即時 CPU / 記憶體 / 網路 / I/O；**docker top 容器**：容器內的 process
+B> **docker system df**：image、容器、volume、build cache 佔用空間
+B> **docker cp 容器:路徑 本機路徑**：複製檔案進出；**docker diff 容器**：看容器可寫層改了哪些檔案
+X> docker inspect -f '{{.State.OOMKilled}} {{.RestartCount}}' web
+X> docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' web
+X> docker image history myapp:1.0
+X> docker system df
+?cmd 查看 myapp:1.0 這個 image 每一層的大小與產生它的指令：
+= docker image history myapp:1.0
+= docker history myapp:1.0
+E> 常用來找出哪個 RUN 讓 image 變肥。
+?mc 容器一直重啟，想確認是不是因為超過記憶體限制被殺，最直接的是？
++ docker inspect -f '{{.State.OOMKilled}}' 容器
+- docker image history
+- docker network ls
+- docker system df
+E> 也可看 dmesg / journalctl -k 的 OOM 訊息。
+?cmd 從容器 web 把 /etc/nginx/nginx.conf 複製到目前目錄：
+= docker cp web:/etc/nginx/nginx.conf .
+= docker cp web:/etc/nginx/nginx.conf ./
+= docker container cp web:/etc/nginx/nginx.conf .
+E> 反方向是 docker cp ./file web:/path。
+?cmd 查看 Docker 的 image、容器、volume、build cache 各佔用多少空間：
+= docker system df
+= docker system df -v
+E> -v 會列出每個 image、容器、volume 的明細。
+
+@CARD docker2.p_limits | 實作：容器的資源限制（就是 cgroups）
+A> Docker 的資源限制和 systemd 的 MemoryMax 是同一套東西：都是寫 cgroup 檔案。--memory 就是 memory.max，--cpus 就是 cpu.max，--pids-limit 就是 pids.max。超過記憶體上限一樣會被 OOM kill。
+B> **--memory 512m**（memory.max）、**--memory-reservation**、**--cpus 1.5**（cpu.max）、**--cpu-shares**（相對權重）、**--pids-limit 100**（pids.max，防 fork bomb）
+B> Compose：**mem_limit / cpus / pids_limit**，或 **deploy.resources.limits**
+B> 超過記憶體上限 → **OOM kill**，inspect 中 **OOMKilled: true**，exit code **137**（128+9）
+B> 查看：**docker stats**；容器的 cgroup 也在 /sys/fs/cgroup/system.slice/docker-<id>.scope/
+X> docker run -d --memory 256m --cpus 0.5 --pids-limit 200 nginx
+X> # compose
+X>   sandbox:
+X>     mem_limit: 512m
+X>     cpus: 1.0
+X>     pids_limit: 256
+?mt 配對 docker run 選項與 cgroup 檔案：
+> --memory :: memory.max
+> --cpus :: cpu.max
+> --pids-limit :: pids.max
+> --cpu-shares :: cpu.weight（相對權重）
+E> 跟 systemd 章節的 MemoryMax=、CPUQuota=、TasksMax= 是同一組機制。
+?fill 容器因為記憶體超過上限被 OOM kill（SIGKILL），exit code 通常是＿＿
+= 137
+E> 128 + 9（SIGKILL）。
+?mc HW3 的 sandbox 讓 AI agent 以 root 執行任意指令。為什麼建立容器時應該加 --pids-limit？
++ 防止 fork bomb 耗盡整台主機的 process 數
+- 讓 agent 跑得更快
+- 為了讓 docker exec 可以運作
+- Docker 規定一定要設
+E> 搭配 --memory、--cpus，避免單一 sandbox 拖垮 VM。
+
+@CARD docker2.p_sock | 實作：docker.sock 等於 root
+A> /var/run/docker.sock 是 Docker 的「萬能遙控器」：能控制 daemon，就能開一個把 host 根目錄掛進來的特權容器，等於拿到 host 的 root。所以把它掛進容器、或把人加進 docker 群組，都要當成「給 root」來看待。
+B> 能存取 **/var/run/docker.sock** = 能叫 dockerd（以 root 執行）做任何事 → **等同 host root**
+B> 例：docker run -v /:/host --privileged … → 直接改 host 檔案
+B> **docker 群組**的成員一樣等同 root
+B> HW3 的平台要掛 docker.sock 來管理 sandbox → 平台本身必須可信，**sandbox 絕對不能**拿到 docker.sock
+B> **DinD**（Docker-in-Docker）：容器裡跑一個獨立的 dockerd（需要 --privileged）；**DooD**：掛 host 的 docker.sock（共用 host daemon）
+B> 降低風險：rootless Docker、socket proxy（只開放需要的 API）、user namespace remap
+?mc 為什麼把 /var/run/docker.sock 掛進容器，等於給這個容器 host 的 root 權限？
++ 容器可以透過它叫 Docker daemon 建立掛載 host 根目錄的特權容器
+- docker.sock 裡面存著 root 密碼
+- 因為 docker.sock 是 setuid 檔案
+- 只會讓容器看到其他容器的 log
+E> 所以 HW3 平台可以掛（它是你寫的管理程式），sandbox 絕對不行。
+?mt 配對：
+> DinD :: 容器內執行獨立的 dockerd，通常需要 --privileged
+> DooD :: 掛載 host 的 docker.sock，共用 host 的 daemon
+> rootless Docker :: dockerd 以一般使用者執行，降低被濫用的影響
+E> HW3 的 Forgejo runner 要求用 Docker-in-Docker 執行 job。
+?tf 把使用者加進 docker 群組，安全性上大約等同給他 sudo 權限。
+=T
+E> docker 群組的成員可以直接操作 docker.sock。
+
+@CARD docker2.p_caps | 實作：Capabilities 與容器權限
+A> Linux 把 root 的超能力拆成很多張「執照」（capabilities）：NET_ADMIN 能改網路、SYS_ADMIN 幾乎什麼都能做。Docker 預設只發給容器少數幾張，所以容器裡的 root 改不了路由；--privileged 則是把所有執照都發下去，非常危險。
+B> 容器預設**只有部分 capabilities**；沒有 **CAP_NET_ADMIN** → 不能改路由、iptables
+B> **--cap-add NET_ADMIN** / **--cap-drop ALL**：增減 capability（只給需要的）
+B> **--privileged**：給全部 capability 並存取所有裝置 → **幾乎等於 host root**，只有 DinD 這類情況才用
+B> **--read-only**：容器根檔案系統唯讀（搭配 tmpfs 給需要寫的地方）
+B> **--security-opt no-new-privileges**：禁止 setuid 提權；**--user 1000:1000**：以非 root 執行
+B> HW3：sandbox 內的程式**不能改路由或防火牆** → 不給 NET_ADMIN；平台容器做透明 proxy 則需要 NET_ADMIN
+X> docker run --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp myimg
+X> docker run --network container:sbx1 --cap-add NET_ADMIN nicolaka/netshoot ip route
+?mc 容器內以 root 執行 ip route add default via 10.0.0.1 卻出現 Operation not permitted。原因？
++ 容器預設沒有 CAP_NET_ADMIN
+- 容器內的 root 不是 UID 0
+- ip 指令在容器裡無法使用
+- 需要先 docker restart
+E> HW3 正是利用這點：sandbox 不給 NET_ADMIN，agent 就改不了路由。
+?mt 配對選項：
+> --cap-add NET_ADMIN :: 允許修改網路設定與防火牆
+> --cap-drop ALL :: 移除所有 capability
+> --privileged :: 給予全部 capability 與裝置存取
+> --read-only :: 根檔案系統唯讀
+E> 最小權限原則：先 --cap-drop ALL，再只加回需要的。
+?mc docker run --network container:sbx1 的效果是？
++ 新容器與 sbx1 共用同一個 network namespace（同樣的介面、IP、路由）
+- 新容器連到名為 container 的網路
+- 兩個容器共用檔案系統
+- 新容器會取代 sbx1
+E> 常用來對另一個容器的網路除錯，或由有權限的輔助容器替它設定路由。
+
+@CARD docker2.p_firewall | 實作：Docker 發布的 port 會繞過防火牆
+A> Docker 為了讓 -p 生效，會自己在 iptables 加規則，而且排在 ufw 這類工具的規則「前面」。所以你以為 ufw 擋了 5432，外面其實照樣連得到。真正關門的方法是一開始就只綁 127.0.0.1，或在 DOCKER-USER chain 加規則。
+B> -p 8000:8000 → Docker 在 nat 表加 **DNAT**，在 filter 表的 **DOCKER** chain 放行 → **ufw / 自己寫在 INPUT 的規則擋不住**（封包走的是 FORWARD）
+B> 自訂限制要寫在 **DOCKER-USER** chain（Docker 不會覆蓋它）
+B> 最簡單：**-p 127.0.0.1:8000:8000** 只在本機開
+B> **internal: true** 的網路（docker network create --internal）：**沒有對外路由**，容器只能跟同網路的容器通訊（HW3 sandbox 網路的好起點）
+B> 驗證：在**另一台機器**用 nc -vz VM 8000 或 nmap 測，不要只在本機測
+X> # compose
+X> networks:
+X>   sandbox_net:
+X>     internal: true
+X> $ sudo iptables -L DOCKER-USER -n
+?mc 用 ufw deny 8101 後，外部仍能連到用 -p 8101:3000 發布的 Forgejo 容器。原因？
++ Docker 自己的 iptables 規則（DNAT + FORWARD 鏈）比 ufw 的 INPUT 規則先生效，流量不經過 INPUT
+- ufw 沒有啟用
+- 8101 是保留 port
+- Forgejo 自己有防火牆
+E> 正確做法：只綁 127.0.0.1，或把規則寫在 DOCKER-USER。
+?mc docker network create --internal sbxnet 建立的網路有什麼特性？
++ 接在上面的容器沒有對外的路由，只能跟同網路的容器互相連線
+- 只能從 host 連進去
+- 會自動加密流量
+- 只允許 TCP
+E> HW3 可以讓 sandbox 只接 internal 網路，平台同時接 internal 與一般網路，成為唯一出口。
+?fill Docker 保留給使用者自訂過濾規則、不會被它覆蓋的 iptables chain 是＿＿
+= DOCKER-USER
+E> 例：iptables -I DOCKER-USER -i eth0 ! -s 192.168.0.0/16 -j DROP。
+
+@CARD docker2.p_composeenv | 實作：.env、變數替換與 override
+A> compose.yml 可以留「空格」（${VAR}），由同目錄的 .env 填入，同一份設定換個 .env 就能用在不同環境。注意兩種 env 不一樣：.env 是給「compose 檔本身」填空用的；environment / env_file 才是傳進「容器」的環境變數。
+B> **.env**（與 compose.yml 同目錄）：提供 compose 檔中 **${VAR}** 的值；**${VAR:-預設值}**、**${VAR:?錯誤訊息}**（沒設就報錯）
+B> **environment:**、**env_file: app.env**：傳進**容器**的環境變數
+B> **docker compose config**：看替換後的結果
+B> **compose.override.yml** 會自動疊加；**-f a.yml -f b.yml** 依序合併；**-p 名稱** 指定專案名稱（影響容器、網路、volume 的前綴）
+B> **profiles:** 讓某些服務只在 --profile 指定時啟動；**secrets:** 以檔案掛到 /run/secrets/<name>
+X> # .env
+X> LMSP_TAG=v1.2.3
+X> # compose.yml
+X>   platform:
+X>     image: git.19.cs.nycu/hw3/llm-sandbox-platform:${LMSP_TAG:?LMSP_TAG not set}
+X>     env_file: platform.env
+X>     secrets: [llm_api_key]
+X> secrets:
+X>   llm_api_key:
+X>     file: ./secrets/llm_api_key
+?mc .env 與 env_file 的差別？
++ .env 用來替換 compose 檔中的 ${VAR}；env_file 是把變數傳進容器的環境
+- 兩者完全相同
+- .env 只在 build 時使用
+- env_file 只能有一個
+E> 很多人以為寫在 .env 的變數容器裡就看得到，其實要另外用 environment 或 env_file 傳入。
+?fill compose 中 ${TAG:＿＿請設定 TAG} 表示 TAG 沒設定時直接報錯停止
+= ?
+E> 語法和 shell 的 ${var:?message} 一樣，訊息會顯示在錯誤中。
+?mc 以 secrets 傳入的 llm_api_key，容器內預設在哪個路徑讀取？
++ /run/secrets/llm_api_key
+- 環境變數 LLM_API_KEY
+- /etc/secrets/llm_api_key
+- /var/lib/docker/secrets
+E> 比起環境變數，檔案形式的 secret 不會出現在 docker inspect 的 Env 中。
+
+@CARD docker2.p_volume2 | 實作：volume 權限、備份與資料庫
+A> 資料庫容器的資料一定要放在 volume，否則容器一刪資料就沒了。bind mount 最常見的坑是「UID 對不上」：容器裡的 postgres 使用者 UID 999，host 的目錄卻屬於 1000，於是啟動失敗。
+B> **named volume**：由 Docker 管理（/var/lib/docker/volumes/），權限自動處理，適合資料庫
+B> **bind mount**：直接看得到 host 檔案，但要注意**容器內 process 的 UID** 要有權限（例：postgres 是 999）
+B> 容器內外 UID 是同一套數字（沒有 user namespace 時）→ chown 999:999 ./pgdata
+B> 備份 named volume：**docker run --rm -v pgdata:/data -v "$PWD":/backup debian tar czf /backup/pgdata.tgz -C /data .**；資料庫最好用 pg_dump
+B> **docker compose down -v** 會刪掉 named volume → 資料庫資料消失；不要隨手加 -v
+B> 官方 postgres image：**POSTGRES_USER、POSTGRES_PASSWORD、POSTGRES_DB** 只在**資料目錄是空的第一次初始化**時生效；/docker-entrypoint-initdb.d/ 的腳本也只跑那一次
+X> docker run --rm -v pgdata:/data -v "$PWD":/backup debian tar czf /backup/pgdata.tgz -C /data .
+X> docker compose exec db pg_dump -U postgres forgejo > forgejo.sql
+?mc 已經跑過一次的 postgres 容器，修改 compose 的 POSTGRES_PASSWORD 後 down 再 up，密碼會變嗎？
++ 不會，這些變數只在資料目錄為空、第一次初始化時使用
+- 會，每次啟動都會套用
+- 會，但要重新 build
+- 只有 superuser 的密碼會變
+E> 要改密碼請連進資料庫用 ALTER USER；或清空 volume 重新初始化（資料會消失）。
+?mc bind mount ./pgdata 給 postgres 容器，啟動時出現 permission denied。最可能的原因？
++ host 上 ./pgdata 的擁有者 UID 與容器內 postgres 使用者（999）不同
+- 需要 --privileged
+- bind mount 不能用在資料庫
+- 需要先 docker volume create
+E> 改用 named volume，或 chown 成容器內使用者的 UID。
+?tf docker compose down -v 會刪除 compose 檔中宣告的 named volume。
+=T
+E> bind mount 的 host 目錄不會被刪。
+
+@CARD docker2.p_buildkit | 實作：build 的進階技巧
+A> 進階 build 技巧：--no-cache 是「全部重煮」；--target 是「只煮到某個 stage 就停」（拿 builder 來測試）；BuildKit 的 cache mount 是「共用的食材冰箱」，pip、apt 的下載快取放裡面，不會進 image，下次又能重用。
+B> **docker build --no-cache**：忽略所有快取；**--pull**：重新拉最新的基底 image
+B> **--target builder**：只 build 到指定 stage（除錯或做測試 image）
+B> **--progress=plain**：顯示每個步驟完整輸出（BuildKit 預設會摺疊）
+B> BuildKit cache mount：**RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt**（快取不進 image）
+B> secret mount：**RUN --mount=type=secret,id=token …**，build 時用 --secret 傳入，不會留在 layer
+X> docker build --target builder -t myapp:builder .
+X> docker build --progress=plain --no-cache -t myapp .
+X> RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+?mc build 時要用到私有 repo 的 token，最安全的傳入方式是？
++ BuildKit 的 --secret 搭配 RUN --mount=type=secret，token 不會留在任何 layer
+- ARG TOKEN 再 --build-arg
+- ENV TOKEN=...
+- COPY token.txt . 用完再 RUN rm
+E> ARG、ENV 與 COPY 都會留在 image 歷史或 layer 中。
+?cmd 只 build Dockerfile 中名為 builder 的 stage，並標記為 myapp:builder：
+= docker build --target builder -t myapp:builder .
+= docker build -t myapp:builder --target builder .
+= docker build . --target builder -t myapp:builder
+E> --target 也常用來只 build 測試用的 stage。
+
+@CARD docker2.p_logs | 實作：容器 log 與 log rotation
+A> 容器印到 stdout/stderr 的東西，Docker 預設寫成 JSON 檔存在硬碟，而且預設不會輪替，跑久了會把磁碟塞爆。要在 daemon.json 或每個服務設定上限。
+B> 預設 logging driver：**json-file**，檔案在 /var/lib/docker/containers/<id>/<id>-json.log
+B> 預設**不輪替** → 設 **max-size**、**max-file**（daemon.json 全域，或 compose 的 logging:）
+B> 也可用 **journald** driver：log 進 journal，用 journalctl CONTAINER_NAME=web 查
+B> **docker logs --since 10m --tail 100 -f 容器**；程式要寫到 **stdout/stderr**，不要只寫容器內的檔案
+B> 改 /etc/docker/daemon.json 後要 **systemctl restart docker**（只影響之後建立的容器）
+X> # /etc/docker/daemon.json
+X> { "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "3" } }
+X> # compose
+X>     logging:
+X>       driver: json-file
+X>       options: { max-size: "10m", max-file: "3" }
+?mc 一台跑了好幾個月的 Docker 主機磁碟爆滿，/var/lib/docker/containers 底下有超大的 *-json.log。根本原因？
++ json-file logging driver 預設不輪替，log 無限增長
+- image layer 沒有清理
+- volume 沒有備份
+- journald 壞掉了
+E> 設定 max-size / max-file，或定期 prune。
+?cmd 查看容器 web 最近 10 分鐘的 log 並持續追蹤：
+= docker logs --since 10m -f web
+= docker logs -f --since 10m web
+= docker logs --since=10m -f web
+= docker logs --since 10m --follow web
+E> --since 可以用 10m、1h 這類相對時間，也可以用絕對時間。
+?tf 修改 /etc/docker/daemon.json 的 log 設定後，已存在的容器會立刻套用新的設定。
+=F
+E> 只影響之後建立的容器；既有容器要重建（compose up -d --force-recreate）。
 </script>
 <script type="text/plain" class="sa-src" data-ch="hw2">
 @CH hw2 | HW2 實戰觀念：救援、SFTP、log、daemon | 🛠️ | hw2.pdf
@@ -7589,7 +8266,7 @@ B> public/：registered user 可 get/put/mkdir，只能刪除**自己的**檔案
 B> 管理員 sysadm 可刪除全部：讓 sysadm 成為目錄**擁有者**（sticky 允許目錄擁有者刪除）
 B> private/：使用者**不能 ls**、**不能寫**、**能 cd**、能 get hidden/treasure → 目錄只給 **x**（--x）、treasure 給 r
 B> 新目錄自動屬於共同群組 → **setgid** 目錄
-B> 上傳檔移除 other 的 rwx → umask 007
+B> 上傳檔移除 other 的 rwx → umask 007 或預設 ACL 的 o::---；但 anonymous 對檔案而言就是 other，所以要另外用 **ACL（u:anonymous:r）** 給它讀取權（見「umask 007 與 anonymous 唯讀的衝突」）
 ?mc 要讓使用者「可以 cd 進 private/、可以下載已知名稱的檔案，但不能 ls 列出內容」，private/ 對他們應給什麼權限？
 + 只給 x（執行/通過），不給 r
 - 只給 r，不給 x
@@ -7609,7 +8286,8 @@ B> internal-sftp / sftp-server 開 log：**-l INFO**（log level）、**-f AUTH 
 B> 查 log：**journalctl -t internal-sftp -t sftp-server**（-t 依 syslog identifier 過濾）
 B> rsyslog 依 **programname** 過濾寫到 /var/log/sftp.log，再 **stop** 避免寫進其他檔
 B> chroot 使用者：需在 chroot 內提供 /dev/log（例如 rsyslog 增加 socket、或 bind mount）
-X> # /etc/rsyslog.d/sftp.conf
+B> 檔名要排在 50-default.conf 之前（例如 10-sftp.conf），stop 才能避免訊息又寫進 auth.log
+X> # /etc/rsyslog.d/10-sftp.conf
 X> if $programname == 'internal-sftp' or $programname == 'sftp-server' then {
 X>     action(type="omfile" file="/var/log/sftp.log")
 X>     stop
@@ -7861,6 +8539,510 @@ E> is-active 則是查現在有沒有在跑。
 - systemd 啟動了兩個實例
 - journald 重複記錄
 E> 監看時排除 .violated（例如 inotifywait 的 --exclude），或處理時略過這個路徑。
+
+@CARD hw2.p_vmimport | Preflight：匯入 vmdk 與 UEFI 開機
+A> 助教給的是一顆「已經裝好但故意弄壞的硬碟」（vmdk）。先把它接到一台新 VM 上當第一顆硬碟（/dev/sda），韌體要選 UEFI，不然連 GRUB 的 EFI 版本都找不到。
+B> 依 CPU 選 **amd64 或 aarch64** 的 vmdk；VM 類型選 **Debian**
+B> 有些虛擬化軟體要先轉檔：**qemu-img convert -f vmdk -O qcow2 hw2.vmdk hw2.qcow2**
+B> 把 vmdk 接成 **/dev/sda**（第一顆 SATA/SCSI 碟）；韌體設定 **UEFI**（VirtualBox 勾 Enable EFI、QEMU 用 OVMF）
+B> 確認 UEFI：**/sys/firmware/efi** 存在、**efibootmgr -v** 看得到開機項目
+B> 預設帳密：judge/judge；root 密碼 judge；**不能重灌、不能對任何分割區 mkfs**
+?cmd 把 hw2.vmdk 轉成 qcow2 格式的 hw2.qcow2：
+= qemu-img convert -f vmdk -O qcow2 hw2.vmdk hw2.qcow2
+= qemu-img convert -O qcow2 hw2.vmdk hw2.qcow2
+= qemu-img convert -O qcow2 -f vmdk hw2.vmdk hw2.qcow2
+E> -f 來源格式、-O 輸出格式。
+?mc 開機後如何確認目前是以 UEFI 模式啟動？
++ /sys/firmware/efi 目錄存在
+- /boot/grub 目錄存在
+- lsblk 看得到 /dev/sda
+- uname -m 顯示 x86_64
+E> 以 BIOS（legacy）開機時沒有這個目錄。
+?tf HW2 允許在無法開機時重新安裝 Debian，只要最後設定一樣就好。
+=F
+E> 規格明寫 DO NOT reinstall the VM or use mkfs against any partition。
+
+@CARD hw2.p_luks2 | Preflight：LUKS 金鑰槽與密碼更換
+A> LUKS 像一個保險箱，有好幾個鑰匙孔（keyslot），每個孔可以放一把不同的密碼，任何一把都能打開。換密碼可以直接換鎖芯（luksChangeKey），也可以先加一把新的、確認能用，再拆掉舊的，比較安全。
+B> 查看分割區與 keyslot：**lsblk -f**（crypto_LUKS）、**cryptsetup luksDump /dev/sda3**
+B> 直接更換：**cryptsetup luksChangeKey /dev/sda3**（輸入舊密碼 judge → 新密碼 ilovesa2026）
+B> 較保險：**luksAddKey**（加新密碼）→ 重開機確認 → **luksRemoveKey**（移除舊密碼）
+B> 開機解鎖設定在 **/etc/crypttab**（name、device/UUID、key、options），initramfs 依它解鎖 root；換密碼**不需要**重建 initramfs
+B> 備份 header：**cryptsetup luksHeaderBackup**（header 壞掉資料就救不回來）
+X> lsblk -f
+X> sudo cryptsetup luksDump /dev/sda3 | grep -i -A2 keyslots
+X> sudo cryptsetup luksAddKey /dev/sda3
+X> sudo cryptsetup luksRemoveKey /dev/sda3
+?mt 配對 cryptsetup 子指令：
+> luksChangeKey :: 把某個 keyslot 的密碼換成新密碼
+> luksAddKey :: 新增一組密碼到空的 keyslot
+> luksRemoveKey :: 移除輸入的那組密碼
+> luksDump :: 顯示 LUKS header 與 keyslot 資訊
+E> LUKS2 預設有 32 個 keyslot，每組密碼各佔一個。
+?cmd 顯示 /dev/sda3 的 LUKS header 與 keyslot 資訊：
+= cryptsetup luksDump /dev/sda3
+= sudo cryptsetup luksDump /dev/sda3
+E> 可以看到 Keyslots 區段中哪些 slot 已使用，以及使用的金鑰衍生函式（如 argon2id）。
+?mc 改完 LUKS 密碼後，下列何者「不必要」？
++ update-initramfs 重建 initramfs
+- 重開機實測新密碼可以解鎖
+- 確認舊密碼 judge 已無法解鎖
+- 確認 /etc/crypttab 指到正確的裝置
+E> 密碼存在 LUKS header 裡，initramfs 只負責詢問密碼並呼叫 cryptsetup。
+
+@CARD hw2.p_rescuefix | Preflight：為什麼一直進 rescue mode
+A> 每次開機都掉進 rescue，代表有人在某處下了「去 rescue」的指令。可能藏在三個地方：預設 target 的 symlink、GRUB 傳給 kernel 的參數、或某個 unit 的依賴。逐一檢查、修正後還要讓 GRUB 設定重新產生。
+B> ① **systemctl get-default** → 若是 rescue.target：**systemctl set-default multi-user.target**
+B> ② **cat /proc/cmdline** 是否有 **systemd.unit=rescue.target**、**single**、**rescue**、**1** → 修 **/etc/default/grub** 的 GRUB_CMDLINE_LINUX(_DEFAULT) → **update-grub**
+B> ③ 某個開機必要元件失敗（fstab 掛不上、LUKS 解不開）會進 **emergency**，看 **journalctl -xb**
+B> 當下離開 rescue：**systemctl isolate multi-user.target**（或修好後 systemctl default）
+B> 不知道是哪裡：在 GRUB 選單按 **e** 檢查 linux 那一行的參數
+X> systemctl get-default
+X> cat /proc/cmdline
+X> grep -n CMDLINE /etc/default/grub
+X> sudo update-grub
+?mc /proc/cmdline 出現 systemd.unit=rescue.target，set-default multi-user.target 後重開機還是進 rescue。下一步該做什麼？
++ 移除 /etc/default/grub 中的 systemd.unit=rescue.target 並執行 update-grub
+- 再執行一次 set-default
+- 重新安裝 systemd
+- 刪除 /etc/systemd/system/default.target
+E> kernel 參數 systemd.unit= 的優先順序高於 default.target。
+?cmd 不重開機，直接從 rescue 切換到 multi-user.target：
+= systemctl isolate multi-user.target
+= sudo systemctl isolate multi-user.target
+= systemctl isolate multi-user
+E> isolate 會停止不屬於目標 target 的 unit。
+?cmd 修改 /etc/default/grub 後重新產生 GRUB 設定（Debian）：
+= update-grub
+= sudo update-grub
+= grub-mkconfig -o /boot/grub/grub.cfg
+= sudo grub-mkconfig -o /boot/grub/grub.cfg
+E> update-grub 是 grub-mkconfig -o /boot/grub/grub.cfg 的包裝。
+
+@CARD hw2.p_shrinkroot | 2-1 實戰：縮小正在用的 root LV
+A> ext4 可以「邊住邊擴建」（線上放大），但不能「邊住邊縮小」。root 一直被系統使用，所以縮 root 要先讓它下線：從 Live 光碟或救援環境開機，解開 LUKS、啟用 VG，才能先縮檔案系統、再縮 LV。順序錯了資料就毀了。
+B> 目標：**debian-vg/root 縮到 15G**，剩餘空間建 **new-part**（ext4，掛在 **/mnt/new-part**，開機持久）
+B> **ext4 不能線上縮小** → 用 Live ISO 或救援環境開機，root 不能是掛載狀態
+B> 在 Live 環境：**cryptsetup open /dev/sda3 cryptroot** → **vgchange -ay** → **e2fsck -f** → **lvreduce --resizefs -L 15G debian-vg/root**
+B> 順序：**先縮檔案系統再縮 LV**（手動時 resize2fs 比目標小一點 → lvreduce → resize2fs 撐滿）；**放大**則相反
+B> device mapper 名稱：VG 名稱裡的 **- 會變成 --**：debian-vg/root → **/dev/mapper/debian--vg-root**
+B> 之後：**lvcreate -l 100%FREE -n new-part debian-vg** → **mkfs.ext4** → fstab（UUID 或 /dev/mapper/debian--vg-new--part）→ **mount -a**、**findmnt --verify**
+X> # Live 環境中
+X> cryptsetup open /dev/sda3 cryptroot
+X> vgchange -ay
+X> e2fsck -f /dev/debian-vg/root
+X> lvreduce --resizefs -L 15G /dev/debian-vg/root
+X> # 回到系統後
+X> lvcreate -l 100%FREE -n new-part debian-vg
+X> mkfs.ext4 /dev/debian-vg/new-part
+X> echo '/dev/mapper/debian--vg-new--part /mnt/new-part ext4 defaults 0 2' >> /etc/fstab
+?mc 為什麼縮小 root LV 要從 Live 環境操作？
++ ext4 不支援線上縮小，而 root 在系統執行時一定是掛載狀態
+- lvreduce 只存在於 Live ISO
+- LUKS 在系統內無法讀取
+- root LV 是唯讀的
+E> ext4 可以線上放大（resize2fs 在掛載時也能擴大），但縮小必須卸載。
+?fill VG debian-vg 的 LV new-part，在 /dev/mapper 底下的名稱是 /dev/mapper/＿＿
+= debian--vg-new--part
+E> device mapper 用單一 - 分隔 VG 與 LV，所以名稱中原本的 - 都會變成 --。
+?ord 縮小 LV（手動、不用 --resizefs）的正確順序：
+> 卸載檔案系統並 e2fsck -f
+> resize2fs 把檔案系統縮到比目標小
+> lvreduce 把 LV 縮到目標大小
+> resize2fs 不帶大小，讓檔案系統撐滿 LV
+E> 如果先縮 LV，檔案系統尾端的資料會被切掉。
+?cmd 在 Live 環境把 debian-vg/root 連同檔案系統一起縮到 15G（一個指令）：
+= lvreduce --resizefs -L 15G /dev/debian-vg/root
+= lvreduce -r -L 15G /dev/debian-vg/root
+= lvreduce --resizefs -L 15G debian-vg/root
+= lvreduce -r -L 15G debian-vg/root
+= lvresize --resizefs -L 15G /dev/debian-vg/root
+= lvresize -r -L 15G /dev/debian-vg/root
+E> -r（--resizefs）會先呼叫 fsadm/resize2fs 縮檔案系統，再縮 LV，順序由工具保證。
+
+@CARD hw2.p_raid | 2-1 實戰：4 個 PV 與 LVM RAID10
+A> RAID10 是「先鏡像再分散」：資料切成兩條（stripe）同時寫，每條再各存一份副本（mirror），所以至少要 4 個 PV。用一顆新硬碟切 4 個分割區就能滿足作業的結構要求，但真正的容錯需要 4 顆獨立的硬碟。
+B> 加一顆（或多顆）虛擬硬碟 → 用 **parted / fdisk** 切成 4 個分割區（或直接加 4 顆）→ **pvcreate** 4 個
+B> **vgcreate SA2026vg /dev/sdb1 /dev/sdb2 /dev/sdb3 /dev/sdb4**
+B> **lvcreate --type raid10 -m 1 -i 2 -l 100%FREE -n SARaid10 SA2026vg**（-m 1：一份鏡像；-i 2：2 條 stripe → 需要 4 個 PV）
+B> 觀察：**lvs -a -o name,segtype,copy_percent,devices SA2026vg**（看到 rimage / rmeta 子 LV、同步進度 Cpy%Sync）
+B> **mkfs.btrfs -L SAHW2 /dev/mapper/SA2026vg-SARaid10**；確認 **btrfs filesystem show**
+X> sudo parted -s /dev/sdb mklabel gpt mkpart p1 0% 25% mkpart p2 25% 50% mkpart p3 50% 75% mkpart p4 75% 100%
+X> sudo pvcreate /dev/sdb1 /dev/sdb2 /dev/sdb3 /dev/sdb4
+X> sudo vgcreate SA2026vg /dev/sdb1 /dev/sdb2 /dev/sdb3 /dev/sdb4
+X> sudo lvcreate --type raid10 -m 1 -i 2 -l 100%FREE -n SARaid10 SA2026vg
+X> sudo lvs -a -o name,segtype,copy_percent,devices SA2026vg
+?mc lvcreate --type raid10 -m 1 -i 2 至少需要幾個 PV？
++ 4
+- 2
+- 3
+- 8
+E> 2 條 stripe × 每條 2 份（原本 + 1 份鏡像）= 4。
+?mc lvs -a 列出 SARaid10_rimage_0、SARaid10_rmeta_0 等子 LV，它們是？
++ RAID 的資料映像與 metadata 子卷，LVM 用來組成 RAID10
+- 自動建立的 snapshot
+- 損壞的 LV
+- 預留給 swap 的空間
+E> rimage 存資料、rmeta 存 RAID 的 metadata。
+?cmd 查看 SA2026vg 中所有 LV（含隱藏子 LV）的類型、同步百分比與所在裝置：
+= lvs -a -o name,segtype,copy_percent,devices SA2026vg
+= sudo lvs -a -o name,segtype,copy_percent,devices SA2026vg
+= lvs -a -o +segtype,devices SA2026vg
+= lvs -a -o +devices SA2026vg
+E> Cpy%Sync 到 100 才代表鏡像同步完成。
+
+@CARD hw2.p_fstab2 | 2-1 實戰：fstab 的每一欄與持久化陷阱
+A> fstab 是開機時的「掛載清單」，六個欄位：誰、掛去哪、什麼格式、什麼選項、要不要 dump、開機檢查順序。寫錯一行就可能開不了機，所以每次改完都先 mount -a 和 findmnt --verify 演練，再重開機確認。
+B> 六欄：**device  mountpoint  fstype  options  dump  pass**
+B> pass：root 為 **1**、其他 ext4 為 **2**；**btrfs 用 0**（btrfs 不靠開機 fsck）
+B> HW2 規定 Btrfs 的來源都寫 **/dev/mapper/SA2026vg-SARaid10**；子卷用 **subvol=名稱**（不要用 subvolid，rollback 後 ID 會變）
+B> 掛載點的父子關係：**/mnt/hw2 要先掛**，sftp、pool1、pool2 的掛載點是 root 子卷裡的目錄
+B> 改完：**systemctl daemon-reload** → **mount -a**（不報錯）→ **findmnt --verify** → **findmnt -t btrfs**；最後**重開機**確認
+X> /dev/mapper/SA2026vg-SARaid10  /mnt/hw2        btrfs  subvol=root   0 0
+X> /dev/mapper/SA2026vg-SARaid10  /mnt/hw2/sftp   btrfs  subvol=sftp   0 0
+X> /dev/mapper/debian--vg-new--part  /mnt/new-part  ext4  defaults   0 2
+?mt 配對 fstab 欄位：
+> 第 1 欄 :: 裝置（或 UUID=、LABEL=）
+> 第 2 欄 :: 掛載點
+> 第 4 欄 :: 掛載選項（如 subvol=sftp）
+> 第 6 欄 :: 開機時 fsck 的順序（0 表示不檢查）
+E> 第 3 欄是檔案系統類型，第 5 欄是 dump（現在幾乎都填 0）。
+?mc fstab 用 subvolid=258 掛 pool1，做完 SnApper rollback 後重新掛載，看到的是舊資料或掛載失敗。原因？
++ rollback 建立的是新子卷，ID 改變了；應改用 subvol=pool1 依名稱掛載
+- subvolid 不能用在 fstab
+- rollback 沒有成功
+- 需要重新 mkfs
+E> 依名稱掛載，rollback 把新子卷取名為 pool1 後就會掛到它。
+?fill btrfs 在 fstab 第 6 欄（pass）通常填＿＿
+= 0
+E> btrfs 有自己的檢查機制（btrfs check / scrub），不靠開機 fsck。
+
+@CARD hw2.p_rollback | 2-1 實戰：SnApper rollback 的原理
+A> rollback 不是「把照片貼回去」，而是「用照片洗出一份新的、可以寫的副本，換掉原本的房間」。照片（唯讀 snapshot）留著，舊房間刪掉，新房間取原本的名字，fstab 依名字掛，所以重新掛載後看到的就是回滾後的內容。
+B> 從 ID 找 snapshot 路徑：snapshot/**<SUBVOL>**/@時間 → 由路徑**自動推出 SUBVOL**
+B> 步驟：掛 top-level（**subvolid=5**）→ **umount /mnt/hw2/<SUBVOL>** → 舊子卷**改名**（mv 子卷目錄）→ **btrfs subvolume snapshot 唯讀快照 <top>/<SUBVOL>**（不加 -r → 可寫）→ 刪掉舊子卷 → **mount /mnt/hw2/<SUBVOL>**（依 fstab 的 subvol= 名稱）
+B> 要求：**snapshot 仍存在**、子卷**可寫**、**umount / remount 後仍是回滾後的狀態**
+B> 子卷正在使用（SFTP 連線、sftp_watchd 監看）→ umount 會 **target is busy**：先 **fuser -vm** 找出 process，必要時暫停服務
+B> 驗證：**btrfs property get -ts <子卷> ro** 應為 false；touch 測試可寫
+X> mount -o subvolid=5 /dev/mapper/SA2026vg-SARaid10 /mnt/root5
+X> umount /mnt/hw2/pool2
+X> mv /mnt/root5/pool2 /mnt/root5/pool2.old
+X> btrfs subvolume snapshot /mnt/root5/snapshot/pool2/@20251003-194529 /mnt/root5/pool2
+X> btrfs subvolume delete /mnt/root5/pool2.old
+X> mount /mnt/hw2/pool2
+?mc rollback 時用 btrfs subvolume snapshot（不加 -r）從唯讀快照建立新子卷，目的是？
++ 讓回滾後的子卷可寫，同時保留原本的唯讀快照
+- 讓新子卷也是唯讀
+- 刪除原本的快照
+- 加快 snapshot 速度
+E> 規格要求 snapshot 仍存在、subvolume 可寫。
+?cmd 檢查子卷 /mnt/root5/pool2 是否為唯讀：
+= btrfs property get -ts /mnt/root5/pool2 ro
+= btrfs property get /mnt/root5/pool2 ro
+= sudo btrfs property get -ts /mnt/root5/pool2 ro
+E> 輸出 ro=true 或 ro=false。
+?mc rollback 時 umount /mnt/hw2/sftp 出現 target is busy，第一步該做什麼？
++ fuser -vm /mnt/hw2/sftp（或 lsof）找出佔用的 process
+- 直接 reboot
+- 用 mkfs 重建
+- 把 sftp 從 fstab 刪掉
+E> 常見是 sftp_watchd 或還沒結束的 sftp session。
+?sa 請說明 Btrfs 中「唯讀快照」如何用來實作 rollback，並解釋為什麼 fstab 應該用 subvol=名稱 而不是 subvolid= 掛載。
+R> Btrfs 的 snapshot 本身也是一個 subvolume，以 copy-on-write 方式共享資料，建立時幾乎不佔空間。唯讀快照用來保存某個時間點的狀態，不會被意外修改。
+R> rollback 時不能直接把唯讀快照拿來用（它不可寫，也要保留），所以對它再做一次「可寫的 snapshot」，得到一份內容相同、可寫的新 subvolume；把原本的 subvolume 改名或刪除，新 subvolume 取原本的名稱放在同一個位置（top-level 下），再重新掛載。
+R> 新 subvolume 的 ID 和原本不同。若 fstab 寫 subvolid=，重新掛載時會找不到（舊的已刪）或掛到舊的；寫 subvol=名稱 則依路徑名稱尋找，自動掛到新建的那個，達成「umount/remount 後仍維持回滾狀態」。
+P> snapshot 是 CoW 的 subvolume
+P> 從唯讀快照建立可寫快照，取代原 subvolume 名稱
+P> 原快照保留
+P> 新 subvolume ID 不同，所以 fstab 要依名稱掛載
+
+@CARD hw2.p_snapcli | 2-1 實戰：SnApper 的參數解析與輸出格式
+A> 評分程式會一字一字比對輸出，所以 SnApper 的「外觀」跟功能一樣重要：help 文字、Snap / Destroy ID / Rollback 這幾行的格式、list 的欄位，都要跟規格完全一樣；錯誤訊息則印到 stderr，exit code 非 0。
+B> 子指令在第一個參數：**case "$1" in snapshot|list|delete|rollback|-h)**，shift 後再用 **getopts** 解析 -c、-p、-i
+B> 成功輸出：**Snap '<SNAPSHOT_PATH>' [<ID>]**、**Destroy ID <ID>**（刪全部時每個一行）、**Rollback '<SNAPSHOT_PATH>' [<ID>] to <SUBVOL>**
+B> list 標頭 **ID    SUBVOLUME TIME**，欄位用**空白**（printf "%-5s %-10s %s\n"），**不能用 TAB**；-p 與 -i 可同時給，沒有符合時只印標頭
+B> 「受 SnApper 管理」的快照：路徑符合 **snapshot/<SUBVOL>/@YYYYMMDD-hhmmss**
+B> 取 ID：**btrfs subvolume show 路徑**（Subvolume ID:）或 list 的第 2 欄；刪除可用 **btrfs subvolume delete --subvolid ID <top>**
+B> 錯誤處理：**>&2** 印訊息、**exit 1**；需要 root（[ "$(id -u)" -eq 0 ]）；用 **trap 'umount …' EXIT** 清理暫時掛載
+X> cmd=$1; shift
+X> case $cmd in
+X>   snapshot) sub=$1; shift; count=5
+X>             while getopts c: opt; do case $opt in c) count=$OPTARG;; *) usage >&2; exit 1;; esac; done ;;
+X>   list)     while getopts p:i: opt; do case $opt in p) fp=$OPTARG;; i) fi=$OPTARG;; esac; done ;;
+X>   -h|'')    usage; exit 0 ;;
+X> esac
+X> printf '%-5s %-10s %s\n' ID SUBVOLUME TIME
+?mc SnApper snapshot pool1 -c 3 中，為什麼要先 shift 掉 snapshot 與 pool1 才用 getopts？
++ getopts 從 $1 開始解析，遇到第一個非選項參數就停止，所以要先移除子指令與 SUBVOL
+- getopts 只能處理一個選項
+- shift 會自動解析 -c
+- 不 shift 的話 -c 會被當成檔名刪除
+E> getopts 解析的是「目前的」位置參數。
+?fill 刪除 ID 為 549 的子卷，不必先找出路徑：btrfs subvolume delete ＿＿ 549 /mnt/root5
+= --subvolid
+= -i
+E> --subvolid 是長選項，-i 是它的短寫，最後要給該檔案系統內的任一路徑。
+?mc SnApper list 用 printf '%s\t%s\t%s\n' 輸出，評分會出什麼問題？
++ 規格禁止用 TAB 分隔欄位，應改用空白對齊
+- printf 不能印數字
+- \n 在 bash 中無效
+- 會多印一行標頭
+E> 用 SnApper list | cat -A 檢查，TAB 會顯示成 ^I。
+?tf SnApper 的錯誤訊息印到 stdout 也沒關係，只要 exit code 是 0。
+=F
+E> 慣例：錯誤印到 stderr，失敗時 exit code 非 0，評分程式和使用者才分得出成功與失敗。
+
+@CARD hw2.p_users | 2-2 實戰：建立 SFTP 帳號與金鑰
+A> 四個角色：sysadm 是館長（能 SSH、不被關、什麼都能動），sftp-u1/u2 是會員，anonymous 是訪客。會員和訪客只能用 SFTP，被關在 $SFTP_ROOT 裡。大家都用跟 judge 一樣的公鑰登入，所以要把 judge 的 authorized_keys 複製一份，並且權限要正確，否則 sshd 會拒絕。
+B> 建帳號：**useradd -m -s /bin/bash sysadm**；**useradd -m -s /usr/sbin/nologin sftp-u1**（u2、anonymous 同理）
+B> 群組：例如 **sftpusers**（sftp-u1、sftp-u2）、**sftponly**（sftp-u1、sftp-u2、anonymous，給 Match Group 用）
+B> 金鑰：複製 judge 的 **~/.ssh/authorized_keys**；**~/.ssh 是 700、authorized_keys 是 600**，擁有者是該使用者（**StrictModes** 會檢查）
+B> chroot 使用者的 authorized_keys 仍在**原本的家目錄**（/home/...），sshd 在 chroot 之前讀取
+B> 驗證：**ssh sftp-u1@vm** 應失敗（只能 SFTP）；**sftp sftp-u1@vm** 成功且 pwd 為 /；sysadm 可 SSH、不被 chroot
+X> sudo groupadd sftpusers; sudo groupadd sftponly
+X> sudo useradd -m -s /usr/sbin/nologin -G sftpusers,sftponly sftp-u1
+X> sudo useradd -m -s /usr/sbin/nologin -G sftponly anonymous
+X> sudo install -d -m 700 -o sftp-u1 -g sftp-u1 /home/sftp-u1/.ssh
+X> sudo install -m 600 -o sftp-u1 -g sftp-u1 /home/judge/.ssh/authorized_keys /home/sftp-u1/.ssh/
+?mc sftp-u1 的 ~/.ssh/authorized_keys 權限是 666，用金鑰登入一直失敗、退回要求密碼。原因？
++ sshd 的 StrictModes 檢查到檔案可被他人寫入，因此不採用這個 authorized_keys
+- 666 讓 sshd 讀不到檔案
+- 金鑰格式錯誤
+- 需要重開 sshd
+E> ~/.ssh 700、authorized_keys 600，且家目錄不能是 group/other 可寫。
+?cmd 建立使用者 sftp-u1：建立家目錄、shell 設為 /usr/sbin/nologin、加入附加群組 sftponly：
+= useradd -m -s /usr/sbin/nologin -G sftponly sftp-u1
+= sudo useradd -m -s /usr/sbin/nologin -G sftponly sftp-u1
+= useradd -m -G sftponly -s /usr/sbin/nologin sftp-u1
+E> -G 指定附加群組；-g 是主要群組。
+?tf 被 chroot 到 /mnt/hw2/sftp 的使用者，authorized_keys 必須放在 /mnt/hw2/sftp 底下。
+=F
+E> sshd 在認證階段（chroot 之前）讀取原本家目錄的 ~/.ssh/authorized_keys。
+
+@CARD hw2.p_matchcfg | 2-2 實戰：sshd 的 Match 設定與起始目錄
+A> sshd_config 用 Match 區塊替「某些人」換一套規則。會員和訪客：被 chroot、強制只能用 internal-sftp、起始目錄是 /（在 chroot 裡就是 $SFTP_ROOT）。館長 sysadm 不 chroot，走一般的 Subsystem，但起始目錄也指向 $SFTP_ROOT。這也解釋了規格裡 log 為什麼同時有 internal-sftp 與 sftp-server 兩種名字。
+B> chroot 使用者：**Match Group sftponly** → **ChrootDirectory /mnt/hw2/sftp**、**ForceCommand internal-sftp -d / -u 0007 -l INFO**、AllowTcpForwarding no、X11Forwarding no、PermitTTY no
+B> **-d /**：chroot 後的起始目錄（chroot 內的 / = $SFTP_ROOT）
+B> sysadm：**Subsystem sftp /usr/lib/openssh/sftp-server -d /mnt/hw2/sftp -l INFO -u 0007** → log 名稱是 **sftp-server**；chroot 使用者的 log 名稱是 **internal-sftp**
+B> **Match 一直到下一個 Match 或檔案結尾**：Match 放在檔案最後面
+B> 陷阱：Debian 主檔開頭有 **Include /etc/ssh/sshd_config.d/*.conf**，若在被 include 的檔案寫 Match，主檔後面所有設定都會被吞進那個 Match
+B> ChrootDirectory 每一層（/、/mnt、/mnt/hw2、/mnt/hw2/sftp）都必須 **root 擁有、group/other 不可寫**
+X> Subsystem sftp /usr/lib/openssh/sftp-server -d /mnt/hw2/sftp -l INFO -u 0007
+X> Match Group sftponly
+X>     ChrootDirectory /mnt/hw2/sftp
+X>     ForceCommand internal-sftp -d / -u 0007 -l INFO
+X>     AllowTcpForwarding no
+X>     X11Forwarding no
+X>     PermitTTY no
+?mc 規格範例 log 中 sysadm 的紀錄是 sftp-server[1979]，sftp-u1 卻是 internal-sftp[2029]。原因？
++ sysadm 走 Subsystem 的 sftp-server 程式；chroot 使用者被 ForceCommand internal-sftp 使用 sshd 內建的 SFTP
+- 兩個使用者連到不同的 sshd
+- sftp-u1 使用了比較新的 SFTP 協定
+- 這是 rsyslog 改名的結果
+E> journalctl -t internal-sftp -t sftp-server 兩個識別字都要查，才能看到所有使用者的紀錄。
+?mc 在 /etc/ssh/sshd_config.d/sftp.conf 寫了 Match Group sftponly 區塊，結果 PasswordAuthentication no 等全域設定好像只對 sftponly 生效。原因？
++ 主設定檔開頭就 Include 了這個檔案，Match 區塊延續到主檔後面的設定
+- sshd_config.d 不支援 Match
+- 檔名必須是 00-sftp.conf
+- 需要 restart 而不是 reload
+E> 把 Match 寫在主檔最後，或確保 include 的檔案只放全域設定。
+?fill internal-sftp 指定起始目錄的選項是＿＿（例：internal-sftp ＿＿ /）
+= -d
+E> -d 的路徑在 chroot 之後解讀，所以 / 指的是 ChrootDirectory。
+?mc ChrootDirectory /mnt/hw2/sftp 設好後，sftp 連線立刻斷線，log 顯示 bad ownership or modes for chroot directory。應該怎麼修？
++ 讓 /mnt/hw2/sftp 及其所有上層目錄都是 root 擁有，且 group/other 不可寫（例如 755）
+- 把 /mnt/hw2/sftp 改成 777
+- 把擁有者改成 sftp-u1
+- 關閉 StrictModes
+E> sshd 對 chroot 路徑的要求很嚴格，與 StrictModes 無關。
+
+@CARD hw2.p_acldesign | 2-2 實戰：umask 007 與 anonymous 唯讀的衝突
+A> 規格有兩個看起來打架的要求：「上傳的檔案要拿掉 other 的所有權限」，以及「anonymous 要能讀 public 裡的檔案」。anonymous 不在會員群組裡，對檔案來說它就是 other，other 沒權限它就讀不到。解法是 ACL：給 anonymous 一個「具名讀取權」，它就不必靠 other 位元。
+B> 上傳檔案 other 為 ---（umask 007 或預設 ACL 的 **o::---**）→ anonymous（屬於 other）**讀不到**
+B> 解法：在 public 設 **預設 ACL**：**d:u:anonymous:r-x**、d:u:sysadm:rwx、**d:o::---**；新建的檔案、目錄自動繼承
+B> 有預設 ACL 的目錄裡，新檔權限由預設 ACL 決定、**不套用 umask**；要確認 **mask** 沒把 anonymous 的 r 截掉
+B> 已存在的內容用 **setfacl -R -m** 補上（預設 ACL 只影響之後建立的）
+B> public 本身：擁有者 sysadm、群組 sftpusers、**setgid + sticky（3770）** + ACL u:anonymous:r-x
+B> 檢查：**getfacl** 看 ACL、**ls -l** 中權限後面有 **+** 代表有 ACL；以 anonymous 實際 get 測試
+X> chown sysadm:sftpusers /mnt/hw2/sftp/public
+X> chmod 3770 /mnt/hw2/sftp/public
+X> setfacl -m u:anonymous:rx,u:sysadm:rwx /mnt/hw2/sftp/public
+X> setfacl -d -m u::rwx,g::rwx,o::---,u:anonymous:rx,u:sysadm:rwx /mnt/hw2/sftp/public
+X> getfacl /mnt/hw2/sftp/public
+?mc sftp-u1 上傳的檔案權限是 -rw-rw----（群組 sftpusers），沒有 ACL。anonymous 能 get 它嗎？
++ 不能，anonymous 不是擁有者也不在 sftpusers，屬於 other，而 other 沒有權限
+- 能，anonymous 是唯讀帳號所以可以讀所有檔案
+- 能，因為 public 目錄有 r 權限
+- 只有在 sticky bit 存在時可以
+E> 目錄的權限只決定能不能列出與進入，讀檔要看檔案本身的權限。
+?mc 為什麼用「預設 ACL 給 anonymous r」可以同時滿足「上傳檔 other 無權限」與「anonymous 可讀」？
++ anonymous 透過具名使用者 ACL 取得讀取權，不依賴 other 位元，other 仍可以是 ---
+- ACL 會把 anonymous 改成檔案擁有者
+- ACL 會自動把 other 設成 r
+- 預設 ACL 會讓 umask 失效，所以 other 變成 rwx
+E> ls -l 看到的 other 欄位仍是 ---，滿足評分條件。
+?cmd 讓之後在 public 中新建的檔案，自動給使用者 anonymous 讀取（與目錄進入）權限：
+= setfacl -d -m u:anonymous:rx public
+= setfacl -d -m u:anonymous:r-x public
+= setfacl -m d:u:anonymous:rx public
+= setfacl -m d:u:anonymous:r-x public
+= setfacl --default -m u:anonymous:rx public
+E> -d（--default）設定預設 ACL；d:u:… 是等價寫法。
+?tf ls -l 顯示 -rw-rw----+，最後的 + 表示這個檔案有額外的 ACL。
+=T
+E> 用 getfacl 查看完整內容。
+
+@CARD hw2.p_privdesign | 2-2 實戰：private 與 hidden 的「能進不能看」
+A> private 像一條「沒有門牌的走廊」：大家能走進去（x），但看不到裡面有哪些房間（沒有 r 就不能 ls）；只要你知道房間名字（hidden），就能直接走到；房間裡的寶藏（treasure）有開放讀取，所以拿得到。
+B> 目錄的 **r**：列出內容（ls）；**x**：進入與存取已知名稱的檔案（cd、get 已知路徑）；**w + x**：新增、刪除、改名
+B> private、hidden：擁有者 **sysadm**，模式 **711**（group 與 other 只有 --x）→ 會員與訪客能 cd、不能 ls、不能寫
+B> **treasure**：**644**（other 可讀）→ 知道路徑就能 get
+B> sysadm 是擁有者 → private 底下 get/put/mkdir/rm/rmdir 都可以
+B> sftp_watchd 的 **private/.violated/**：建議 root 擁有、700，避免使用者讀取違規檔
+X> install -d -o sysadm -g sysadm -m 711 /mnt/hw2/sftp/private /mnt/hw2/sftp/private/hidden
+X> install -o sysadm -g sysadm -m 644 /dev/null /mnt/hw2/sftp/private/hidden/treasure
+X> install -d -o root -g root -m 700 /mnt/hw2/sftp/private/.violated
+?mt 配對目錄權限位元的效果：
+> r :: 可以列出目錄內容（ls）
+> x :: 可以進入目錄、存取已知名稱的項目
+> w（搭配 x） :: 可以新增、刪除、改名目錄中的項目
+E> 目錄的 x 也叫 search 權限：沿路徑往下走需要每一層都有 x。
+?mc private 目錄權限為 drwx--x--x（711），擁有者 sysadm。sftp-u1 執行 ls private 與 get private/hidden/treasure（treasure 為 644、hidden 也是 711）會？
++ ls 失敗；get 成功
+- 兩者都成功
+- 兩者都失敗
+- ls 成功；get 失敗
+E> 沒有 r 不能列目錄；有 x 可以沿已知路徑走到 treasure，而 treasure 對 other 可讀。
+?fill 讓 other「能進入但不能列出」的目錄權限（擁有者 rwx）是 chmod ＿＿ private
+= 711
+= 0711
+= u=rwx,go=x
+E> 7=rwx 給擁有者，1=--x 給 group 與 other。
+
+@CARD hw2.p_watchimpl | 2-3 實戰：sftp_watchd 實作細節
+A> sftp_watchd 是一位「收件室管理員」：盯著 SFTP 目錄，每當有人「寫完」一個檔案（close_write），就檢查前 4 個 byte 是不是 ELF 的魔術數字、算 MD5 比對黑名單，違規就搬進 .violated 並照固定格式記錄。它本身不能 fork 到背景，交給 systemd 管。
+B> 監看：**inotifywait -m -r -e close_write,moved_to --format '%w%f' --exclude '/\.violated/' /mnt/hw2/sftp**（需 apt install **inotify-tools**）
+B> **close_write**：檔案寫完才觸發（避免檢查到傳到一半的檔案）；**moved_to**：檔案被改名移入；**-r** 新建子目錄也會自動監看
+B> ELF 判斷：前 4 bytes 為 **7f 45 4c 46**（\x7fELF）：**head -c 4 "$f" | od -An -tx1**
+B> MD5：**md5sum "$f" | cut -d' ' -f1** 與黑名單比對；上傳者：**stat -c %U "$f"**
+B> 搬移：mv 到 **private/.violated/**（處理同名衝突）；log 印到 **stdout** → journal；訊息**一字不差**
+B> 規則：**不能呼叫其他自己寫的程式**（系統工具如 inotifywait、md5sum 可以）；放在 PATH（/usr/local/bin）、judge 讀得到
+X> inotifywait -m -r -q -e close_write,moved_to --format '%w%f' --exclude '/\.violated/' "$SFTP_ROOT" |
+X> while IFS= read -r f; do
+X>   [ -f "$f" ] || continue
+X>   user=$(stat -c %U "$f")
+X>   if [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ]; then
+X>     echo "File $f uploaded by user $user is an ELF file. Moving to violated directory"
+X>     mv -- "$f" "$SFTP_ROOT/private/.violated/"
+X>   fi
+X> done
+?mc 為什麼用 close_write 而不是 create 事件來觸發檢查？
++ create 在檔案剛建立（內容還沒傳完）就觸發；close_write 在寫入完成、關閉檔案時才觸發
+- create 事件只對目錄有效
+- close_write 比較省 CPU
+- inotify 沒有 create 事件
+E> 檔案還沒傳完就計算 MD5，結果一定不對。
+?fill ELF 檔案開頭 4 個 byte 的十六進位是 7f 45 4c ＿＿
+= 46
+E> 也就是 0x7F 'E' 'L' 'F'。
+?mc 把違規檔搬進 private/.violated/ 後，watcher 又對它觸發 moved_to 事件而重複處理。最好的修法？
++ 監看時用 --exclude 排除 .violated 目錄（或處理前先檢查路徑）
+- 改用 cp 不要 mv
+- 把 .violated 放在 public 裡
+- 每次處理後重啟服務
+E> 搬移本身就是一個 moved_to 事件。
+?cmd 取得檔案 /mnt/hw2/sftp/public/a.bin 擁有者的使用者名稱：
+= stat -c %U /mnt/hw2/sftp/public/a.bin
+= stat --format=%U /mnt/hw2/sftp/public/a.bin
+= stat -c '%U' /mnt/hw2/sftp/public/a.bin
+E> 上傳的檔案由該 SFTP 使用者建立，擁有者就是上傳者。
+
+@CARD hw2.p_watchunit | 2-3 實戰：sftp_watchd 的 unit 檔
+A> 讓 systemd 當 sftp_watchd 的「保母」：開機自動啟動、掛了自動重來、log 自動進 journal。最重要的是它得等 /mnt/hw2/sftp 掛好才開始，不然會盯著一個空目錄。
+B> **[Unit]**：Description=、**After=local-fs.target**、**RequiresMountsFor=/mnt/hw2/sftp**
+B> **[Service]**：**Type=simple**、**ExecStart=/usr/local/bin/sftp_watchd**、**Restart=always**（或 on-failure）、RestartSec=2
+B> **[Install]**：**WantedBy=multi-user.target**
+B> 檔案放 **/etc/systemd/system/sftp_watchd.service** → **daemon-reload** → **enable --now**
+B> 支援 start / stop / status / restart；log 用 **journalctl -u sftp_watchd**；stop 後確認沒有殘留的 inotifywait（同一個 cgroup 會被一起殺掉）
+X> [Unit]
+X> Description=SFTP upload watcher
+X> After=local-fs.target
+X> RequiresMountsFor=/mnt/hw2/sftp
+X> [Service]
+X> Type=simple
+X> ExecStart=/usr/local/bin/sftp_watchd
+X> Restart=always
+X> RestartSec=2
+X> [Install]
+X> WantedBy=multi-user.target
+?mc systemctl stop sftp_watchd 後，為什麼它啟動的 inotifywait 子程序也會一起結束？
++ 預設 KillMode=control-group，systemd 會對服務 cgroup 裡的所有 process 送訊號
+- inotifywait 會偵測到父程序結束而自殺
+- systemd 會掃描所有名為 inotifywait 的 process
+- 這不會發生，需要自己 pkill
+E> cgroup 讓 systemd 能完整清掉服務的所有後代。
+?ord 安裝並啟用 sftp_watchd.service 的步驟：
+> 把 unit 檔放到 /etc/systemd/system/
+> systemctl daemon-reload
+> systemctl enable --now sftp_watchd
+> journalctl -u sftp_watchd 確認運作
+E> daemon-reload 讓 systemd 讀到新的 unit 檔；enable --now 同時設定開機啟動與立刻啟動。
+?tf sftp_watchd 印到 stdout 的訊息，在 systemd 管理下可以用 journalctl -u sftp_watchd 看到。
+=T
+E> StandardOutput 預設送進 journal。
+
+@CARD hw2.p_rsyslog2 | 2-3 實戰：rsyslog 過濾規則與檔案順序
+A> rsyslog 讀 /etc/rsyslog.d/*.conf 是照檔名順序，而且每條訊息會依序經過所有規則。所以 sftp 的規則要放在預設規則（50-default.conf）之前，寫完檔案就 stop，訊息才不會又被複製進 syslog 或 auth.log，sftp.log 也能保持「純 SFTP」。
+B> 新式（RainerScript）：**if $programname == 'internal-sftp' or $programname == 'sftp-server' then { action(type="omfile" file="/var/log/sftp.log") stop }**
+B> 舊式（property-based filter）：**:programname, isequal, "internal-sftp" /var/log/sftp.log** 下一行 **& stop**
+B> 檔名用小數字開頭（例如 **10-sftp.conf**），排在 50-default.conf 之前，stop 才能阻止重複寫入
+B> 驗證：**rsyslogd -N1**（語法檢查）→ **systemctl restart rsyslog** → logger 測試：**logger -t internal-sftp test**
+B> 長期維運：**/etc/logrotate.d/** 為 /var/log/sftp.log 加輪替設定
+X> # /etc/rsyslog.d/10-sftp.conf
+X> :programname, isequal, "internal-sftp" /var/log/sftp.log
+X> & stop
+X> :programname, isequal, "sftp-server" /var/log/sftp.log
+X> & stop
+X> $ logger -t sftp-server "rsyslog test"; tail -1 /var/log/sftp.log
+?mc sftp 規則寫在 /etc/rsyslog.d/99-sftp.conf 並加了 stop，但 sftp 訊息仍出現在 /var/log/auth.log。原因？
++ 50-default.conf 的規則先處理了訊息並寫進 auth.log，99 號檔案的 stop 太晚
+- stop 只對 kern 有效
+- auth.log 由 journald 寫入
+- 需要重開機
+E> 檔名的數字決定處理順序。
+?cmd 不必真的用 SFTP，模擬一筆 SYSLOG 識別字為 internal-sftp 的訊息來測試 rsyslog 規則：
+= logger -t internal-sftp test
+= logger -t internal-sftp "test"
+= logger -t internal-sftp hello
+E> -t 設定 tag（programname）。
+?cmd 檢查 rsyslog 設定語法：
+= rsyslogd -N1
+= sudo rsyslogd -N1
+E> -N1 只做第一層的設定檢查，不會真的啟動。
+
+@CARD hw2.p_judge | HW2 評分機制與自保
+A> 評分機器人不只檢查，還會「搗亂」：可能 dd 把你的磁碟清零、重開機、用 judge 身分讀你的腳本。唯一的保險是提交前拍快照、確定所有設定都是持久的、腳本放對位置且讀得到。
+B> 評分：2-1 共 48%（Shrink 3、Btrfs setup 9、RAID10 5、Create 8、List 7、Delete 5、**Rollback 11**）、2-2 共 27%、2-3 共 25%
+B> judge 從 **$(which SnApper)**、**$(which sftp_watchd)** 取得腳本 → 放 /usr/local/bin、**chmod 755**、judge 的 PATH 找得到
+B> 腳本**不能呼叫其他自己寫的腳本或執行檔** → 單一檔案完成所有功能
+B> 規格提醒：評分時可能執行惡意動作（例如 **dd if=/dev/zero of=/dev/sda**）→ **每次提交前拍 VM snapshot**
+B> **重開機後一切仍要正常**：fstab、服務 enable、預設 target、LUKS 新密碼
+B> 只計最後一次提交；不收遲交
+?mc judge 用 $(which SnApper) 抓腳本，結果找不到。你把腳本放在 /root/bin/SnApper。問題在哪？
++ /root/bin 不在 judge 的 PATH 中，且 judge 沒有權限讀 /root
+- 檔名必須全小寫
+- 腳本必須是 ELF 執行檔
+- which 只找 /usr/bin
+E> 放 /usr/local/bin 並給 755。
+?mc 下列哪個「違反」 HW2 對 SnApper 的要求？
++ SnApper 呼叫自己寫的 /usr/local/bin/snap-helper.sh 來做 rollback
+- SnApper 呼叫 btrfs 指令
+- SnApper 用 date 產生時間戳
+- SnApper 用 awk 解析輸出
+E> must not invoke any other self-written scripts, binaries or executables。
+?tf 只要現在能用，重開機後失效也能拿到分數。
+=F
+E> 規格要求 Make sure everything works after reboot。
 </script>
 <script type="text/plain" class="sa-src" data-ch="hw3">
 @CH hw3 | HW3 實戰觀念：Web 服務、PKI、OIDC、可觀測性 | 🔐 | hw3.pdf
@@ -8510,6 +9692,732 @@ E> commit 不需要；重點是 daemon 會自動啟動、容器會被重新拉�
 ?tf HW3 的評分只看最後一次提交，遲交不被接受。
 =T
 E> 所以每次提交前都要確認全部功能，並先拍 VM snapshot。
+
+@CARD hw3.p_openssl | 實作：用 openssl 建立 CA 與簽發憑證
+A> 簽憑證的流程像辦證件：先做一把私鑰（印章）；拿私鑰填一張申請書（CSR），寫上名字與主機名；發證中心（CA）審核後蓋章，加上「用途限制」（extension），就是一張憑證。最常見的錯誤是 extension 沒帶進去，例如 SAN 不見了。
+B> 私鑰：**openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out x.key**（或 -algorithm RSA -pkeyopt rsa_keygen_bits:3072）；**chmod 600**
+B> CSR：**openssl req -new -key x.key -subj "/CN=git.19.cs.nycu" -addext "subjectAltName=DNS:git.19.cs.nycu" -out x.csr**
+B> 簽發：**openssl x509 -req -in x.csr -CA intermediate.crt -CAkey intermediate.key -CAcreateserial -days 365 -extfile ext.cnf -out x.crt**（**-extfile** 才會加入 SAN、EKU；CSR 裡的 extension 預設**不會**自動複製，可用 -copy_extensions copy）
+B> 檢查：**openssl x509 -in x.crt -noout -text**、**-noout -ext subjectAltName,basicConstraints,extendedKeyUsage**
+B> fullchain：**cat x.crt intermediate.crt > x.fullchain.crt**（**leaf 在前**，intermediate 在後；root 不必放）
+X> # ext.cnf（伺服器憑證）
+X> basicConstraints = critical, CA:FALSE
+X> keyUsage = critical, digitalSignature
+X> extendedKeyUsage = serverAuth
+X> subjectAltName = DNS:git.19.cs.nycu
+X> $ openssl x509 -req -in git.csr -CA intermediate.crt -CAkey intermediate.key -CAcreateserial -days 365 -extfile ext.cnf -out git.crt
+X> $ cat git.crt intermediate.crt > git.fullchain.crt
+?mc 用 openssl x509 -req 簽完的伺服器憑證，瀏覽器說沒有 SAN，但 CSR 裡明明有 -addext subjectAltName。原因？
++ x509 -req 預設不會複製 CSR 的 extension，要用 -extfile 指定或加 -copy_extensions copy
+- SAN 只能寫在 CN 裡
+- 必須使用 RSA 金鑰才有 SAN
+- 瀏覽器不支援 EC 憑證
+E> 簽發時由 CA 決定要放哪些 extension，這也是 CA 審核的意義。
+?mc fullchain 檔中憑證的正確順序是？
++ 伺服器（leaf）憑證在最前面，接著 intermediate
+- intermediate 在前，leaf 在後
+- root、intermediate、leaf
+- 順序無所謂
+E> TLS 規定伺服器送出的第一張必須是自己的憑證，之後每張簽發前一張。
+?cmd 顯示 git.crt 的 subjectAltName extension：
+= openssl x509 -in git.crt -noout -ext subjectAltName
+= openssl x509 -noout -ext subjectAltName -in git.crt
+= openssl x509 -in git.crt -noout -text
+E> -text 會印出全部內容，-ext 只印指定的 extension。
+?fill 簽發憑證時若希望 openssl 自動產生並記錄序號檔，加上選項 -CA＿＿
+= createserial
+E> 會建立 intermediate.srl，之後用 -CAserial 沿用。
+
+@CARD hw3.p_tlsdebug | 實作：TLS 連不上怎麼查
+A> 用 openssl s_client 扮演「最挑剔的客人」去敲門：它會把伺服器出示的整條憑證鏈印出來、告訴你驗證結果和錯誤代碼。curl -v 則是「一般客人」的視角。兩個一起看，問題幾乎都能找到。
+B> **openssl s_client -connect git.19.cs.nycu:443 -servername git.19.cs.nycu -CAfile root.crt -showcerts**：看伺服器送了哪些憑證、**Verify return code**
+B> **curl -v --cacert root.crt https://git.19.cs.nycu/**：看 TLS 握手與 HTTP 回應；**curl --resolve 主機:443:127.0.0.1** 不改 hosts 也能指定 IP
+B> 常見錯誤：**unable to get local issuer certificate**（沒送 intermediate 或不信任 root）、**hostname mismatch**（SAN 不符）、**certificate has expired**、**self-signed certificate in certificate chain**（客戶端沒信任你的 root）
+B> 確認系統信任：**openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt 憑證**（需搭配 -untrusted intermediate）
+B> 只看到 nginx 預設站？檢查 **SNI**：沒帶 -servername 時 nginx 回 default_server 的憑證
+X> openssl s_client -connect git.19.cs.nycu:443 -servername git.19.cs.nycu -CAfile root.crt </dev/null | grep -E 'subject=|issuer=|Verify return'
+X> curl -v --cacert root.crt https://git.19.cs.nycu/
+X> curl --resolve git.19.cs.nycu:443:127.0.0.1 https://git.19.cs.nycu/
+?mc curl 回報 unable to get local issuer certificate，但 root CA 確定已被信任。最可能的原因？
++ 伺服器沒有送出 intermediate 憑證，客戶端無法串到 root
+- 憑證過期
+- SAN 不符
+- 伺服器沒開 443
+E> 把 ssl_certificate 改成 fullchain（leaf + intermediate）。
+?mc openssl s_client 不加 -servername 時，拿到的憑證跟瀏覽器看到的不同。原因？
++ 沒有送 SNI，nginx 不知道要哪個虛擬主機，就回 default_server 的憑證
+- s_client 不支援 TLS 1.3
+- 瀏覽器有快取
+- s_client 會自動忽略 SAN
+E> 同一個 IP:443 上有多個 server_name 時，nginx 靠 SNI 選憑證。
+?cmd 不修改 /etc/hosts，讓 curl 把 git.19.cs.nycu:443 直接連到 127.0.0.1：
+= curl --resolve git.19.cs.nycu:443:127.0.0.1 https://git.19.cs.nycu/
+= curl --resolve git.19.cs.nycu:443:127.0.0.1 https://git.19.cs.nycu
+= curl -v --resolve git.19.cs.nycu:443:127.0.0.1 https://git.19.cs.nycu/
+E> --resolve 也會讓 SNI 與 Host 保持正確的主機名，比直接連 IP 更準確。
+
+@CARD hw3.p_nginxlayout | 實作：NGINX 設定檔架構與虛擬主機
+A> Debian 的 nginx 把設定拆成積木：nginx.conf 是總表，sites-available 放每個網站的設定、sites-enabled 放「啟用的」symlink。同一個 443 port 上有好幾個網站，nginx 靠請求裡的主機名（SNI 與 Host）決定由哪個 server 區塊接待。
+B> 主設定 **/etc/nginx/nginx.conf** → include **conf.d/*.conf** 與 **sites-enabled/***（sites-available 的 symlink）
+B> 一個 **server { }** = 一個虛擬主機；用 **server_name** 比對；都不符時用 **default_server**
+B> 建議加一個 default_server 對未知主機回 **444**（直接斷線）或 404，避免用 IP 就能連到某個服務
+B> 共用設定（TLS 參數、proxy header）抽成 **snippets/*.conf** 再 include
+B> 檢查：**nginx -t**（語法）、**nginx -T**（印出合併後的完整設定）；**systemctl reload nginx** 不中斷連線；log：**/var/log/nginx/error.log**
+X> server { listen 443 ssl default_server; server_name _; ssl_certificate /etc/nginx/tls/default.fullchain.crt; ssl_certificate_key /etc/nginx/tls/default.key; return 444; }
+X> sudo ln -s /etc/nginx/sites-available/hw3.conf /etc/nginx/sites-enabled/
+X> sudo nginx -t && sudo systemctl reload nginx
+?mc 請求的 Host 不符合任何 server_name 時，nginx 會交給誰處理？
++ 該 listen 位址上標記為 default_server 的 server（沒有標記時是第一個）
+- 回 500 錯誤
+- 隨機一個 server
+- 第一個在 conf.d 中的檔案
+E> 建議明確寫一個 default_server，避免順序改變時意外由別的網站接手。
+?cmd 印出 nginx 合併所有 include 之後的完整設定：
+= nginx -T
+= sudo nginx -T
+E> 找不到某個設定從哪來時很好用。
+?fill nginx 中「直接關閉連線、不回應任何內容」的特殊狀態碼是 return ＿＿;
+= 444
+E> 444 是 nginx 專用的非標準代碼。
+
+@CARD hw3.p_proxyhdr | 實作：反向代理的 header 與後端設定
+A> 後端服務躲在 NGINX 後面，看到的連線都是「從 127.0.0.1 來的 HTTP」。如果沒有把原本的主機名、協定、client IP 用 header 告訴它，它產生的連結、轉址、OIDC 的 issuer 都會變成 http://localhost:8100 這種錯誤網址。
+B> 一定要傳：**Host $host**、**X-Forwarded-For $proxy_add_x_forwarded_for**、**X-Forwarded-Proto $scheme**（或 https）、X-Real-IP $remote_addr
+B> 後端也要設定**對外網址**：Forgejo **ROOT_URL = https://git.19.cs.nycu/**；Keycloak **KC_HOSTNAME=https://auth.19.cs.nycu**、**KC_PROXY_HEADERS=xforwarded**
+B> container registry push 很大：**client_max_body_size 0;**（不限制，否則 **413 Request Entity Too Large**）
+B> SSE / 串流回應：**proxy_buffering off;**；WebSocket：**proxy_http_version 1.1** + Upgrade / Connection header
+B> 隱藏後端 header：**proxy_hide_header X-Powered-By;**、proxy_hide_header Via;
+X> location / {
+X>     proxy_pass http://127.0.0.1:8101;
+X>     proxy_set_header Host $host;
+X>     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+X>     proxy_set_header X-Forwarded-Proto https;
+X>     client_max_body_size 0;
+X> }
+?mc docker push 到 git.19.cs.nycu 時，大的 layer 一直回 413。最可能要改哪個設定？
++ nginx 的 client_max_body_size（預設只有 1m）
+- Forgejo 的 ROOT_URL
+- Docker 的 max-concurrent-uploads
+- PostgreSQL 的 max_connections
+E> 設成 0 代表不限制大小。
+?mc Keycloak 放在 nginx 後面，discovery 文件中的 issuer 卻是 http://127.0.0.1:8100/realms/sa。會造成什麼問題，該怎麼修？
++ token 的 iss 與 judge 預期的 https://auth.19.cs.nycu/realms/sa 不符；設定 KC_HOSTNAME 與 proxy headers 讓 Keycloak 知道對外網址
+- 沒有問題，issuer 只是顯示用
+- 改成 HTTP/2 就好
+- 要把 Keycloak 改聽 443
+E> OIDC 用戶端會嚴格比對 issuer 字串。
+?mc 平台的串流 LLM 回應（SSE）經過 nginx 後，要等全部結束才一次出現。該調整？
++ 在該 location 設 proxy_buffering off;
+- 加大 client_max_body_size
+- 開啟 gzip
+- 改用 HTTP/1.0
+E> nginx 預設會先把後端回應緩衝起來。
+
+@CARD hw3.p_containerdns | 實作：容器裡的名稱解析與信任 CA
+A> 容器是另一個世界：它看不到 host 的 /etc/hosts，也不信任你裝在 host 上的 CA。所以 Forgejo 要連 auth.19.cs.nycu 做 OIDC、平台要驗證 OIDC token、Forgejo 要用 verify-full 連 pg.19.cs.nycu，都得在容器裡「另外教一次」：名字指去哪、要相信哪個 CA。
+B> 容器**不讀 host 的 /etc/hosts**；用 Docker 內建 DNS（**127.0.0.11**）解析服務名稱，其他轉給 host 的上游 DNS
+B> 讓容器把 *.cs.nycu 指向 host 的 NGINX：**extra_hosts: ["auth.19.cs.nycu:host-gateway"]**
+B> 讓 pg.19.cs.nycu 在 Docker 網路內解析到 DB 容器（TLS verify-full 的主機名才對得上）：**networks.<net>.aliases: [pg.19.cs.nycu]**
+B> 容器信任你的 CA：image 內 **update-ca-certificates**，或掛載 CA 並設 **SSL_CERT_FILE**、**REQUESTS_CA_BUNDLE**（Python requests）、**NODE_EXTRA_CA_CERTS**（Node）；Java（Keycloak）有自己的 truststore（**KC_TRUSTSTORE_PATHS**）
+B> 測試：**docker compose exec forgejo getent hosts auth.19.cs.nycu**、在容器內 curl https://auth.19.cs.nycu/
+X>   forgejo:
+X>     extra_hosts:
+X>       - "auth.19.cs.nycu:host-gateway"
+X>     volumes:
+X>       - ./ca/root.crt:/usr/local/share/ca-certificates/sa-root.crt:ro
+X>   db:
+X>     networks:
+X>       backend:
+X>         aliases: [pg.19.cs.nycu]
+?mc host 的 /etc/hosts 已把 auth.19.cs.nycu 指向自己，Forgejo 容器卻解析不到。原因？
++ 容器不會讀取 host 的 /etc/hosts，需用 extra_hosts 或 DNS 設定
+- Forgejo 不支援 OIDC
+- 需要重開 nginx
+- host-gateway 只能用在 Windows
+E> extra_hosts 會寫進容器自己的 /etc/hosts。
+?mc Forgejo 以 sslmode=verify-full 連 db:5432 失敗，錯誤是主機名與憑證不符。最好的修法？
++ 給 db 容器一個網路別名 pg.19.cs.nycu，Forgejo 改連 pg.19.cs.nycu
+- 改用 sslmode=disable
+- 把憑證的 CN 改成 db
+- 用 IP 位址連線
+E> verify-full 會比對連線時用的主機名與 SAN；規格要求容器內也只能 TLS。
+?fill extra_hosts 中代表「host 本機 IP」的特殊值是＿＿
+= host-gateway
+E> Docker 20.10 起支援，會解析成 host 在預設 bridge 上的 IP。
+
+@CARD hw3.p_keycloak | 實作：Keycloak 的 realm 與 client credentials client
+A> Keycloak 裡的 realm 是「一個獨立的身分王國」，issuer 網址就是 https://auth…/realms/王國名。要給 judge 一個機器用的 client：打開 client authentication（有 secret 的 confidential client）並啟用 service accounts（允許 client credentials），judge 才能用 ID + secret 換 token。
+B> issuer：**https://auth.{STU_ID}.cs.nycu/realms/<realm>**；discovery 在其後加 **/.well-known/openid-configuration**
+B> confidential client：**Client authentication ON**；client credentials：**Service accounts roles 啟用**
+B> endpoints（Keycloak）：token **…/protocol/openid-connect/token**、introspect **…/token/introspect**、revoke **…/revoke**、JWKS **…/certs**
+B> 平台驗 token：檢查 **iss**、**exp**、簽章（JWKS），必要時檢查 **aud** / **azp**；要支援撤銷就呼叫 introspection
+B> Forgejo / 平台的使用者登入用同一個 realm 的另一個 client（authorization code flow）
+X> $ ISS=https://auth.19.cs.nycu/realms/sa
+X> $ TOKEN_EP=$(curl -s $ISS/.well-known/openid-configuration | jq -r .token_endpoint)
+X> $ curl -s -u "$CID:$SECRET" -d grant_type=client_credentials $TOKEN_EP | jq -r .access_token
+X> $ curl -s -u "$CID:$SECRET" -d token=$TOKEN $ISS/protocol/openid-connect/token/introspect | jq .active
+?mc 在 Keycloak 建立給 judge 使用的 client，要支援 client credentials grant，必須打開哪個設定？
++ Client authentication（confidential）與 Service accounts roles
+- Standard flow 與 Implicit flow
+- Direct access grants
+- Front channel logout
+E> Service account 讓 client 能以自己的身分取得 token。
+?fill Keycloak realm 為 sa 時，issuer 是 https://auth.19.cs.nycu/＿＿/sa
+= realms
+E> discovery 就在 https://auth.19.cs.nycu/realms/sa/.well-known/openid-configuration。
+?mc introspection 回應 {"active": false} 代表？
++ token 無效：已過期、已被撤銷或不是這個 provider 發的
+- token 有效但權限不足
+- introspection endpoint 故障
+- 需要重新 discovery
+E> RFC 7662：active=false 時不提供其他資訊。
+
+@CARD hw3.p_jwt | 實作：驗證 JWT access token
+A> JWT 是一張「自帶防偽標記的通行證」：header 說明用哪把鑰匙簽（kid、alg），payload 寫著發給誰、誰發的、何時過期，signature 是發證單位的簽章。驗證時不能只看內容，一定要用 provider 公布的公鑰（JWKS）驗簽，並檢查發行者與期限。
+B> 格式：**header.payload.signature**（各段 base64url）；payload 常見 claim：**iss**、**sub**、**aud**、**exp**、**iat**、**azp**、**scope**
+B> 驗證步驟：依 header 的 **kid** 從 **jwks_uri** 取公鑰 → 驗簽章 → **iss** 等於設定的 issuer → **exp** 未過（容許少量時鐘誤差）→（需要時）**aud**
+B> **alg 要固定**（例如只接受 RS256），不能相信 token 自己說的 alg（避免 alg=none 攻擊）
+B> JWKS 要快取並在找不到 kid 時重新抓（provider 會輪換金鑰）
+B> HTTP 慣例：沒帶或無效 token 回 **401**（WWW-Authenticate: Bearer）；token 有效但權限不夠回 **403**
+X> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6Ij...
+?mc 平台驗證 JWT 時，下列哪個做法是錯的？
++ 依 token header 中的 alg 決定用什麼演算法驗證，包括 none
+- 用 kid 從 JWKS 找公鑰
+- 檢查 iss 是否等於自己的 issuer
+- 檢查 exp 是否已過期
+E> 驗證端要事先固定允許的演算法。
+?mt 配對 HTTP 狀態碼：
+> 401 :: 沒有 token 或 token 無效
+> 403 :: token 有效但沒有權限
+> 201 :: 成功建立資源
+> 404 :: 資源不存在
+E> WWW-Authenticate: Bearer error="invalid_token" 是 RFC 6750 定義的回應方式。
+?mc JWT 的 payload 可以被任何人 base64 解碼讀出來。這代表？
++ JWT 只防竄改、不防偷看，不應該放機密資料
+- JWT 沒有任何安全性
+- 必須用 HTTPS 才能解碼
+- 簽章也會被解碼出私鑰
+E> 安全性來自簽章；內容是公開的。
+
+@CARD hw3.p_pgdocker | 實作：PostgreSQL 容器的 TLS 與權限設定
+A> 在容器裡跑 PostgreSQL 要注意三件事：憑證私鑰的擁有者與權限（postgres 很挑剔）、設定要用 -c 參數或掛設定檔傳進去、初始化腳本只在「第一次、資料目錄是空的時候」執行一次。
+B> 啟動參數：**command: ["postgres","-c","ssl=on","-c","ssl_cert_file=…","-c","ssl_key_file=…","-c","ssl_ca_file=…","-c","hba_file=…"]**
+B> 私鑰權限：擁有者 **postgres（容器內 UID 999）且 0600**（或 root 擁有、0640 且群組為 postgres），否則拒絕啟動
+B> **ssl_cert_file** 放伺服器憑證 **+ intermediate**；**ssl_ca_file** 放用來驗證 client 憑證的 CA（root 與 intermediate）
+B> pg_hba：只寫 **hostssl**，最後加 **host all all all reject** 明確拒絕非 TLS；judge 用 **cert**
+B> 帳號與資料庫：**/docker-entrypoint-initdb.d/*.sql** 只在**資料目錄為空**時執行；之後要改就直接連進去下 SQL
+B> PostgreSQL 18 的官方 image 調整過資料目錄位置，掛 volume 前先看 image 說明確認正確路徑
+X> -- init.sql
+X> CREATE ROLE forgejo LOGIN PASSWORD 'xxx';
+X> CREATE DATABASE forgejo OWNER forgejo;
+X> REVOKE ALL ON DATABASE forgejo FROM PUBLIC;
+X> CREATE ROLE judge LOGIN SUPERUSER;
+X> # pg_hba.conf
+X> local   all  all  peer
+X> hostssl all  judge  all  cert
+X> hostssl forgejo forgejo all scram-sha-256
+X> host    all  all  all  reject
+?mc PostgreSQL 容器啟動失敗，log 顯示 private key file has group or world access。應該怎麼修？
++ 讓私鑰的擁有者是容器內的 postgres 使用者，權限改成 0600
+- 改成 0777
+- 把私鑰放進 ssl_ca_file
+- 關閉 ssl
+E> postgres 拒絕使用其他人可讀的私鑰。
+?mc 在 /docker-entrypoint-initdb.d/ 新增了 SQL 檔，重啟容器後沒有執行。原因？
++ 初始化腳本只在資料目錄為空、第一次初始化時執行
+- 檔名必須以 .sh 結尾
+- 要先 docker compose build
+- PostgreSQL 18 不支援初始化腳本
+E> 已有資料時要手動 psql 執行，或清空 volume 重新初始化。
+?mc pg_hba.conf 最後加 host all all all reject 的作用？
++ 明確拒絕任何沒有被前面 hostssl 規則接受的 TCP 連線（包括非 TLS 連線）
+- 拒絕所有本機 socket 連線
+- 拒絕 judge 登入
+- 讓所有連線改用 TLS
+E> pg_hba 由上而下比對，第一條符合的規則決定結果。
+
+@CARD hw3.p_forgejo2 | 實作：Forgejo 的設定重點
+A> Forgejo 的設定集中在 app.ini（容器中也能用 FORGEJO__區段__鍵 這種環境變數）。重點是讓它知道自己的對外網址、用 TLS 連 PostgreSQL、把登入交給 OIDC、開啟 container registry 與 Actions。
+B> **[server]**：ROOT_URL = https://git.{STU_ID}.cs.nycu/、DOMAIN、HTTP_PORT；SSH 不對外時 DISABLE_SSH
+B> **[database]**：DB_TYPE=postgres、HOST=pg.{STU_ID}.cs.nycu:5432、NAME=forgejo、USER=forgejo、**SSL_MODE=verify-full**（容器要信任你的 CA）
+B> OIDC 登入：新增 authentication source，provider **OpenID Connect**，**auto-discover URL = issuer/.well-known/openid-configuration**（CLI：forgejo admin auth add-oauth）
+B> **[packages] ENABLED=true**（container registry）；**[actions] ENABLED=true**
+B> main 保護：repo 設定的 **Branch protection**，禁止 force push 與刪除；預設分支 main
+B> 環境變數寫法：**FORGEJO__database__SSL_MODE=verify-full**、FORGEJO__server__ROOT_URL=…
+X>   forgejo:
+X>     image: codeberg.org/forgejo/forgejo:11
+X>     environment:
+X>       - FORGEJO__server__ROOT_URL=https://git.19.cs.nycu/
+X>       - FORGEJO__database__DB_TYPE=postgres
+X>       - FORGEJO__database__HOST=pg.19.cs.nycu:5432
+X>       - FORGEJO__database__SSL_MODE=verify-full
+X>     ports: ["127.0.0.1:8101:3000"]
+?fill 用環境變數設定 Forgejo 的 [server] ROOT_URL：FORGEJO__＿＿__ROOT_URL=https://git.19.cs.nycu/
+= server
+E> 格式是 FORGEJO__區段__鍵，兩個底線分隔。
+?mc 讓 Forgejo 用 OIDC provider 登入，auto-discover URL 應填？
++ issuer 加上 /.well-known/openid-configuration
+- issuer 加上 /token
+- OIDC provider 的首頁
+- Forgejo 自己的 ROOT_URL
+E> Forgejo 會從 discovery 文件取得 authorization、token、userinfo endpoint。
+?tf Forgejo 的 ROOT_URL 設錯（例如 http://localhost:3000/），會讓 clone 網址、OAuth 回呼網址都變成錯誤的位址。
+=T
+E> OIDC 的 redirect URI 由 ROOT_URL 組成，必須與 provider 中登記的一致。
+
+@CARD hw3.p_runner | 實作：Forgejo runner 與 Docker-in-Docker
+A> runner 是「派工的工人」：先拿 Forgejo 發的報到碼（registration token）報到，之後不斷問「有沒有工作」；每個 job 開一個新容器執行。用 Docker-in-Docker 時，工人旁邊還有一台「專屬的小 Docker 主機」（docker:dind），job 裡的 docker build 都在那台上進行，不會碰到 host 的 Docker。
+B> 註冊：在 Forgejo 取得 runner token → **forgejo-runner register --no-interactive --instance https://git.19.cs.nycu --token … --labels docker:docker://…** → **forgejo-runner daemon**
+B> DinD：另開 **docker:dind** 服務（需要 **privileged: true**），runner 用 **DOCKER_HOST=tcp://dind:2376**（TLS）連它
+B> job 容器要**信任你的 CA**（clone、docker login、push 都走 HTTPS），也要能解析 git.{STU_ID}.cs.nycu（extra_hosts 或 DNS）
+B> dind 推 image 到你的 registry 也要信任 CA：把 CA 放進 dind 的 **/etc/docker/certs.d/git.{STU_ID}.cs.nycu/ca.crt**
+B> secrets 在 repo 的 Actions 設定中新增（部署用 SSH 私鑰、registry 密碼），在 workflow 用 **${{ secrets.NAME }}**
+X>   dind:
+X>     image: docker:dind
+X>     privileged: true
+X>     environment: [DOCKER_TLS_CERTDIR=/certs]
+X>     volumes: [dind-certs:/certs]
+X>   runner:
+X>     image: code.forgejo.org/forgejo/runner:6
+X>     environment:
+X>       - DOCKER_HOST=tcp://dind:2376
+X>       - DOCKER_TLS_VERIFY=1
+X>       - DOCKER_CERT_PATH=/certs/client
+?mc 為什麼 docker:dind 服務需要 privileged: true？
++ 在容器內執行完整的 dockerd 需要建立 namespace、cgroup、掛載等，必須有完整權限
+- 為了讓它能存取網路
+- 為了讀取 host 的 /etc/hosts
+- 為了使用 GPU
+E> 這也是 DinD 要和其他服務隔離、不要給不信任工作的原因。
+?mc job 中 docker push git.19.cs.nycu/... 出現 x509 錯誤，但 host 上 push 正常。原因？
++ 實際執行 push 的是 dind 裡的 dockerd，它沒有信任你的 CA
+- runner 沒有網路
+- registry 帳號錯誤
+- job 沒有 checkout
+E> host 的 /etc/docker/certs.d 不會自動出現在 dind 容器中。
+?fill workflow 中取用名為 DEPLOY_KEY 的 secret：${{ ＿＿.DEPLOY_KEY }}
+= secrets
+E> secrets 不會出現在 workflow 的 log 中（會被遮蔽）。
+
+@CARD hw3.p_workflow | 實作：Forgejo Actions workflow
+A> workflow 是「生產線的作業說明書」：什麼事件觸發（推 tag）、在哪種工人上跑（runs-on 標籤）、照順序做哪些步驟（檢查 tag → build → push → 部署）。tag 名稱從 github.ref_name 拿到，一路傳給 image tag 和 /api/version。
+B> 位置：**.forgejo/workflows/*.yml**（也讀 .github/workflows）
+B> 觸發：**on: push: tags: ['v[0-9]+.[0-9]+.[0-9]+']**（只寫 tags 時，推 branch 不會觸發）
+B> 取得 tag：**${{ github.ref_name }}**（例如 v1.2.3）；在 job 開頭再用正規表示式檢查
+B> 版本寫進 image：**docker build --build-arg VERSION=$TAG**，Dockerfile 用 **ARG VERSION → ENV APP_VERSION=$VERSION**，/api/version 讀它
+B> 步驟：checkout → **docker login -u … --password-stdin** → build → push → SSH 部署
+X> on:
+X>   push:
+X>     tags: ['v[0-9]+.[0-9]+.[0-9]+']
+X> jobs:
+X>   release:
+X>     runs-on: docker
+X>     steps:
+X>       - uses: actions/checkout@v4
+X>       - run: |
+X>           TAG=${{ github.ref_name }}
+X>           echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || exit 1
+X>           echo "${{ secrets.REGISTRY_TOKEN }}" | docker login git.19.cs.nycu -u ci --password-stdin
+X>           docker build --build-arg VERSION=$TAG -t git.19.cs.nycu/hw3/llm-sandbox-platform:$TAG .
+X>           docker push git.19.cs.nycu/hw3/llm-sandbox-platform:$TAG
+?mc workflow 只寫了 on.push.tags，沒有寫 branches。推送 main 分支會觸發嗎？
++ 不會，只有符合 tags 的 tag 推送會觸發
+- 會，branches 預設是全部
+- 只有 main 會觸發
+- 會觸發但不會 push image
+E> 符合規格「其他 tag 或分支不能 build image」。
+?mc 為什麼 docker login 要用 --password-stdin 而不是 -p 密碼？
++ 避免密碼出現在指令列參數中（process 列表、log 都看得到）
+- -p 不支援 token
+- --password-stdin 比較快
+- 規定只能用 stdin
+E> --password-stdin 從標準輸入讀取密碼，不會留在 shell history 或 process 列表。
+?mc 如何讓 GET /api/version 回傳 CI 正在建置的 tag？
++ build 時用 --build-arg 傳入 tag，Dockerfile 中轉成 ENV，程式讀這個環境變數
+- 程式啟動時執行 git describe
+- 從 Forgejo API 查詢最新 tag
+- 寫死在程式碼中，每次手動改
+E> 容器裡通常沒有 .git 目錄，build 時注入最可靠。
+
+@CARD hw3.p_sshdeploy | 實作：用 SSH key 安全地部署
+A> CI 要「遙控」host 換版本，最安全的作法是發給它一把「只能開一扇門的鑰匙」：這把 SSH key 在 host 的 authorized_keys 裡被限制成只能執行部署腳本，連 shell 都拿不到。就算 CI 的 secret 外洩，攻擊者也只能做「部署某個合法版本」這一件事。
+B> 專用的部署 key：私鑰存成 CI secret，公鑰放 host 部署帳號的 authorized_keys
+B> 限制：**restrict,command="/usr/local/bin/deploy-lmsp"**：不管對方要求執行什麼，都只跑這支腳本；原本的要求放在 **$SSH_ORIGINAL_COMMAND**
+B> 部署腳本**驗證參數**（只接受 ^v[0-9]+\.[0-9]+\.[0-9]+$），把 tag 寫進 compose 的 **.env**，再 **docker compose pull && up -d**
+B> CI 端：**known_hosts 預先放 host 的公鑰**，用 StrictHostKeyChecking=yes，避免被中間人冒充
+B> 能執行 docker 等於 root：部署帳號的能力要靠 forced command 限縮
+X> # ~deploy/.ssh/authorized_keys
+X> restrict,command="/usr/local/bin/deploy-lmsp" ssh-ed25519 AAAA... ci-deploy
+X> # /usr/local/bin/deploy-lmsp
+X> tag=$SSH_ORIGINAL_COMMAND
+X> echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo bad tag >&2; exit 1; }
+X> cd /home/judge/hw3 && sed -i "s/^LMSP_TAG=.*/LMSP_TAG=$tag/" .env
+X> docker compose pull platform && docker compose up -d platform
+?mc authorized_keys 中的 command="/usr/local/bin/deploy-lmsp" 有什麼效果？
++ 用這把 key 登入時，不論要求執行什麼，sshd 都只執行指定的腳本，原本的指令放在 SSH_ORIGINAL_COMMAND
+- 登入後自動執行一次腳本，再給 shell
+- 只允許從某個 IP 登入
+- 讓 key 不需要密碼
+E> 這叫 forced command，常用於備份、部署這類只需要做一件事的金鑰。
+?mc 為什麼部署腳本要用正規表示式檢查 SSH_ORIGINAL_COMMAND？
++ 它來自遠端，必須當成不可信的輸入，避免被注入其他指令或任意字串
+- 為了讓 log 好看
+- sshd 要求一定要檢查
+- 為了加快部署
+E> 永遠假設遠端輸入可能是惡意的：白名單驗證，再使用。
+?fill authorized_keys 選項中，一次關閉 port forwarding、agent forwarding、PTY 等所有額外功能的是＿＿
+= restrict
+E> restrict 之後可以再個別打開需要的功能，例如 restrict,pty。
+
+@CARD hw3.p_dockerapi | 實作：平台透過 Docker API 管理 sandbox
+A> 平台跟 Docker 溝通不是打 docker 指令，而是對 /var/run/docker.sock 送 HTTP 請求（Docker Engine API），或用 SDK 包好的函式。建立、啟動、執行指令、查結果、刪除，都有對應的 API。
+B> 以 HTTP over unix socket：**curl --unix-socket /var/run/docker.sock http://localhost/containers/json**
+B> 生命週期：**POST /containers/create**（Image、Env、HostConfig：Binds/Mounts、NetworkMode、Dns、CapDrop、Memory、PidsLimit）→ **POST /containers/{id}/start** → **POST /containers/{id}/stop** → **DELETE /containers/{id}?force=true**
+B> 執行指令：**POST /containers/{id}/exec**（Cmd、WorkingDir=/workspace、AttachStdout/Stderr）→ **POST /exec/{id}/start**（串流輸出）→ **GET /exec/{id}/json**（Running、**ExitCode**）
+B> Tty=false 時輸出是**多工串流**：每段前面 8 bytes header（第 1 byte 1=stdout、2=stderr，最後 4 bytes 為長度）；要「依序合併」就讓指令自己 **2>&1**
+B> exec **沒有 stop API**：要停止 execution，得找出它的 process 再送訊號（例如記下 PID、用另一個 exec 對 process group 送 SIGTERM）
+B> Docker API 呼叫會形成 CLIENT span，名稱如 **POST /containers/create**
+X> curl -s --unix-socket /var/run/docker.sock -X POST -H 'Content-Type: application/json' \
+X>   -d '{"Image":"sandbox:latest","HostConfig":{"Binds":["sbx-123-ws:/workspace"],"PidsLimit":256}}' \
+X>   'http://localhost/containers/create?name=sbx-123'
+X> # 依序合併 stdout/stderr，並避免引號問題
+X> ["sh","-c","exec bash -c \"$1\" 2>&1","_","<使用者的 input>"]
+?mc 用 exec API（Tty=false）讀到的原始輸出開頭有奇怪的位元組。原因？
++ Docker 用 8-byte header 多工 stdout 與 stderr，需要解析 header 才是真正內容
+- 輸出被 gzip 壓縮
+- 容器的語系設定錯誤
+- 需要改用 HTTP/2
+E> SDK（如 docker-py 的 demux）會幫你處理；Tty=true 不會多工，但會把 \n 轉成 \r\n。
+?mc 要取得某次 execution 的 exit code，應該呼叫？
++ GET /exec/{id}/json，讀 ExitCode（Running 為 false 時）
+- GET /containers/{id}/logs
+- POST /exec/{id}/stop
+- GET /containers/json
+E> Running 為 true 時 ExitCode 還沒有意義（execution 狀態應為 running、exit_code 為 null）。
+?mc 為什麼把使用者的 input 當成 sh -c 'exec bash -c "$1" 2>&1' _ "<input>" 的參數，而不是字串拼接成指令？
++ 以參數傳遞不需要處理引號跳脫，input 中的引號或特殊字元不會破壞外層指令
+- 這樣執行比較快
+- bash 不接受超過 100 字的 -c
+- Docker 規定要這樣寫
+E> $1 是第一個位置參數；_ 佔住 $0。
+
+@CARD hw3.p_lifecycle | 實作：pause / resume 與平台的優雅關機
+A> 平台關機時要「先幫每個房客收拾工作桌」：停掉正在跑的 execution、保留 /workspace、刪掉容器、狀態改成 paused。這些動作需要時間，所以 compose 給平台的關機寬限期要夠長，平台也要接住 SIGTERM 才有機會做事。
+B> /workspace 放在**每個 sandbox 一個 volume**（例如 sbx-<id>-ws）；容器名稱帶 sandbox_id，ID 本身存資料庫、pause/resume 不變
+B> pause：stop 執行中的 execution（狀態 **stopped**，保留已產生的輸出）→ 刪除容器（**不刪 volume**）→ paused
+B> resume：用同一個 image 與 volume **建立新容器**、套用相同的網路與環境變數 → running
+B> close：刪除容器**與 volume** → closed
+B> 平台收到 **SIGTERM** 時 pause 所有 running sandbox；compose 設 **stop_grace_period: 60s**（預設 10 秒可能不夠）；重啟後**不自動 resume**
+B> 啟動時對帳：資料庫說 running、但容器不存在的 sandbox 要修正狀態
+X>   platform:
+X>     stop_grace_period: 60s
+X>     volumes:
+X>       - /var/run/docker.sock:/var/run/docker.sock
+X> # Python：接住 SIGTERM
+X> signal.signal(signal.SIGTERM, lambda *_: pause_all_and_exit())
+?mc docker compose down 時，平台來不及 pause 所有 sandbox 就被殺掉。最可能的原因？
++ 預設只等 10 秒就送 SIGKILL，要調高 stop_grace_period，並確保程式有處理 SIGTERM
+- 平台沒有掛 docker.sock
+- volume 太大
+- 平台用的是 alpine image
+E> 若 CMD 是 shell form，平台甚至收不到 SIGTERM（PID 1 問題）。
+?mc resume 時為什麼不用 docker start 重新啟動原本的容器？
++ pause 時容器已被刪除；規格要求 resume 建立新容器，只有 /workspace 保留
+- docker start 不能用在 sandbox
+- 原本的容器 ID 會衝突
+- docker start 需要 root
+E> 新容器會有新的 container ID，所以資料庫要用自己的 sandbox_id 追蹤。
+?tf close 一個 sandbox 時，應該連 /workspace 的 volume 一起刪除。
+=T
+E> Close：Delete the container and the kept content。
+
+@CARD hw3.p_sbxnet | 實作：怎麼讓 sandbox 的流量只能走平台
+A> 讓 sandbox 住在一座「只有一座橋的島」上：島（internal 網路）本身不通外面，唯一的橋就是平台容器。sandbox 的預設路由和 DNS 都指向平台；平台不幫忙轉送封包，只把 80、443、53 的連線「攔下來交給自己的 proxy 和 DNS」，其他封包自然就到不了任何地方。
+B> sandbox 只接 **internal 網路**（沒有對外路由）；平台同時接 internal 網路與一般網路
+B> DNS：建立容器時 **Dns=[平台 IP]**；預設路由：由有 NET_ADMIN 的輔助容器 **--network container:<sbx>** 執行 **ip route replace default via 平台 IP**（sandbox 本身沒有 NET_ADMIN 改不回來）
+B> 平台容器（需 **NET_ADMIN**）：**ip_forward 關閉**（不轉送）；iptables **REDIRECT** 把 tcp/80、tcp/443 導到 HTTP / HTTPS proxy，udp+tcp/53 導到 DNS
+B> 其他流量：沒有被 REDIRECT、也不轉送 → 被丟棄（也可明確 DROP）
+B> proxy 依 Host / SNI 自己用平台 DNS 解析再連線；用來源 IP 對應到 sandbox_id 以記錄事件
+X> # 平台容器內
+X> sysctl -w net.ipv4.ip_forward=0
+X> iptables -t nat -A PREROUTING -i eth1 -p tcp --dport 80  -j REDIRECT --to-ports 8080
+X> iptables -t nat -A PREROUTING -i eth1 -p tcp --dport 443 -j REDIRECT --to-ports 8443
+X> iptables -t nat -A PREROUTING -i eth1 -p udp --dport 53  -j REDIRECT --to-ports 5353
+?mc 平台容器把 ip_forward 關閉的目的？
++ 平台不會替 sandbox 轉送任何封包，只有被 REDIRECT 給 proxy / DNS 的連線能出去
+- 讓 DNS 查詢變快
+- 防止平台被 OOM kill
+- 讓 sandbox 可以直接上網
+E> 所有對外連線都必須由平台的程式代為發出，才能檢查與記錄。
+?mc iptables 的 REDIRECT 目標做了什麼？
++ 把封包的目的地改成本機的指定 port，讓本機程式（proxy）接手這條連線
+- 把封包丟棄
+- 把封包轉送到另一台主機
+- 加密封包
+E> 透明代理的常見做法，用戶端不需要設定 proxy。
+?mc 平台如何知道某個連線來自哪個 sandbox？
++ 依連線的來源 IP，對照每個 sandbox 容器在 internal 網路上的 IP
+- 依 HTTP User-Agent
+- 依 TLS 的 SNI
+- 依 DNS 查詢的內容
+E> 建立容器後用 inspect 取得 IP，存進對照表。
+
+@CARD hw3.p_mitmimpl | 實作：HTTPS 攔截 proxy 的流程
+A> 攔截 HTTPS 的順序很重要：先偷看信封上的收件人（ClientHello 的 SNI），檢查名單、去真正的網站驗證身分與黑名單；確認沒問題，才用自己的印章臨時做一張該網站的證件給 sandbox。上游驗證失敗，就直接在握手時回一個 TLS alert 拒絕。
+B> ① 讀 **ClientHello 的 SNI**（還沒解密）→ 不在 allowlist、或是 IP → 記錄 block event 並斷線
+B> ② 用平台 DNS 解析 SNI、連到真網站，以 **VM 信任的 CA**（例如掛入 host 的 /etc/ssl/certs/ca-certificates.crt）驗證憑證鏈與主機名
+B> ③ 檢查撤銷：從憑證的 **CRL Distribution Points** 下載 CRL、**每 60 秒內更新**、檢查**整條鏈**（Python：**ssl.VERIFY_CRL_CHECK_CHAIN** 並載入 CRL）
+B> ④ 通過後，以**攔截 CA** 即時簽一張 **SAN = SNI** 的憑證（依 SNI 快取），完成與 sandbox 的握手；失敗則送 **TLS alert** 並記錄 tls_invalid / tls_revoked
+B> ⑤ 解密後逐一轉送 request：同一條連線上的**每個 request 各記一筆 event**；body 去掉 chunked、保留 Content-Encoding、base64
+?ord 攔截一條 sandbox 的 HTTPS 連線，合理的處理順序：
+> 讀取 ClientHello 中的 SNI 並檢查 allowlist
+> 解析 SNI、連到真網站並驗證憑證與 CRL
+> 以攔截 CA 簽發 SAN 為該網域的憑證，完成與 sandbox 的握手
+> 轉送並記錄每一個 HTTP request 與 response
+E> 先驗上游，才能在上游有問題時，用 TLS alert 拒絕 sandbox。
+?mc 為什麼平台要用「VM 信任的 CA」來驗證真網站，而不是 sandbox 裡的 CA？
++ sandbox 可以被 agent 任意修改（例如加入惡意 CA），平台的判斷不能依賴它
+- sandbox 裡沒有任何 CA
+- VM 的 CA 比較新
+- 規格沒有理由
+E> 平台是信任邊界，要用自己可控的信任清單。
+?mc CRL 是什麼？
++ CA 定期發布的「已撤銷憑證序號清單」，用來判斷憑證是否被撤銷
+- 憑證的申請檔
+- 加密用的對稱金鑰
+- DNS 的記錄類型
+E> 另一種機制是 OCSP（即時詢問 CA）；HW3 指定用 CRL。
+
+@CARD hw3.p_dnsimpl | 實作：平台 DNS 伺服器
+A> 平台的 DNS 是「只轉接特定號碼的總機」：收到查詢先看名字是不是 ta.cs.nycu 家族，是就轉給 TA 的 DNS 並原封不動回覆，不是就回 NXDOMAIN。每通電話都要記錄成 event，並且即時檢查三條告警規則。
+B> 判斷 allowlist：qname **轉小寫、去掉結尾的 .**，等於 ta.cs.nycu 或以 **.ta.cs.nycu** 結尾（注意 evilta.cs.nycu 不算）
+B> 轉送到 **192.168.255.66**，把回應（含 rcode）原樣回給 sandbox；不在名單 → **NXDOMAIN**、verdict block、answers []
+B> event detail：qname、**qtype**（A、AAAA、TXT…）、**rcode**（NOERROR、NXDOMAIN、SERVFAIL）、answers（name、type、ttl、data 用 **dig 的 RDATA 格式**）
+B> RDATA 例：A → 192.168.255.10；CNAME → target.example.；TXT → "text"；MX → 10 mail.example.
+B> 告警：label > 40 字元 → dns_long_label；qtype TXT → dns_txt；同 sandbox 10 秒內第 21 次 → dns_burst（之後冷卻 10 秒）
+B> 實作工具：Python dnslib、Go miekg/dns，或 CoreDNS 加外掛
+X> def allowed(q):
+X>     q = q.lower().rstrip('.')
+X>     return q == 'ta.cs.nycu' or q.endswith('.ta.cs.nycu')
+?mc 用 q.endswith('ta.cs.nycu') 判斷 allowlist 有什麼漏洞？
++ evilta.cs.nycu 這種名稱也會通過；應檢查等於 ta.cs.nycu 或以 .ta.cs.nycu 結尾
+- 大小寫不同的名稱會被擋
+- 結尾有 . 的名稱會通過
+- 沒有漏洞
+E> 網域比對要以 label 為單位。
+?mc dns event 中 qname 應記錄成？
++ 小寫、去掉結尾的點，例如 llm.ta.cs.nycu
+- 原樣保留大小寫與結尾的點
+- 只記錄第一個 label
+- 轉成 IP
+E> 規格：qname (lowercase, no trailing .)。
+?mc 某個 allowlist 中的名稱，TA DNS 回應 NXDOMAIN。這筆 dns event 的 verdict 應該是？
++ allow（轉送的查詢一律 allow，不論 rcode）
+- block
+- 不需要記錄
+- error
+E> 規格：Forwarded queries: verdict is allow, whatever the rcode。
+
+@CARD hw3.p_falcoimpl | 實作：用 Falco 寫 syscall 規則
+A> Falco 在 kernel 裡裝了「監視器」（eBPF），每個 syscall 都會被看到。規則就是「什麼條件要報警」：哪個 syscall、開了哪個檔、是誰（哪個容器、哪個指令）。平台再把 Falco 的警報對應到 sandbox，寫成 syscall event 並轉發 alert。
+B> 部署：在 host 上或特權容器中執行，driver 用 **modern eBPF**；輸出 **JSON**，用 **http_output**（或 program_output、falcosidekick）送給平台
+B> 規則結構：**rule、desc、condition、output、priority**；常用 macro：**open_read**、**open_write**、**spawned_process**
+B> 常用欄位：**evt.type**（openat、unlinkat、renameat2、fchmodat、truncate…）、**fd.name**、**proc.exepath**（實際執行檔，已解析 symlink）、**proc.cmdline**、**proc.pcmdline**、**container.id**
+B> 只監看 sandbox：condition 加 **container.name startswith "sbx-"** 或對照 container.id
+B> 用 syscall 層判斷，才能抓到 cat、python、dd、重導向（> 會以 O_TRUNC 開檔）等各種做法
+X> - rule: sandbox read sensitive file
+X>   condition: >
+X>     open_read and container.name startswith "sbx-" and
+X>     (fd.name in (/etc/shadow, /etc/gshadow, /etc/sudoers, /root/.bash_history, /proc/1/environ)
+X>      or fd.name startswith /run/secrets/ or fd.name startswith /etc/ssl/private/)
+X>   output: "path=%fd.name cmd=%proc.cmdline container=%container.id"
+X>   priority: WARNING
+?mc 執行 /usr/bin/nc（是指向 nc.openbsd 的 symlink），要記錄「symlink 解析後」的執行檔路徑，應該用哪個 Falco 欄位？
++ proc.exepath
+- proc.name
+- fd.name
+- evt.type
+E> 規格：path 是 File run by execve, symlinks resolved。
+?mc 用 echo > /root/.bash_history 清除歷史，在 syscall 層看起來是什麼？
++ 以寫入並截斷（O_TRUNC）的方式 open 該檔案
+- execve 一個名為 echo 的檔案
+- unlink 該檔案
+- 不會產生任何 syscall
+E> shell 的重導向由 shell 自己 open 檔案，echo 是 builtin。
+?mt 配對 Falco 規則欄位：
+> condition :: 觸發條件
+> output :: 警報訊息格式（可帶 %欄位）
+> priority :: 嚴重程度
+> macro :: 可重用的條件片段（如 open_read）
+E> Falco 內建規則檔定義了很多 macro 與 list，自訂規則可以直接引用。
+
+@CARD hw3.p_eventsql | 實作：events 資料表與查詢
+A> events 表是平台的「黑盒子」，所有網路、DNS、LLM、syscall 事件都寫在這裡。固定欄位放查詢常用的（誰、何時、哪類、結果），各類型的細節放在 jsonb 的 detail 中，彈性又能查。
+B> 建表：**id uuid PRIMARY KEY DEFAULT gen_random_uuid()**、sandbox_id uuid、**time timestamptz**、type text、verdict text、**detail jsonb**
+B> **timestamptz**：帶時區、存成 UTC，輸出可轉成 RFC 3339；不要用不帶時區的 timestamp
+B> 加 CHECK：type IN ('network','llm','dns','syscall')、verdict IN ('allow','block')
+B> 索引：**(sandbox_id, time)**；常查 detail 的欄位可建 **GIN 索引**
+B> jsonb 查詢：**detail->>'host'**（文字）、**detail->'answers'**（jsonb）、**detail @> '{"rule":"pipe_to_shell"}'**（包含）
+X> CREATE TABLE events (
+X>   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+X>   sandbox_id uuid NOT NULL,
+X>   time timestamptz NOT NULL,
+X>   type text NOT NULL CHECK (type IN ('network','llm','dns','syscall')),
+X>   verdict text NOT NULL CHECK (verdict IN ('allow','block')),
+X>   detail jsonb NOT NULL
+X> );
+X> CREATE INDEX ON events (sandbox_id, time);
+X> SELECT count(*) FROM events WHERE type='syscall' AND detail @> '{"rule":"tmp_script"}';
+?mc 為什麼 time 欄位建議用 timestamptz 而不是 timestamp？
++ timestamptz 會正確處理時區（內部存 UTC），輸出 RFC 3339 時不會因伺服器時區設定而出錯
+- timestamptz 比較省空間
+- timestamp 不能排序
+- PostgreSQL 18 移除了 timestamp
+E> 輸出時用 to_char 或在程式中格式化成 2026-12-01T10:00:05+08:00 的 RFC 3339 格式。
+?fill 查詢 detail 中包含 {"rule":"dns_txt"} 的事件，jsonb 的「包含」運算子是 detail ＿＿ '{"rule":"dns_txt"}'
+= @>
+E> @> 可以搭配 GIN 索引加速。
+?cmd 在 PostgreSQL 中產生一個隨機 UUID（SQL）：
+= SELECT gen_random_uuid();
+= select gen_random_uuid();
+= SELECT gen_random_uuid()
+E> PostgreSQL 13 起內建，不需要擴充套件。
+
+@CARD hw3.p_promimpl | 實作：Prometheus 設定與 /metrics 格式
+A> Prometheus 抄表時是「在 Docker 網路裡直接走到每台機器旁邊」，用服務名稱當地址，而不是繞到大門（NGINX）。它自己的網頁也要上鎖：用 web.config.file 設 basic auth，密碼存 bcrypt 雜湊。
+B> **prometheus.yml**：global **scrape_interval: 15s**；scrape_configs 每個 job 寫 **basic_auth**（username sa、password {STU_ID}）與 **targets**（用 compose 服務名稱，例如 ipsrv1:8000）
+B> Prometheus 網頁的 basic auth：**--web.config.file=web.yml**，內容 **basic_auth_users: { sa: <bcrypt 雜湊> }**（用 htpasswd -nBC 10 sa 產生）
+B> 暴露格式：**# HELP**、**# TYPE x counter**、**x_total{label="v"} 123**；每個 target 會自動有 **up** 指標（1=抓得到）
+B> 平台：**lmsp_sandboxes{status="running"}**（gauge，各狀態都輸出，0 也輸出）、**lmsp_executions_total{type="agent"}**（counter）
+B> 檢查：Prometheus 網頁的 **Status → Targets**、或查詢 **up{job="ip-srv"}**
+X> global: { scrape_interval: 15s }
+X> scrape_configs:
+X>   - job_name: llm-sandbox-platform
+X>     basic_auth: { username: sa, password: "19" }
+X>     static_configs: [ { targets: ['platform:8103'] } ]
+X> # web.yml
+X> basic_auth_users:
+X>   sa: $2y$10$...
+?mc Prometheus 的 target 寫成 127.0.0.1:8000，但 Prometheus 跑在容器裡，結果全部 down。原因？
++ 容器內的 127.0.0.1 是 Prometheus 容器自己，不是 host；應改用 compose 服務名稱
+- IP-Srv 沒有 /metrics
+- 15 秒太短
+- 需要用 HTTPS
+E> compose 網路中的服務名稱由 Docker 內建 DNS 解析。
+?mc 查詢 up{job="ip-srv"} 得到三筆，其中一筆值為 0，代表？
++ 該 replica 這次沒有被成功 scrape（掛了、網路不通或認證失敗）
+- 該 replica 處理了 0 個請求
+- Prometheus 本身故障
+- 該 replica 的 metric 型別錯誤
+E> up 是 Prometheus 自動產生的指標，不是服務自己輸出的。
+?mc /metrics 輸出的這行代表什麼：ip_srv_requests_total 42
++ counter 型別的指標，目前累計值是 42
+- 每秒 42 個請求
+- 42 個 replica
+- 錯誤次數為 42
+E> 要看速率得用 rate(ip_srv_requests_total[1m])。
+
+@CARD hw3.p_otelimpl | 實作：把 log 與 trace 送到 OTLP collector
+A> 兩條管線：NGINX 的 access log 交給 OpenTelemetry Collector「讀檔、拆欄位、加上 service.name、用 client 憑證送出」；平台則直接在程式裡用 OpenTelemetry SDK 產生 log 和 span，透過環境變數設定送去哪裡、用哪張憑證。
+B> NGINX：**log_format … escape=json** 輸出 JSON（status 不加引號就是數字），或用一般格式再以 regex 解析；只寫入 access.log 的請求才會被送出（sa-probe 已被 if= 排除）
+B> Collector（contrib 版）：**filelog** receiver 讀 /home/judge/hw3/logs/access.log → 解析出 sa.uri、sa.host、sa.method、sa.user_agent、**sa.status（整數）**，**body 保留原始那一行** → resource 加 **service.name=nginx** → **otlphttp** exporter
+B> exporter TLS：**cert_file**（client 憑證 + intermediate）、**key_file**、**ca_file**（驗證 collector 的 CA）
+B> 平台 SDK 環境變數：**OTEL_SERVICE_NAME=llm-sandbox-platform**、**OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.ta.cs.nycu:4318**、**OTEL_EXPORTER_OTLP_CERTIFICATE**、**OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE**、**OTEL_EXPORTER_OTLP_CLIENT_KEY**
+B> OTLP/HTTP 路徑：**/v1/logs**、**/v1/traces**、/v1/metrics；用 **batch** processor / BatchSpanProcessor 減少請求數
+X> log_format sajson escape=json '{"uri":"$request_uri","host":"$host","method":"$request_method","ua":"$http_user_agent","status":$status}';
+X> # otel collector
+X> exporters:
+X>   otlphttp:
+X>     endpoint: https://otel.ta.cs.nycu:4318
+X>     tls: { cert_file: /certs/otel-client.fullchain.crt, key_file: /certs/otel-client.key, ca_file: /certs/ta-root.crt }
+?mc nginx 的 log_format 用 escape=json 並讓 "status":$status 不加引號，好處是？
++ 輸出合法 JSON，解析後 status 直接是數字，符合 sa.status 要求的整數型別
+- log 檔比較小
+- nginx 會自動把 log 送到 OTLP
+- 可以不用 access_log 指令
+E> escape=json 會把變數中的特殊字元正確跳脫，避免產生不合法的 JSON。
+?fill OTLP/HTTP 上傳 trace 的路徑是 https://otel.ta.cs.nycu:4318/v1/＿＿
+= traces
+E> log 是 /v1/logs，metrics 是 /v1/metrics。
+?mc 平台的 OpenTelemetry SDK 要用 client 憑證連 collector，應設定哪兩個環境變數？
++ OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE 與 OTEL_EXPORTER_OTLP_CLIENT_KEY
+- OTEL_SERVICE_NAME 與 OTEL_RESOURCE_ATTRIBUTES
+- SSL_CERT_FILE 與 REQUESTS_CA_BUNDLE
+- OTEL_TRACES_SAMPLER 與 OTEL_LOGS_EXPORTER
+E> OTEL_EXPORTER_OTLP_CERTIFICATE 則是用來驗證 collector 的 CA。
+
+@CARD hw3.p_spans | 實作：span 的父子關係與時間
+A> 一條 trace 是一次 API 請求的「行程表」。API 請求是起點（root span），途中每個 Docker 呼叫是它的子行程；execution 是背景任務，雖然是 API 請求派出去的（所以是它的子 span），但可以比 API 請求晚很多才結束；tool call 的起訖時間則來自 sallm-cli 事件裡的 time。
+B> 每個 API 請求一條 trace：root span 名稱 = **方法 + route 樣板**（POST /api/sandboxes/{id}/executions，**不要**放實際 ID，避免基數爆炸）
+B> Docker 呼叫：**CLIENT** span，名稱 **POST /containers/create** 等，parent 是發出呼叫的 span
+B> execution：**INTERNAL** span，parent 是 API span，**可以比 parent 晚結束**（背景執行時要把 context 傳到背景工作）
+B> tool call：從 tool_call 到相同 **call_id** 的 tool_result，**用事件中的 time 設定 start / end time**
+B> 失敗：span status **ERROR**（並記錄例外）；log 帶 trace_id / span_id 對應產生它的 span
+?mc root span 名稱為什麼用 /api/sandboxes/{id}/executions，而不是 /api/sandboxes/3f2b…/executions？
++ 用 route 樣板讓同類請求聚合在一起；放實際 ID 會讓名稱數量無限增加
+- 實際 ID 是機密
+- OpenTelemetry 不允許數字
+- 為了讓 trace 比較短
+E> 實際 ID 放在 lmsp.sandbox_id attribute。
+?mc API 請求很快回應，但 execution 在背景跑了 5 分鐘。execution span 應該？
++ 仍以 API span 為 parent，在 execution 真正結束時才結束
+- 跟 API span 一起結束
+- 另開一條新的 trace
+- 不需要 span
+E> 規格：The execution span lasts from start to end and can end after the API request span。
+?tf tool call span 的開始與結束時間，應該用 sallm-cli 事件中的 time，而不是平台讀到事件的時間。
+=T
+E> 這樣 span 的時間才反映 agent 實際呼叫工具的時刻。
+
+@CARD hw3.p_alertimpl | 實作：告警的去重、冷卻與重送
+A> 告警系統要拿捏「不漏報也不洗版」：每個符合的事件、每條規則各報一次；dns_burst 這種「流量型」規則要有冷卻時間；送 Alert API 失敗要重試，但不能因此卡住整個平台。
+B> 一個事件符合多條規則 → **每條規則各送一個 alert**；JSON 的 **time 用事件發生的時間**（RFC 3339），不是送出的時間
+B> dns_burst：每個 sandbox 用**滑動視窗**（例如 deque 存最近 10 秒的查詢時間）；第 21 次送出後進入 **10 秒冷卻**
+B> 送出：**POST https://alert.ta.cs.nycu/api/alerts**，**Bearer token**，成功 **201**；失敗（網路錯誤、5xx）用**背景佇列 + 重試**，不要阻塞 proxy 或 DNS
+B> token 從 files.ta.cs.nycu 取得後存成 secret，不要寫進 git
+X> from collections import deque
+X> win = {}           # sandbox_id -> deque of timestamps
+X> def on_dns(sid, t):
+X>     q = win.setdefault(sid, deque())
+X>     q.append(t)
+X>     while q and q[0] <= t - 10: q.popleft()
+X>     if len(q) > 20 and t >= cooldown.get(sid, 0):
+X>         send_alert(sid, 'dns', 'dns_burst', t); cooldown[sid] = t + 10
+?mc 為什麼送 Alert API 應該放進背景佇列，而不是在處理 DNS 查詢時同步呼叫？
++ 外部 API 變慢或失敗時，同步呼叫會拖慢甚至卡住 sandbox 的 DNS 與網路
+- Alert API 不接受同步請求
+- 背景佇列可以讓 alert 變少
+- 為了省記憶體
+E> 把可能失敗或變慢的外部呼叫和主要的資料路徑分開，是常見的可靠性設計。
+?mc alert JSON 中的 time 應該填？
++ 觸發 alert 的事件發生時間
+- 送出 alert 的時間
+- sandbox 建立時間
+- 平台啟動時間
+E> 規格：time is the event time in RFC 3339。
+
+@CARD hw3.p_recovery | 實作：「什麼都會自己回來」的檢查清單
+A> judge 會關容器、重啟 Docker、重開機。要做到「什麼都會自己回來」，每一層都要有人負責拉起來：systemd 拉 nginx 和 docker，docker 依 restart policy 拉容器，容器靠 volume 找回資料，服務之間靠 healthcheck 與重試等待彼此。
+B> host 層：**systemctl enable nginx docker**；/etc/hosts、DNS、信任 CA 都是**持久設定**
+B> 容器層：每個服務 **restart: unless-stopped**（或 always）；需要等待的用 **depends_on + condition: service_healthy**
+B> 資料層：DB、Forgejo、Keycloak、Prometheus、平台的狀態都在 **volume / bind mount**；目前部署的版本 tag 寫在 **.env**
+B> 程式層：連不上依賴時**重試**而不是直接結束；啟動時與資料庫**對帳**（例如 sandbox 狀態）
+B> 實測：**docker compose down && docker compose up -d**、**systemctl restart docker**、**reboot** 三種都要測；用 **Ansible** 或腳本讓整套環境可重建
+?mc 執行 systemctl restart docker 後，哪個設定讓容器自動回來？
++ 容器的 restart policy（always 或 unless-stopped）
+- depends_on
+- healthcheck
+- docker compose 的 -d 選項
+E> unless-stopped 時，若容器在重啟前是手動停止的，則不會自動回來。
+?mc 平台啟動時 PostgreSQL 還沒準備好，平台直接 exit 1，之後也沒再起來。最合適的修正組合？
++ 平台內加入連線重試，並在 compose 用 depends_on condition: service_healthy 與 restart policy
+- 把平台改成 Type=oneshot
+- 拿掉 PostgreSQL 的 TLS
+- 把兩個服務合併成一個容器
+E> 依賴可能暫時不可用，服務要能自己等待並重試。
+?tf 每次修改後只用 docker compose restart 測試，就能保證 down + up 之後也能正常運作。
+=F
+E> restart 不會重建容器；down + up 會刪除並重建，只有寫在 volume 和設定檔中的東西會留下。
 </script>
 <script type="text/plain" class="sa-src" data-ch="ext1">
 @CH ext1 | 考古延伸①：Docker 考古、儲存、Web 與認證 | 🧭 | 歷屆考古題
@@ -8889,11 +10797,12 @@ E> 考差異題時要說清楚兩邊各怎麼做。
 <script>
 'use strict';
 /* ═════════════════════ 0. VERSION ═════════════════════ */
-const CONTENT_VERSION = 3;
+const CONTENT_VERSION = 4;
 const CHANGELOG = [
   {v:1, date:'2026-11-12', note:'初版：Shell、Shell Programming、網路、開機關機、使用者、Process、cron、檔案系統、LVM、Btrfs、Docker、HW2，加上歷屆考古題延伸（共 14 章）'},
   {v:2, date:'2026-11-15', note:'新增 56 張實作卡：find、grep、journalctl、systemd 除錯、LUKS 與 initramfs 救援、ACL、fstab 驗證、LVM 縮容與 RAID、Btrfs rollback、sshd 設定陷阱、SFTP 驗收與 chroot log、sftp_watchd 測試等。新卡排在各章最後，會自然混進每日新題。'},
-  {v:3, date:'2026-11-16', note:'新增 3 章、65 張卡、239 題：systemd 深入（cgroups v2、資源控制、unit 依賴與順序、Type 與 Restart、timer、template）、Docker 進階（Dockerfile、layer cache、multi-stage、network driver、Compose、healthcheck、restart policy）、HW3 實戰觀念（PKI、NGINX、OIDC、PostgreSQL TLS、CI/CD、sandbox 網路與 syscall 監控、Prometheus、OpenTelemetry）。每章都有新魔王與房間家具。'}
+  {v:3, date:'2026-11-16', note:'新增 3 章、65 張卡、239 題：systemd 深入（cgroups v2、資源控制、unit 依賴與順序、Type 與 Restart、timer、template）、Docker 進階（Dockerfile、layer cache、multi-stage、network driver、Compose、healthcheck、restart policy）、HW3 實戰觀念（PKI、NGINX、OIDC、PostgreSQL TLS、CI/CD、sandbox 網路與 syscall 監控、Prometheus、OpenTelemetry）。每章都有新魔王與房間家具。'},
+  {v:4, date:'2026-11-16', note:'再補 64 張卡、201 題：systemd 實作（socket/path、fstab 與 mount unit、KillMode、hardening、journal 管理、cgroup 除錯）、Docker 實作（PID 1 與訊號、registry 與私有 CA、資源限制、docker.sock 風險、capabilities、防火牆繞過、.env）、HW2 逐項拆解（LUKS、rescue、縮 root、RAID10、rollback 原理、SnApper 參數、ACL 與 anonymous 的衝突、Match 設定、watchd 實作）、HW3 實作層（openssl、TLS 除錯、反向代理 header、容器 DNS 與 CA、Keycloak、JWT、PostgreSQL TLS、runner 與 workflow、SSH 部署、Docker API、sandbox 網路、MITM、DNS、Falco、SQL、Prometheus、OTel）。'}
 ];
 
 /* ═════════════════════ 1. CONTENT PARSER ═════════════════════
