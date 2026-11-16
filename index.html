@@ -266,6 +266,8 @@ details summary{cursor:pointer}
 .check .auto{margin-left:auto;font-size:var(--text-xs);color:var(--color-muted)}
 @media (prefers-reduced-motion: reduce){ .boss-spr.dying{animation:none;transform:translateY(10px) rotate(-8deg);filter:saturate(.3) brightness(.95) contrast(1.15)} .dust i{animation:none} .ko{animation:none;opacity:1} }
 
+.star-row{display:flex;align-items:center;gap:var(--space-2xs)}
+.star-row>.li{flex:1;min-width:0}
 /* practice */
 .prog{display:flex;gap:var(--space-2xs);flex:1}
 .prog i{flex:1;height:6px;background:var(--color-paper-3)}
@@ -11902,6 +11904,7 @@ VIEWS.home=()=>{
     <button class="mi" data-act="go" data-v="flashpick">${icon('cards')}<span class="grow"><span class="t">快閃卡</span><span class="d">翻卡回想比喻與重點</span></span></button>
     <button class="mi" data-act="go" data-v="termpick">${icon('term')}<span class="grow"><span class="t">終端機特訓</span><span class="d">把指令親手打出來</span></span></button>
     <button class="mi" data-act="blitz">${icon('bolt')}<span class="grow"><span class="t">60 秒閃電戰</span><span class="d">連擊加倍，快問快答</span></span><span class="r">最高 ${S.best.blitz||0}</span></button>
+    <button class="mi" data-act="go" data-v="starred">${icon('star')}<span class="grow"><span class="t">收藏的卡</span><span class="d">${(()=>{ const n=starredCards().length; return n?`${n} 張，快閃複習或直接出題`:'按星號收藏的觀念卡會集中在這裡'; })()}</span></span></button>
     <button class="mi" data-act="go" data-v="exam">${icon('scroll')}<span class="grow"><span class="t">考古題道場</span><span class="d">歷屆簡答題與得分點批改</span></span></button>
     <button class="mi" data-act="go" data-v="radar">${icon('target')}<span class="grow"><span class="t">盲點雷達</span><span class="d">看弱點、針對性特訓</span></span></button>
     <button class="mi" data-act="peek">${icon('dice')}<span class="grow"><span class="t">隨手翻一張</span><span class="d">等公車、排隊時翻一張觀念卡</span></span></button>
@@ -12292,11 +12295,27 @@ function startFlash(scope){
     const learned=shuffle(CLIST.filter(c=>cardStarted(c)&&!w.includes(c))).sort((a,b)=>cardMastery(a)-cardMastery(b));
     cards=[...w,...learned].slice(0,12);
     if(cards.length<12){ const nn=nextNewQs(12-cards.length).map(x=>x.card).filter(c=>!cards.includes(c)); cards=cards.concat(nn); }
-  } else if(scope==='learned'){ cards=shuffle(CLIST.filter(c=>cardStarted(c)||S.c[c.id]?.v)).slice(0,20); }
+  } else if(scope==='starred'){ cards=shuffle(starredCards()); }
+  else if(scope==='learned'){ cards=shuffle(CLIST.filter(c=>cardStarted(c)||S.c[c.id]?.v)).slice(0,20); }
   else { cards=CHMAP[scope.slice(3)].cards.slice(); }
   if(!cards.length){ toast('這裡還沒有卡片'); return; }
   go('flash',{cards:cards.map(c=>c.id),i:0,flip:false,stat:[0,0,0]});
 }
+/* ---------- STARRED CARDS ---------- */
+function starredCards(){ return CLIST.filter(c=>S.bm[c.id]?.on); }
+VIEWS.starred=()=>{
+  const all=starredCards(), sort=VIEW.sort||'recent';
+  const nq=all.reduce((n,c)=>n+c.q.filter(q=>q.k!=='sa').length,0);
+  const row=c=>`<div class="star-row">${cardRow(c)}<button class="iconbtn sm on" data-act="bm" data-c="${c.id}" aria-label="取消收藏：${esc(c.t.replace(/[*`]/g,''))}">${icon('star')}</button></div>`;
+  let list;
+  if(!all.length) list=`<div class="card"><div class="empty">還沒有收藏。看觀念卡時按右上角的星號，就會出現在這裡。</div></div>`;
+  else if(sort==='chapter'){ list=CH.map(ch=>{ const cs=all.filter(c=>c.ch===ch); return cs.length?`<div class="sec">${chTag(ch)} ${esc(ch.t)}<span class="note">${cs.length} 張</span></div><div class="card">${cs.map(row).join('')}</div>`:''; }).join(''); }
+  else { const cs=all.slice().sort((a,b)=>(S.bm[b.id].t||0)-(S.bm[a.id].t||0)); list=`<div class="card">${cs.map(row).join('')}</div>`; }
+  return topbar('收藏的卡')+`<div class="small muted" style="margin-bottom:var(--space-sm)">你按了星號的觀念卡都在這裡。點卡片看內容，點星號取消收藏。</div>
+  ${all.length?`<div class="row wrap" style="margin-bottom:var(--space-sm)"><button class="btn pri grow" data-act="flash" data-scope="starred">${icon('cards')} 快閃 ${all.length} 張</button><button class="btn grow" data-act="starquiz" ${nq?'':'disabled'}>${icon('play')} 用收藏出題</button></div>
+  <div class="seg" role="tablist"><button role="tab" aria-selected="${sort==='recent'}" class="${sort==='recent'?'on':''}" data-act="starsort" data-s="recent">最近收藏</button><button role="tab" aria-selected="${sort==='chapter'}" class="${sort==='chapter'?'on':''}" data-act="starsort" data-s="chapter">依章節</button></div>`:''}
+  ${list}`;
+};
 VIEWS.flash=()=>{
   const V=VIEW; if(V.i>=V.cards.length){ return topbar('快閃卡完成')+`<div class="card center">${mascot('happy')}<div class="h1 mt-xs">翻完 ${V.cards.length} 張！</div><div class="stats"><span class="chip g">記得 ${V.stat[2]}</span><span class="chip y">模糊 ${V.stat[1]}</span><span class="chip r">忘了 ${V.stat[0]}</span></div>${V.stat[0]?'<div class="small muted mt-sm">忘了的卡，相關題目已排進今日複習。</div>':''}</div><div class="dock"><div><button class="btn" data-act="home">回首頁</button><button class="btn pri" data-act="daily">去做今日任務</button></div></div>`; }
   const c=CARD[V.cards[V.i]];
@@ -12522,6 +12541,9 @@ const ACT={
   peek:()=>{ const pool=CLIST.filter(c=>cardStarted(c)); const c=(pool.length&&Math.random()<0.75)?pool[Math.random()*pool.length|0]:(nextNewQs(1)[0]?.card||CLIST[Math.random()*CLIST.length|0]); go('card',{c:c.id}); },
   chapter:d=>go('chapter',{ch:d.ch}),
   card:d=>{ lastViewed=''; go('card',{c:d.c}); },
+  starsort:d=>{ VIEW.sort=d.s; render(); },
+  starquiz:()=>{ const qs=shuffle(starredCards().flatMap(c=>c.q.filter(q=>q.k!=='sa'))).sort((a,b)=>qMastery(a.id)-qMastery(b.id)+(Math.random()-.5)*0.3).slice(0,10);
+    if(!qs.length){ toast('收藏的卡還沒有題目'); return; } startRun(qs.map(q=>({t:'q',id:q.id,nw:!seen(q.id)})),{mode:'card'}); render(); },
   bm:d=>{ const b=S.bm[d.c]; S.bm[d.c]={on:!(b&&b.on),t:now()}; save(); render(); },
   bmtoggle:()=>{ VIEW.bm=!VIEW.bm; VIEW.q=''; render(); },
   focus:d=>{ S.set.focus=S.set.focus===d.ch?'':d.ch; S.set.t=now(); save(); render(); toast(S.set.focus?'今日任務會優先教這一章的新卡':'已取消主線'); },
