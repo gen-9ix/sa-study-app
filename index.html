@@ -4975,6 +4975,774 @@ E> timer 觸發同名的 service，service 本身通常沒有 [Install]。
 = Persistent
 E> 類似 anacron 的行為。
 </script>
+<script type="text/plain" class="sa-src" data-ch="systemd">
+@CH systemd | systemd 深入：cgroups、unit、service、timer | 🧩 | systemd.pdf
+
+@CARD systemd.intro | systemd 是什麼
+A> systemd 是系統的「總管家」：開機時是 PID 1，負責把所有服務按照依賴關係排好、一起啟動；還兼管主機名、時間、語系、登入、網路、DNS 等雜事。它用 cgroups 幫每個服務「分房間」，所以永遠知道哪個 process 屬於哪個服務。
+B> **system and service manager**：Debian 8 (jessie) 起的預設 init system
+B> **Transactional、dependency-based** 的服務控制邏輯：依依賴關係決定要啟動哪些 unit
+B> 相容 **SysV / LSB init scripts**，可取代 sysvinit
+B> 用 Linux **control groups (cgroups)** 追蹤 process：服務 fork 出的子孫都在同一個 cgroup，不會「跑丟」
+B> 另附 logging daemon（journald）與工具：hostname、time/date、locale、user sessions、system accounts、runtime directories、網路設定、名稱解析、網路校時
+?mc systemd 用什麼機制追蹤「某個服務產生的所有 process」？
++ Linux control groups（cgroups）
+- PID 檔案（/var/run/*.pid）
+- 每個 process 的 PPID 鏈
+- /etc/inittab
+E> 投影片：Keeps track of processes using Linux control groups。process 就算 double fork 脫離父子關係，仍留在同一個 cgroup。
+?tf systemd 可以執行傳統的 SysV init script。
+=T
+E> Supports SysV and LSB init scripts and works as a replacement for sysvinit。
+?mc 下列哪一項「不是」投影片列出的 systemd 附帶功能？
++ 編譯 kernel module
+- 設定 hostname
+- 管理 user sessions
+- 網路校時（time synchronization）
+E> 列出的有 hostname、time/date、locale、user sessions、system accounts、runtime directories、網路設定、名稱解析、網路校時。
+
+@CARD systemd.cgroup | Control Groups v2
+A> cgroup 像公司的「部門樹」：process 是員工，被分到不同部門（cgroup）；資源（CPU、記憶體、I/O、PID 數）是部門預算，沿著樹往下分配。規定只有「最底層的小組」可以放員工，中層部門只管預算。
+B> 用**階層**方式組織 process，並沿階層**分配系統資源**：CPU、Memory、I/O、PID
+B> systemctl status 的 **CGroup:** 樹：init.scope（PID 1）、**system.slice**（各 .service）、**user.slice**（使用者 session）
+B> **.slice**：分組用的中間節點；**.service / .scope**：真正放 process 的葉節點
+B> **No internal process rule**：process 只能放在**葉節點** cgroup（啟用 controller 的非 root cgroup 不能同時有 process 和子 cgroup）
+B> 查看工具：**systemd-cgls**（樹狀）、**systemd-cgtop**（即時資源用量）
+X> $ systemctl status            # 最下面有整棵 CGroup 樹
+X> $ cat /proc/self/cgroup
+X> 0::/user.slice/user-1000.slice/session-3.scope
+?mt 配對 cgroup 單位類型：
+> .slice :: 分組用的中間節點，本身不放 process
+> .service :: systemd 啟動的服務，放它的 process
+> .scope :: 外部建立的一群 process（如使用者登入 session）
+> init.scope :: PID 1 所在的位置
+E> slice 分層、service/scope 放 process（no internal process rule）。
+?mc cgroups v2 的 no internal process rule 指的是？
++ process 只能放在葉節點 cgroup，中間節點只負責分配資源
+- 一個 process 不能同時屬於兩個 user
+- root cgroup 不能有任何 process
+- 每個 cgroup 只能有一個 process
+E> 所以 systemd 才把 process 放在 .service/.scope，而 .slice 只做分組。
+?cmd 即時查看各 cgroup（服務）的 CPU、記憶體用量排行：
+= systemd-cgtop
+E> 類似 top，但以 cgroup 為單位。
+?tf cat /proc/self/cgroup 可以看出目前 shell 屬於哪個 cgroup。
+=T
+E> cgroup v2 只有一行 0::/路徑。
+
+@CARD systemd.cgfs | cgroups v2 檔案介面
+A> cgroup 被做成一個「檔案櫃」：/sys/fs/cgroup 底下每個資料夾就是一個 cgroup，打開檔案就能看成員名單（cgroup.procs）和預算上限（memory.max、cpu.max）。寫檔案就等於改規則。
+B> 以**檔案系統**呈現：**/sys/fs/cgroup**，**一個 cgroup 一個目錄**
+B> **cgroup.procs**：這個 cgroup 裡的 PID 清單
+B> **cgroup.events**：**populated 0/1**（底下是否還有 process）、frozen
+B> **cgroup.subtree_control**：開放給子 cgroup 使用的 controller
+B> controller 檔案：cpu.max、cpu.weight、memory.current、memory.max、pids.current、pids.max；值 **max** 代表不限制
+X> $ cd /sys/fs/cgroup/system.slice/cron.service
+X> $ cat cgroup.procs      # 1153
+X> $ cat memory.max        # max
+?mc 想知道 cron.service 目前有哪些 PID，應讀哪個檔案？
++ /sys/fs/cgroup/system.slice/cron.service/cgroup.procs
+- /proc/cron.service/status
+- /sys/fs/cgroup/cron/tasks.list
+- /etc/systemd/system/cron.service
+E> 每個 cgroup 一個目錄，cgroup.procs 列出 PID。
+?fill cgroup.events 中顯示底下是否還有 process 的欄位是＿＿
+= populated
+E> populated 1 表示還有 process，0 表示空了；systemd 用它判斷服務是否已完全結束。
+?tf memory.max 的內容是 max，代表該 cgroup 沒有記憶體上限。
+=T
+E> 值為 max 代表不限制；systemctl edit 設 MemoryMax= 後這裡會變成數字。
+
+@CARD systemd.resource | systemd 資源控制：Weight、Limit、Throttle
+A> 三種管法：Weight 是「塞車時才看的優先權」（不忙時大家隨便用）；Hard limit 是「預算上限，超過就處分」（記憶體超過 MemoryMax 直接被 OOM kill）；Throttle 是「接近上限就踩煞車」（超過 MemoryHigh 變慢、回收記憶體，但不會被殺）。
+B> **Weight**：只在資源**忙碌、搶用時**才按比例分配；**CPUWeight=、IOWeight=**（預設 **100**）
+B> **Hard limit**：**CPUQuota=**（cpu.max）、**MemoryMax=**（memory.max）、**TasksMax=**（pids.max）；超過 MemoryMax → **OOM kill**
+B> **Throttle**：超過 **MemoryHigh=**（memory.high）→ **變慢、回收記憶體**，不殺 process
+B> 設定方式：**systemctl edit** 寫進 [Service]，或 **systemctl set-property** 直接套用（預設會持久保存）
+X> # systemctl edit myapp.service
+X> [Service]
+X> CPUWeight=200     # cpu.weight
+X> CPUQuota=50%      # cpu.max
+X> MemoryHigh=800M   # memory.high
+X> MemoryMax=1G      # memory.max
+X> TasksMax=512      # pids.max
+X> $ systemctl set-property myapp.service MemoryMax=500M
+?mt 配對 systemd 設定與 cgroup 檔案：
+> CPUWeight= :: cpu.weight
+> CPUQuota= :: cpu.max
+> MemoryMax= :: memory.max
+> MemoryHigh= :: memory.high
+> TasksMax= :: pids.max
+E> 投影片右邊的註解就是對照表。
+?mc 服務的記憶體用量超過 MemoryHigh= 但還沒到 MemoryMax=，會發生什麼事？
++ 被 throttle：變慢並回收記憶體，但不會被殺
+- 立刻被 OOM kill
+- 服務被 systemd 重新啟動
+- 沒有任何影響
+E> MemoryHigh 是軟性煞車；MemoryMax 才是硬上限，超過會 OOM kill。
+?mc 兩個服務 CPUWeight 分別是 200 與 100。系統 CPU 很閒時，哪個說法正確？
++ 兩個服務都可以盡量使用 CPU，weight 只在搶 CPU 時才有作用
+- 第一個服務永遠拿到 2/3 的 CPU
+- 第二個服務最多只能用 50% CPU
+- weight 會換算成固定的 CPUQuota
+E> Share only when resource is busy。想要硬上限要用 CPUQuota=。
+?cmd 不開編輯器，直接把 myapp.service 的記憶體硬上限設為 500M：
+= systemctl set-property myapp.service MemoryMax=500M
+= systemctl set-property myapp MemoryMax=500M
+E> 加 --runtime 則只在這次開機有效。
+?sa 某 Web 服務偶爾記憶體暴衝把整台機器拖垮。請說明如何用 systemd 限制它，並比較 MemoryHigh= 與 MemoryMax= 的差異，以及何時該用 CPUWeight= 而不是 CPUQuota=。
+R> 用 systemctl edit web.service 在 [Service] 加入 MemoryHigh=（例如 800M）與 MemoryMax=（例如 1G），或用 systemctl set-property 直接設定；systemd 會寫入該服務 cgroup 的 memory.high / memory.max。
+R> MemoryHigh 是 throttle：超過時 kernel 讓 process 變慢並積極回收記憶體，但不會殺掉它；MemoryMax 是硬上限，超過時會觸發 OOM killer 殺掉該 cgroup 內的 process（可搭配 Restart= 讓服務自動重啟）。通常 High 設得比 Max 低一些，先煞車再處分。
+R> CPUWeight 是相對權重，只在 CPU 忙碌、多個服務搶用時才按比例分配，閒時不設限，適合「重要服務優先」；CPUQuota 是絕對上限（如 50% = 每週期最多半顆 CPU），即使 CPU 很閒也不能超過，適合防止單一服務吃滿。
+P> 用 systemctl edit / set-property 設定 MemoryHigh、MemoryMax
+P> MemoryHigh 超過會 throttle、不會被殺
+P> MemoryMax 超過會 OOM kill
+P> CPUWeight 只在搶資源時生效；CPUQuota 是硬上限
+
+@CARD systemd.systemctl | systemctl 指令總覽
+A> systemctl 是跟總管家溝通的遙控器：start/stop 是「現在開/關」，enable/disable 是「開機時要不要自動開」，mask 是「把插頭拔掉並封住插座」，連別人想幫你開都開不了。
+B> **status [unit]**：狀態、最近 log、cgroup；**cat unit**：印出 unit 檔與所有 drop-in
+B> **start / stop**：立即啟動 / 停止（不影響開機行為）
+B> **enable / disable**：依 [Install] 建立 / 移除 symlink（影響開機）；**enable --now** = enable + start
+B> **kill**：送訊號給服務的 process（預設 SIGTERM，可用 -s 指定）
+B> **mask / unmask**：把 unit 連到 **/dev/null**，讓它**完全無法被啟動**（手動或被依賴都不行）
+B> **list-unit-files**、**list-dependencies**；改完 unit 檔後 **daemon-reload**
+?mt 配對 systemctl 子指令：
+> enable :: 建立 symlink，開機時自動啟動
+> start :: 現在立刻啟動，不影響開機設定
+> mask :: 連到 /dev/null，任何方式都無法啟動
+> daemon-reload :: 修改 unit 檔後重新載入設定
+> cat :: 顯示 unit 檔內容與 drop-in
+E> enable 和 start 是兩件事，所以常用 enable --now。
+?mc 某服務 disable 之後，仍然因為別的服務 Wants= 它而被啟動。要徹底阻止它被啟動，應該用？
++ systemctl mask
+- systemctl stop
+- systemctl kill
+- systemctl daemon-reload
+E> disable 只移除 [Install] 建立的 symlink，被依賴時仍會啟動；mask 把它指向 /dev/null。
+?cmd 修改了 /etc/systemd/system/myapp.service 之後，讓 systemd 重新讀取 unit 檔：
+= systemctl daemon-reload
+E> 不 reload 的話 systemctl 會警告 unit file changed on disk。
+?cmd 讓 nginx 開機自動啟動，並且現在就啟動（一個指令）：
+= systemctl enable --now nginx
+= systemctl enable --now nginx.service
+= systemctl --now enable nginx
+E> --now 會同時 start（disable --now 則同時 stop）。
+?cmd 顯示 sshd.service 的 unit 檔內容（含所有 drop-in）：
+= systemctl cat sshd
+= systemctl cat sshd.service
+E> 比直接 cat 檔案好：會告訴你實際生效的是哪些檔案。
+
+@CARD systemd.unitfile | Unit 檔結構：[Unit]、[Service]、[Install]
+A> 一份 unit 檔像「員工資料卡」：[Unit] 是基本資料與人際關係（我是誰、在誰之後上班、需要誰）；[Service] 是工作內容（怎麼啟動、掛了怎麼辦）；[Install] 是「被誰錄取」（enable 時掛到哪個 target 底下）。
+B> **[Unit]**：通用資訊：Description=、Documentation=、依賴（Wants=、Requires=）、順序（After=、Before=）
+B> **[Service]**：服務專屬設定：Type=、ExecStart=、Restart=…；也可用 **systemd.exec(5)** 的選項（User=、Environment=…）
+B> **[Install]**：安裝資訊，**只給 enable / disable 用**：WantedBy=、RequiredBy=
+B> 沒有 [Install] 的 unit 不能 enable（通常是被別人依賴或由 timer / socket 觸發）
+X> [Unit]
+X> Description=OpenSSH Daemon
+X> After=network.target sshdgenkeys.service
+X> Wants=sshdgenkeys.service ssh-access.target
+X> [Service]
+X> Type=notify-reload
+X> ExecStart=/usr/bin/sshd -D
+X> KillMode=process
+X> Restart=always
+X> [Install]
+X> WantedBy=multi-user.target
+?mt 配對設定與所在區段：
+> Description= :: [Unit]
+> After= :: [Unit]
+> ExecStart= :: [Service]
+> Restart= :: [Service]
+> WantedBy= :: [Install]
+E> [Install] 只有 enable/disable 會讀。
+?mc [Install] 區段的用途是？
++ 提供 systemctl enable / disable 安裝 unit 時需要的資訊
+- 告訴 apt 如何安裝這個套件
+- 設定服務第一次啟動前要執行的指令
+- 宣告服務啟動的順序
+E> Installation information for the unit, used by enable / disable。
+?tf systemd.exec(5) 的選項（例如 User=、Environment=）可以寫在 [Service] 區段。
+=T
+E> [Service] includes options in systemd.exec。
+
+@CARD systemd.dropin | Drop-in 片段與 systemctl edit
+A> 不要直接改「出廠說明書」（/usr/lib 底下的 unit，套件更新會被蓋掉）。改用「便利貼」：systemctl edit 在 /etc/systemd/system/xxx.service.d/override.conf 貼一張，只寫要改的那幾行，其餘沿用原本設定。
+B> **systemctl edit [unit]**：建立或編輯 drop-in：**/etc/systemd/system/<unit>.d/override.conf**
+B> **--full**：改為編輯整份 unit（複製到 /etc/systemd/system/<unit>）
+B> 編輯器中只有兩行註解之間的內容會被存檔；下方會顯示原 unit 內容供參考
+B> 用預設編輯器（$SYSTEMD_EDITOR / $EDITOR）；存檔後自動 daemon-reload
+B> 清掉清單型設定要先寫空值：例如改 ExecStart 要先 **ExecStart=** 再寫新的 ExecStart=
+X> # systemctl edit sshd.service
+X> [Service]
+X> ExecStart=
+X> ExecStart=/usr/bin/sshd -D -o LogLevel=VERBOSE
+?mc 為什麼建議用 drop-in 而不是直接修改 /usr/lib/systemd/system/sshd.service？
++ /usr/lib 下的檔案屬於套件，更新時會被覆蓋；drop-in 放在 /etc，只覆寫需要的設定
+- drop-in 執行速度比較快
+- /usr/lib 下的檔案是唯讀的，root 也無法修改
+- systemd 不會讀取 /usr/lib 下的檔案
+E> /etc 的設定優先，且不會被 apt 蓋掉。
+?fill systemctl edit nginx.service 建立的 drop-in 檔路徑是 /etc/systemd/system/nginx.service.d/＿＿
+= override.conf
+E> 也可以手動在 .d/ 目錄放任意 *.conf。
+?cmd 用編輯器修改 myapp.service 的「完整」unit 檔（不是 drop-in）：
+= systemctl edit --full myapp.service
+= systemctl edit --full myapp
+= systemctl edit myapp.service --full
+E> 會在 /etc/systemd/system/ 產生完整副本。
+?tf 在 drop-in 想換掉原本的 ExecStart=，直接寫一行新的 ExecStart= 就好，不需要其他處理。
+=F
+E> 對一般服務，ExecStart= 可累加，必須先寫空的 ExecStart= 清除舊值，否則會報錯（非 oneshot 只能有一個）。
+
+@CARD systemd.path | Unit 搜尋路徑與優先順序
+A> systemd 找 unit 就像找文件：先看「你自己桌上」（/etc，管理員設定），再看「部門共用櫃」（/usr/local/lib，本機自裝），最後才看「公司出廠檔案」（/usr/lib，套件提供）。同名時越前面越優先。
+B> System unit：**/etc/systemd/system/** → **/usr/local/lib/systemd/system/** → **/usr/lib/systemd/system/**（前者優先）
+B> /etc：管理員的設定與 enable 產生的 symlink；/usr/lib：套件安裝的 unit
+B> User unit（systemctl --user）：$XDG_CONFIG_DIRS/systemd/user、/etc/systemd/user、$XDG_DATA_HOME/systemd/user（~/.local/share/systemd/user）、/usr/local/lib/systemd/user、/usr/lib/systemd/user
+B> 查詢實際使用的檔案：**systemctl cat**、systemctl show -p FragmentPath
+?ord 依優先順序（高 → 低）排列 system unit 搜尋路徑：
+> /etc/systemd/system/
+> /usr/local/lib/systemd/system/
+> /usr/lib/systemd/system/
+E> /etc 最優先，所以管理員的設定可以蓋過套件預設。
+?mc 自己寫的 myapp.service 應該放在哪裡最合適？
++ /etc/systemd/system/myapp.service
+- /usr/lib/systemd/system/myapp.service
+- /var/lib/systemd/myapp.service
+- /run/myapp.service
+E> /usr/lib 留給套件管理；管理員自訂放 /etc。
+?tf 使用者層級的 unit 可以放在 ~/.local/share/systemd/user/ 底下，用 systemctl --user 管理。
+=T
+E> 對應 $XDG_DATA_HOME/systemd/user。
+
+@CARD systemd.deps | 依賴：Requires、Wants、BindsTo、Upholds
+A> 四種「需要你」的強度：Wants 是「希望你來，不來我也照常上班」；Requires 是「你沒來我就算失敗」；BindsTo 是「你一走我也走」；Upholds 是「你倒了我就把你拉起來」。
+B> **Requires=**：列出依賴，**平行啟動**；依賴失敗 → 這個 unit 被標記為 **failed**
+B> **Wants=**：較寬鬆；依賴失敗**不會**讓這個 unit failed → **大多數情況建議用 Wants**
+B> **BindsTo=**：比 Requires 更嚴格；依賴**掛掉時這個 unit 也會停止**
+B> **Upholds=**：比 BindsTo 更積極；依賴掛掉時會**把依賴重新啟動**
+B> 依賴 ≠ 順序：只寫 Requires 沒寫 After 時兩者是**同時**啟動的
+?mt 配對依賴關係：
+> Wants= :: 依賴失敗也不影響自己（建議預設使用）
+> Requires= :: 依賴失敗，自己被標記為 failed
+> BindsTo= :: 依賴停止或崩潰，自己也跟著停止
+> Upholds= :: 依賴崩潰時，自動把依賴重新啟動
+E> 強度：Wants < Requires < BindsTo；Upholds 更積極地維持依賴存活。
+?mc A.service 寫了 Requires=B.service，但沒有 After=B.service。A 和 B 的啟動順序是？
++ 同時（平行）啟動
+- 先 B 再 A
+- 先 A 再 B
+- 只啟動 A
+E> All the dependencies will be executed in parallel；要排順序需要另外寫 After=。
+?mc 為什麼投影片建議大多數情況用 Wants= 而不是 Requires=？
++ 依賴失敗時不會連帶讓自己 failed，系統比較有韌性
+- Wants= 啟動速度比較快
+- Requires= 已被淘汰
+- Wants= 會自動加上 After=
+E> Wants 是 less restrictive 的版本。
+?tf 若 A 有 BindsTo=B，當 B 崩潰時，A 也會被停止。
+=T
+E> BindsTo 比 Requires 更嚴格：依賴停止或崩潰，自己也一起停。
+
+@CARD systemd.order | 順序：Before= / After= 不是依賴
+A> After= 只是「排隊順序」，不是「邀請函」：寫了 After=network.target 不代表會把網路叫起來，只代表如果它也要啟動，就排在它後面。要「叫起來」得用 Wants/Requires，兩者通常搭配使用。
+B> **Before=**：這個 unit 要在列出的 unit **之前**啟動
+B> **After=**：這個 unit 要在列出的 unit **之後**啟動
+B> **它們不是依賴**：只指定啟動順序；要拉起依賴請用 Requires= / Wants= / BindsTo=
+B> 常見組合：**Wants=network-online.target + After=network-online.target**（真的等網路可用）
+B> 關機時順序**反過來**（先啟動的後停止）
+?mc myapp.service 只寫了 After=postgresql.service，沒有任何 Wants/Requires。啟動 myapp 時會？
++ 不會自動啟動 postgresql；若 postgresql 剛好也要啟動，myapp 會排在它之後
+- 自動先啟動 postgresql 再啟動 myapp
+- 因為缺少依賴而啟動失敗
+- 等待 postgresql 被手動啟動
+E> These are not dependencies, only startup order is specified。
+?tf After= 和 Before= 會讓 systemd 自動啟動列出的 unit。
+=F
+E> 只控制順序，要搭配 Wants=/Requires=。
+?mc HAProxy 的 unit 同時寫了 Wants=network-online.target 與 After=network-online.target，目的是？
++ 拉起 network-online.target，並確保網路可用之後才啟動 HAProxy
+- 讓 HAProxy 和網路同時啟動以加快開機
+- 網路斷線時自動停止 HAProxy
+- 只是重複寫法，效果與只寫一行相同
+E> Wants 負責拉起、After 負責排序，兩者缺一不可。
+
+@CARD systemd.defdeps | 預設依賴：DefaultDependencies
+A> 每個服務都會被自動加上「入職手續」：要等系統初始化（sysinit、basic）完成才上班，而且一宣布關機（shutdown.target）就收工。只有很早期開機要用的服務才會關掉這個預設。
+B> 除非設定 **DefaultDependencies=no**，service 會自動加上：
+B> **Requires=sysinit.target**
+B> **After=sysinit.target basic.target**
+B> **Conflicts=shutdown.target**、**Before=shutdown.target**
+B> Conflicts=：兩者不能同時存在 → 關機（啟動 shutdown.target）時會停止這個服務
+?mc 為什麼一般服務在關機時會被停止？
++ 預設依賴包含 Conflicts=shutdown.target，啟動 shutdown.target 就會停止它
+- 因為 kernel 直接對所有 process 送 SIGKILL
+- 因為每個服務都必須寫 ExecStop=
+- 因為 multi-user.target 會被刪除
+E> 再加上 Before=shutdown.target，保證服務在 shutdown.target 之前停好。
+?mt 配對預設依賴：
+> Requires= :: sysinit.target
+> After= :: sysinit.target basic.target
+> Conflicts= :: shutdown.target
+> Before= :: shutdown.target
+E> 投影片 Systemd default dependencies。
+?fill 不想要自動加上預設依賴時，在 [Unit] 寫 DefaultDependencies=＿＿
+= no
+= false
+= 0
+E> 只有開機極早期或關機流程中的特殊 unit 才需要關掉預設依賴。
+
+@CARD systemd.install | enable 的原理：.wants/ symlink
+A> enable 不會「啟動」任何東西，它只是在 target 的「邀請名單資料夾」（xxx.target.wants/）放一張指向你的 symlink 名片。開機時 target 啟動，就會照名單把你叫起來。
+B> 用 **systemctl enable / disable** 安裝與解除安裝 unit
+B> enable 依 [Install] 的 **WantedBy=** 在 **/etc/systemd/system/<target>.wants/** 建立 symlink（RequiredBy= 則是 .requires/）
+B> WantedBy=multi-user.target → 開機到 multi-user.target 時被 Wants 拉起
+B> disable 移除這些 symlink；**unit 檔本身不會被刪**
+X> $ sudo systemctl enable sshd.service
+X> Created symlink '/etc/systemd/system/multi-user.target.wants/sshd.service'
+X>   → '/usr/lib/systemd/system/sshd.service'.
+?mc systemctl enable sshd.service 實際做了什麼？
++ 在 /etc/systemd/system/multi-user.target.wants/ 建立指向 unit 檔的 symlink
+- 立刻啟動 sshd
+- 把 unit 檔複製到 /etc/systemd/system/
+- 在 /etc/rc.local 加一行啟動指令
+E> 依 WantedBy=multi-user.target 建立 symlink；不會立即啟動。
+?fill 某服務 [Install] 寫 WantedBy=multi-user.target，enable 後 symlink 會放在 /etc/systemd/system/＿＿/ 目錄中
+= multi-user.target.wants
+E> RequiredBy= 會放在 <target>.requires/。
+?tf systemctl disable 會刪除 unit 檔。
+=F
+E> 只移除 symlink。
+
+@CARD systemd.target | Target 與 SysV runlevel
+A> Target 是「套餐」：multi-user.target 是「多人文字模式套餐」，graphical.target 是「再加上圖形介面」。開機時 systemd 點 default.target 這份套餐（其實是指向某個套餐的別名），套餐裡的每道菜（unit）就會被端上來。
+B> 工作以 unit 組織；**target 是一群 unit 的集合**，用來把系統組到某個狀態
+B> target 可以建立在其他 target 之上（graphical → multi-user → basic …）
+B> 開機時啟動 **default.target**（通常是 graphical 或 multi-user 的別名）：**systemctl get-default / set-default**
+B> runlevel 對照：**0 poweroff**、**1 rescue**（單人模式）、**2/3/4 multi-user**、**5 graphical**、**6 reboot**；另有 **emergency.target**、**network-online.target**
+B> 切換到某 target 並停掉不屬於它的 unit：**systemctl isolate**
+?mt 配對 SysV runlevel 與 systemd target：
+> 0 :: poweroff.target
+> 1 :: rescue.target
+> 3 :: multi-user.target
+> 5 :: graphical.target
+> 6 :: reboot.target
+E> 2、3、4 都對應 multi-user.target。
+?cmd 查詢系統預設開機的 target：
+= systemctl get-default
+E> default.target 是指向實際 target 的 symlink。
+?cmd 把預設開機 target 改成純文字的多使用者模式：
+= systemctl set-default multi-user.target
+= systemctl set-default multi-user
+E> set-default 會改 default.target 這個 symlink 指向的 target。
+?mc emergency.target 與 rescue.target 的差別？
++ emergency 只給一個 root shell，幾乎不啟動任何服務、root 可能唯讀；rescue 會掛載本機檔案系統並啟動基本系統
+- 兩者完全相同
+- rescue 比 emergency 啟動更少服務
+- emergency 會啟動網路，rescue 不會
+E> emergency 是最精簡的救援環境。
+
+@CARD systemd.hier | Target 階層與 list-dependencies
+A> 開機就像蓋大樓：sysinit（打地基）→ basic（水電管線：sockets、slices、timers、paths）→ multi-user（各樓層服務）→ graphical（裝潢門面）。list-dependencies 能把整棟樓的結構圖印出來。
+B> **graphical.target** → 顯示管理器（如 sddm.service）＋ **multi-user.target**
+B> **multi-user.target** → 各服務（sshd、logind…）＋ **basic.target**、getty.target、remote-fs.target…
+B> **basic.target** → **sockets.target、slices.target、sysinit.target、timers.target**、paths.target
+B> 查看：**systemctl list-dependencies multi-user.target**（● 啟動中、○ 未啟動）
+?ord 由最底層到最上層排列：
+> sysinit.target
+> basic.target
+> multi-user.target
+> graphical.target
+E> graphical 依賴 multi-user，multi-user 依賴 basic，basic 依賴 sysinit 等。
+?cmd 列出 multi-user.target 依賴的所有 unit（樹狀）：
+= systemctl list-dependencies multi-user.target
+= systemctl list-dependencies multi-user
+E> ● 表示啟動中、○ 表示未啟動；加 --reverse 可反查誰依賴它。
+?mc timers.target 位於哪個 target 底下？
++ basic.target
+- graphical.target
+- shutdown.target
+- network-online.target
+E> multi-user.target ⇒ basic.target ⇒ timers.target。
+
+@CARD systemd.type | Service Type：什麼時候算「啟動完成」
+A> Type 決定 systemd 何時把服務標成「已啟動」，好讓排在後面的服務出發：simple 是「人一出門就算」；exec 是「確定上車了才算」；notify 是「到了公司打電話回報 READY 才算」；oneshot 是「事情做完回家才算」。
+B> **simple**：主 process **fork() 之後立刻**視為 started（就算 exec 失敗也已經算啟動）
+B> **exec**：類似 simple，但等到**執行檔真的被 exec 成功**才算 started
+B> **notify / notify-reload**：等服務透過 **sd_notify(3)** 送出 **READY=1** 才算 started；notify-reload 另外支援送 **SIGHUP** 來 reload
+B> **oneshot**：**主 process 結束之後**才算完成；常搭配 **RemainAfterExit=yes**（結束後仍顯示 active）
+B> 其他：forking（傳統 daemon 自己 fork 到背景）
+?mt 配對 Type= 與「started」的時機：
+> simple :: fork() 之後立刻
+> exec :: 執行檔被 exec 成功之後
+> notify :: 服務送出 READY=1 之後
+> oneshot :: 主 process 結束之後
+E> 投影片 Systemd service type。
+?mc 一個只需執行一次的初始化腳本（跑完就結束），Type 最適合設為？
++ oneshot
+- simple
+- notify
+- exec
+E> oneshot 要等程式結束才算完成，排在它後面的 unit 才會開始。
+?mc 用 Type=simple 時，若 ExecStart= 的執行檔路徑打錯，systemctl start 會？
++ 仍回報成功（fork 後就算 started），之後服務才變成 failed
+- 立刻回報失敗
+- 卡住直到逾時
+- 自動改用 Type=exec
+E> 這正是 exec 比 simple 好的地方：exec 失敗時 start 會直接回報錯誤。
+?tf Type=notify 的服務必須主動送 READY=1，systemd 才會認為它啟動完成。
+=T
+E> 透過 sd_notify(3)；sshd 用的是 notify-reload。
+
+@CARD systemd.restart | Restart= 重啟策略
+A> Restart= 是「服務掛掉時要不要自動扶起來」的規則。always 是無條件扶；on-failure 是「不正常結束才扶」（最常用）；on-abnormal 不管 exit code 只看是不是被訊號殺、逾時、OOM；on-abort 只在被訊號打死時扶。
+B> **no**：都不重啟（預設）
+B> **always**：任何結束都重啟（包含正常 exit 0）
+B> **on-success**：只有 **clean exit**（exit code 0 或 SuccessExitStatus）才重啟
+B> **on-failure**：**非 0 exit code、被訊號殺、逾時、OOM** 都重啟（clean exit 不重啟）
+B> **on-abnormal**：**被訊號殺、逾時、OOM**（exit code 非 0 不算）
+B> **on-abort**：**只有被未捕捉的訊號殺掉**
+B> 相關：RestartSec=（重啟前等多久）、StartLimitBurst= / StartLimitIntervalSec=（短時間重啟太多次就放棄）
+?mc 服務以 exit 1 結束。下列哪個 Restart= 設定「不會」重啟它？
++ on-abnormal
+- always
+- on-failure
+- 以上全部都會重啟
+E> on-abnormal 只管 unclean signal、timeout、OOM；unclean exit code 不算。
+?mc 服務被 OOM killer 殺掉，下列哪個設定不會重啟它？
++ on-abort
+- on-failure
+- on-abnormal
+- always
+E> 表格中 OOM 這一列：always、on-failure、on-abnormal 是 ✅，on-abort 與 on-success 是 ❌。
+?mt 配對 Restart= 值：
+> always :: 任何情況都重啟
+> on-success :: 只有正常結束才重啟
+> on-failure :: 非 0 exit、被訊號殺、逾時、OOM 都重啟
+> on-abort :: 只有被訊號殺才重啟
+E> 投影片 Systemd service restart policy 表格。
+?fill 一般長駐服務最常用、但正常 exit 0 時不會被重啟的設定是 Restart=＿＿
+= on-failure
+E> on-failure 涵蓋非 0 exit、被訊號殺、逾時與 OOM，正常結束則不重啟。
+?sa 請說明 systemd 的 Restart=on-failure、on-abnormal 與 on-abort 三者在下列四種情況下是否會重啟服務：(1) exit code 0 (2) exit code 1 (3) 被 SIGSEGV 殺掉 (4) 啟動逾時。
+R> on-failure：(1) 不重啟 (2) 重啟 (3) 重啟 (4) 重啟。
+R> on-abnormal：(1) 不重啟 (2) 不重啟 (3) 重啟 (4) 重啟。
+R> on-abort：(1) 不重啟 (2) 不重啟 (3) 重啟（被未捕捉的訊號殺掉）(4) 不重啟。
+R> 規律：on-failure 涵蓋所有非正常結束；on-abnormal 不管 exit code，只看訊號、逾時、OOM、watchdog；on-abort 只看訊號。
+P> on-failure：exit 1、訊號、逾時都重啟，exit 0 不重啟
+P> on-abnormal：只有訊號、逾時重啟
+P> on-abort：只有被訊號殺才重啟
+
+@CARD systemd.exec | Exec*= 與逾時
+A> 服務的「上下班流程」：ExecStartPre 是上班前打卡準備，ExecStart 是主要工作，ExecStartPost 是開工後的收尾，ExecReload 是「重新讀設定」，ExecStop 是下班。前面加「-」代表「這步失敗沒關係，繼續走」。
+B> **ExecStart=**：啟動服務時執行的指令（主 process）
+B> **ExecStartPre= / ExecStartPost=**：在 ExecStart 之前 / 之後額外執行；前綴 **「-」** 代表**允許失敗、不影響後續**
+B> **ExecReload=**：觸發重新載入設定（systemctl reload）
+B> **ExecStop=**：停止服務的指令（沒寫就直接送 KillSignal=，預設 SIGTERM）
+B> **TimeoutSec= / TimeoutStartSec= / TimeoutStopSec=**：等待啟動 / 停止的時間
+B> 指令要用**絕對路徑**（或在 PATH 中）；不經過 shell，要用管線或 && 得寫 /bin/sh -c '…'
+X> ExecStartPre=-/usr/lib/apt/apt-helper wait-online
+X> ExecStart=/usr/lib/apt/apt.systemd.daily update
+X> ExecReload=/bin/kill -HUP $MAINPID
+?mc ExecStartPre=-/usr/bin/foo 中的「-」代表？
++ 這個指令失敗也不影響服務繼續啟動
+- 以非 root 身分執行
+- 在背景執行
+- 只在第一次啟動時執行
+E> Can be prefixed with a “-”, allowing this command to fail and not affect the rest。
+?mt 配對 Exec 設定：
+> ExecStart= :: 主要的啟動指令
+> ExecStartPre= :: 主指令之前的準備工作
+> ExecReload= :: systemctl reload 時執行
+> ExecStop= :: 停止服務時執行
+> TimeoutStopSec= :: 停止時最多等多久
+E> ExecStartPre/Post 可加「-」允許失敗；沒寫 ExecStop 時預設送 SIGTERM。
+?tf ExecStart=echo hi > /tmp/log 會由 shell 處理重導向，把 hi 寫進 /tmp/log。
+=F
+E> ExecStart 不經過 shell，> 會被當成普通參數；要寫 /bin/sh -c 'echo hi > /tmp/log'。
+
+@CARD systemd.execenv | 執行環境：路徑、使用者、資源、目錄
+A> systemd.exec 讓你在 unit 裡「布置員工的工作環境」：在哪間辦公室（WorkingDirectory、RootDirectory）、用誰的身分（User、DynamicUser）、多少資源（Limit*、Nice、CPU 排程）、文件放哪（RuntimeDirectory 等），不用在程式裡自己處理。
+B> 路徑：**WorkingDirectory=**（工作目錄，相對於服務的 root）、**RootDirectory=**（服務的根目錄，類似 chroot，相對於 host 的 /）
+B> 使用者：**User= / Group=**（**預設 root**）；**DynamicUser=** 啟動時動態配置 UID/GID，範圍 **61184–65519**
+B> 資源：**LimitCPU=、LimitFSIZE=…**（soft / hard limit，例如 LimitCPU= 等同 **ulimit -t**）；**Nice=**；**CPUSchedulingPolicy=**（other、batch、idle、fifo、rr）；**CPUSchedulingPriority=**；**CPUAffinity=**（類似 taskset）
+B> 目錄：**RuntimeDirectory=** → /run/、**StateDirectory=** → /var/lib/、**CacheDirectory=** → /var/cache/、**LogsDirectory=** → /var/log/、**ConfigurationDirectory=** → /etc/；RuntimeDirectory 預設停止時刪除，**RuntimeDirectoryPreserve=** 可保留
+B> 這些目錄由 systemd 自動建立並設定好擁有者（配合 User=/DynamicUser= 很方便）
+?mt 配對目錄設定與實際位置：
+> RuntimeDirectory= :: /run/
+> StateDirectory= :: /var/lib/
+> CacheDirectory= :: /var/cache/
+> LogsDirectory= :: /var/log/
+> ConfigurationDirectory= :: /etc/
+E> 投影片 Systemd exec - unit directories。
+?mc 沒有設定 User= 的服務，會以哪個身分執行？
++ root
+- nobody
+- 與執行 systemctl 的使用者相同
+- 動態配置的使用者
+E> Default is root。所以服務最好明確設定 User= 或 DynamicUser=。
+?mc DynamicUser=yes 的效果是？
++ 啟動時動態配置一組 UID/GID（61184–65519），服務停止後釋放
+- 每次啟動都用目前登入的使用者
+- 讓服務可以切換成任何使用者
+- 在 /etc/passwd 永久新增一個使用者
+E> 不需要預先 useradd，很適合不需要固定身分的服務。
+?fill LimitCPU= 對應的 shell 指令是 ulimit ＿＿
+= -t
+E> ulimit -t 是 CPU 時間（秒）上限。
+?mt 配對資源設定與功能：
+> Nice= :: 預設的 nice 值（排程優先權）
+> CPUSchedulingPolicy= :: 排程策略 other/batch/idle/fifo/rr
+> CPUAffinity= :: 限制可以在哪些 CPU 上執行
+> LimitFSIZE= :: 可建立檔案大小的上限
+E> CPUAffinity 是 unit 版的 taskset；Nice 是 unit 版的 nice。
+
+@CARD systemd.envio | Environment 與標準輸入輸出
+A> Environment= 是在 unit 裡直接寫「便條」給程式；EnvironmentFile= 是「另外附一張設定單」，前面加「-」表示「找不到這張單也沒關係」。StandardOutput= 決定程式說的話要送到 journal、檔案還是丟掉。
+B> **Environment=**：設定環境變數；值含空白要加引號：Environment="VAR1=word1 word2" "VAR2=word3"
+B> **EnvironmentFile=**：從文字檔讀環境變數；前綴 **「-」** 代表**檔案不存在也可以**
+B> **StandardInput=**：fd 0 接到 null、tty、file:path、socket、fd:name…
+B> **StandardOutput= / StandardError=**：fd 1、2 接到 **inherit、null、journal、kmsg、file:path、append:path、truncate:path、socket、fd:name**
+B> 預設 stdout/stderr 送到 **journal** → 用 journalctl -u 查看
+X> EnvironmentFile=-/etc/default/haproxy
+X> Environment="CONFIG=/etc/haproxy/haproxy.cfg" "PIDFILE=/run/haproxy.pid"
+X> ExecStart=/usr/bin/haproxy -Ws -f $CONFIG -p $PIDFILE
+X> StandardOutput=append:/var/log/myapp.log
+?mc EnvironmentFile=-/etc/default/haproxy 的「-」代表？
++ 這個檔案不存在時不視為錯誤
+- 從環境變數中移除這些設定
+- 以唯讀方式讀取
+- 只在 reload 時讀取
+E> Optionally prefixed with “-”, allowing the file to be absent。
+?fill 讓服務的 stdout 以「附加」方式寫到 /var/log/app.log：StandardOutput=＿＿
+= append:/var/log/app.log
+E> file: 會從頭覆寫，truncate: 每次啟動清空，append: 附加在後面。
+?tf 服務的 stdout 預設會被丟棄，所以 journalctl 看不到程式印出的訊息。
+=F
+E> 預設送進 journal（StandardOutput=journal），用 journalctl -u <unit> 就看得到。
+
+@CARD systemd.journald | systemd-journald
+A> journald 是系統的「中央檔案室」：收集 kernel（kmsg）、syslog、各服務的輸出，存成有索引的結構化日誌，可以依服務、開機次數、優先等級快速查。存在 /var/log/journal 才會「永久保存」，存在 /run 的話重開機就沒了。
+B> 收集 log 的系統服務：存成**結構化、有索引的 journal**
+B> 來源：**kmsg**、**syslog**、**service unit** 的輸出…
+B> **持久保存**：**/var/log/journal**；**揮發性**：**/run/log/journal**（**重開機就消失**）
+B> Storage=auto（預設）：/var/log/journal 存在才持久保存 → mkdir 後即可持久化（設定在 /etc/systemd/journald.conf）
+B> 常用查詢：journalctl **-u** unit、**-b**（本次開機）、**-f**（持續追蹤）、**-p err**、**--since "1 hour ago"**、**-k**（kernel）
+?mc journal 存在 /run/log/journal 時有什麼特性？
++ 屬於揮發性儲存，重開機就消失
+- 會自動上傳到遠端 syslog
+- 只有 root 能寫入，所以永久保存
+- 是二進位以外的純文字格式
+E> Volatile in /run/log/journal, lost at reboot。
+?fill journald 的持久保存位置是＿＿
+= /var/log/journal
+= /var/log/journal/
+E> /run/log/journal 是揮發性的，重開機就消失。
+?cmd 持續追蹤 nginx.service 的最新 log：
+= journalctl -u nginx -f
+= journalctl -fu nginx
+= journalctl -u nginx.service -f
+= journalctl -f -u nginx
+E> -u 指定 unit、-f 持續追蹤（類似 tail -f）。
+?cmd 只看「這次開機」中等級為 err 以上的訊息：
+= journalctl -b -p err
+= journalctl -p err -b
+= journalctl -b -p 3
+= journalctl -p 3 -b
+E> -b 本次開機、-p err（= 3）表示 err 以上的優先等級。
+
+@CARD systemd.timer | systemd.timer：用 systemd 跑週期性工作
+A> timer 是「鬧鐘」，service 是「鬧鐘響了要做的事」。X.timer 預設會叫醒同名的 X.service；鬧鐘本身要掛在 timers.target 底下，開機時才會被設定好。比 cron 多了 log、依賴、補跑、隨機延遲等好處。
+B> 用 systemd 控制**週期性工作**的方式（cron 的替代品）
+B> **X.timer 會觸發 X.service**（可用 Unit= 指定其他 service）
+B> 通常裝在 **timers.target** 底下：WantedBy=timers.target；multi-user.target ⇒ basic.target ⇒ timers.target
+B> [Timer] 常用：**OnCalendar=**（日曆時間）、**RandomizedDelaySec=**（隨機延遲）、**Persistent=true**（關機錯過的下次開機補跑）；另有 OnBootSec=、OnUnitActiveSec=（相對時間）
+B> 要 enable / start 的是 **.timer**，不是 .service；**systemctl list-timers** 看下次執行時間
+X> # /lib/systemd/system/apt-daily.timer
+X> [Timer]
+X> OnCalendar=*-*-* 6,18:00
+X> RandomizedDelaySec=12h
+X> Persistent=true
+X> [Install]
+X> WantedBy=timers.target
+?mc backup.timer 預設會啟動哪個 unit？
++ backup.service
+- backup.target
+- timers.service
+- 必須在 [Timer] 用 Unit= 指定，否則不會啟動任何東西
+E> A timer named X.timer will trigger X.service。
+?mc 要讓 backup.timer 生效，正確作法是？
++ systemctl enable --now backup.timer
+- systemctl enable --now backup.service
+- 把 backup.service 加進 crontab
+- systemctl daemon-reload 就會自動生效
+E> 啟用的是 timer；service 通常沒有 [Install]，由 timer 觸發。
+?mc Persistent=true 的作用是？
++ 機器關機期間錯過的執行時間，開機後會補跑一次
+- timer 永遠不會被 disable
+- 每次執行後保留 log 不刪
+- service 執行完不會結束
+E> 類似 anacron 的補跑機制。
+?cmd 列出所有 timer 與下次觸發時間：
+= systemctl list-timers
+= systemctl list-timers --all
+E> 會列出 NEXT、LEFT、LAST、PASSED 與對應的 unit；--all 也顯示未啟用的。
+?sa 比較 cron 與 systemd timer：請列出 systemd timer 相對 cron 的三個優點，並寫出一個每天 03:00 執行 /usr/local/bin/backup.sh 的 timer 與 service unit。
+R> 優點：(1) 執行輸出自動進 journal，可用 journalctl -u backup 查；(2) 可以用 systemd 的依賴與順序（After=network-online.target 等）及資源限制、User= 等執行環境設定；(3) Persistent=true 可補跑關機期間錯過的工作；(4) RandomizedDelaySec 可避免多台機器同時執行；(5) systemctl list-timers 可看下次執行時間，systemd-analyze calendar 可驗證時間格式。
+R> backup.service：[Unit] Description=Daily backup；[Service] Type=oneshot、ExecStart=/usr/local/bin/backup.sh
+R> backup.timer：[Unit] Description=Run backup daily；[Timer] OnCalendar=*-*-* 03:00:00、Persistent=true；[Install] WantedBy=timers.target
+R> 啟用：systemctl daemon-reload；systemctl enable --now backup.timer
+P> 至少三個正確優點（journal、依賴、補跑、隨機延遲、list-timers）
+P> service 用 Type=oneshot 與 ExecStart
+P> timer 用 OnCalendar=*-*-* 03:00 且 WantedBy=timers.target
+P> enable 的是 .timer
+
+@CARD systemd.calendar | OnCalendar 時間格式與 systemd-analyze
+A> OnCalendar 的格式就是「星期 年-月-日 時:分:秒」，* 是「每一個」，逗號列出多個值。不確定寫得對不對？用 systemd-analyze calendar 讓它幫你算下一次觸發時間。
+B> 格式：**weekday year-month-date hour:minute:second**，類似 cron 但順序是由大到小
+B> `*-*-* 6:00`：每天 06:00；`*-*-* 6,18:00`：每天 06:00 與 18:00；`Mon *-*-* 00:00:00`：每週一午夜
+B> 簡寫：**daily**（= `*-*-* 00:00:00`）、weekly、monthly、hourly
+B> **RandomizedDelaySec=**：在觸發時間後隨機延遲，避免多台機器同時執行（例如同時打 apt 鏡像站）
+B> **systemd-analyze calendar '…'**：檢查語法並顯示 Normalized form 與 **Next elapse**
+X> $ systemd-analyze calendar '*-*-* 00:00:00'
+X> Normalized form: *-*-* 00:00:00
+X>     Next elapse: Mon 2025-10-27 00:00:00 CST
+?mc OnCalendar=*-*-* 6,18:00 代表？
++ 每天 06:00 與 18:00
+- 每月 6 日與 18 日
+- 每 6 到 18 分鐘
+- 每天 6:18
+E> 時:分 位置寫 6,18:00。
+?cmd 檢查 OnCalendar 字串 'Mon *-*-* 03:00' 的語法並顯示下次觸發時間：
+= systemd-analyze calendar 'Mon *-*-* 03:00'
+= systemd-analyze calendar "Mon *-*-* 03:00"
+E> 輸出 Normalized form 與 Next elapse，可以確認寫法是否如預期。
+?mc 公司 500 台機器都用 OnCalendar=daily 跑更新，造成鏡像站每天午夜被打爆。最直接的解法是？
++ 加上 RandomizedDelaySec=，把執行時間隨機分散
+- 改成 Persistent=true
+- 把 Type 改為 oneshot
+- 改用 OnBootSec=
+E> RandomizedDelaySec can prevent timers on multiple machines from executing at the same time。
+?fill OnCalendar 寫「每天 03:30」：OnCalendar=*-*-* ＿＿
+= 03:30
+= 3:30
+= 03:30:00
+= 3:30:00
+E> 格式是「年-月-日 時:分:秒」，秒數可省略。
+
+@CARD systemd.template | Unit template：name@.service 與 %i
+A> template 是「範本申請表」：wg-quick@.service 只寫一份，wg-quick@wg0、wg-quick@wg1 就能各自啟動一個實例，@ 後面的字（instance name）會被填進 %i。
+B> unit 名稱可以帶**一個參數**，稱為 **instance name**
+B> 檔名在前綴結尾要有**單一個「@」**：例如 **btrfs-scrub@.service**、**wg-quick@.service**
+B> 使用時把參數放在 @ 後面：**systemctl start wg-quick@wg0**
+B> unit 檔中用 **%i**（escaped）或 **%I**（unescaped）取得 instance name
+B> 常見例子：getty@tty1.service、user@1000.service
+X> # wg-quick@.service
+X> [Service]
+X> Type=oneshot
+X> RemainAfterExit=yes
+X> ExecStart=/usr/bin/wg-quick up %i
+X> ExecStop=/usr/bin/wg-quick down %i
+?mc 執行 systemctl start wg-quick@wg0 時，unit 檔中的 %i 會被替換成？
++ wg0
+- wg-quick
+- wg-quick@wg0.service
+- 目前使用者名稱
+E> @ 後面的字就是 instance name。
+?cmd 讓 WireGuard 介面 wg0 開機自動啟動並立刻啟動（使用 wg-quick 的 template unit）：
+= systemctl enable --now wg-quick@wg0
+= systemctl enable --now wg-quick@wg0.service
+E> HW0 的 WireGuard 就是這樣設定開機自動連線。
+?tf template unit 的檔名必須包含一個 @，例如 foo@.service。
+=T
+E> 例如 wg-quick@.service、getty@.service；使用時寫 wg-quick@wg0。
+?mc wg-quick@.service 使用 Type=oneshot 與 RemainAfterExit=yes 的原因是？
++ wg-quick up 執行完就結束，但希望介面建立後 unit 仍顯示 active，stop 時才執行 down
+- 讓 wg-quick 在背景長駐
+- 讓失敗時自動重試
+- 讓多個實例共用同一個 process
+E> 沒有 RemainAfterExit 的話，oneshot 跑完就變 inactive，stop 時不會執行 ExecStop。
+
+@CARD systemd.examples | 讀懂真實 unit：sshd、haproxy、apt-daily
+A> 讀別人的 unit 就像讀履歷：sshd 的 KillMode=process 讓「停 sshd 時不要把正在連線的 SSH session 一起殺掉」；haproxy 用 SuccessExitStatus=143 告訴 systemd「被 SIGTERM 正常關掉不算失敗」；apt-daily 用 ConditionACPower 讓筆電沒插電時不更新。
+B> **sshd**：Type=notify-reload、Restart=always、**KillMode=process**（停止時只殺主 process，已建立的 SSH 連線保留）
+B> **haproxy**：EnvironmentFile=-…、多行 ExecReload=、**KillMode=mixed**（SIGTERM 給主 process，最後 SIGKILL 給全部）、**SuccessExitStatus=143**（128+15，被 SIGTERM 結束視為成功）、Type=notify
+B> **apt-daily.service**：Type=oneshot、**ConditionACPower=true**（有接電源才執行）、ExecStartPre=-…wait-online
+B> **apt-daily.timer**：OnCalendar=*-*-* 6,18:00、RandomizedDelaySec=12h、Persistent=true
+B> **$MAINPID**：unit 檔中代表主 process 的 PID（ExecReload=/bin/kill -USR2 $MAINPID）
+?mc sshd.service 設定 KillMode=process 的目的？
++ 重啟或停止 sshd 時只殺主 process，不會切斷使用者已經建立的 SSH 連線
+- 讓 sshd 只能有一個 process
+- 讓 sshd 被 kill 時自動重啟
+- 讓每個 SSH 連線都成為獨立的 service
+E> 預設 KillMode=control-group 會殺掉整個 cgroup，包括你的登入 session。
+?fill haproxy 設定 SuccessExitStatus=143，因為被 SIGTERM（編號 15）結束時 exit status 是 128 + 15 = ＿＿
+= 143
+E> 被訊號 N 結束的 shell exit status 慣例是 128+N。
+?mc ConditionACPower=true 的效果是？
++ 只有在接上外部電源時才啟動這個 unit，否則跳過（不算失敗）
+- 斷電時自動關機
+- 啟動時需要使用者確認
+- 偵測到 UPS 才執行
+E> Condition*= 不成立時 unit 會被略過，不會標記為 failed。
+
+@CARD systemd.tools | systemd 家族的其他工具
+A> systemd 把很多零散的系統設定變成「XXXd 服務 + XXXctl 遙控器」的組合：要改主機名就找 hostnamectl，時間找 timedatectl，DNS 找 resolvectl，使用者登入找 loginctl。
+B> **hostnamectl**（systemd-hostnamed）：主機名稱
+B> **timedatectl**（systemd-timedated、systemd-timesyncd）：時間、時區、NTP 校時
+B> **localectl**（systemd-localed）：語系與鍵盤配置
+B> **loginctl**（systemd-logind）：使用者 session、seat
+B> **networkctl**（systemd-networkd）、**resolvectl**（systemd-resolved）：網路與 DNS 名稱解析
+B> 其他：**systemd-sysusers**（建立系統帳號）、**bootctl**（systemd-boot）、**machinectl / systemd-nspawn**（輕量容器）
+?mt 配對要做的事與工具：
+> 修改主機名稱 :: hostnamectl
+> 設定時區與 NTP :: timedatectl
+> 查詢某網卡用的 DNS 伺服器 :: resolvectl
+> 列出登入中的 session :: loginctl
+> 設定語系 :: localectl
+E> systemd 的工具大多是「XXXd 服務 + XXXctl 指令」的組合。
+?cmd 把系統時區設為 Asia/Taipei：
+= timedatectl set-timezone Asia/Taipei
+E> timedatectl 也能用 set-ntp true 開啟網路校時。
+?cmd 把主機名稱改成 sa-vm：
+= hostnamectl set-hostname sa-vm
+= hostnamectl hostname sa-vm
+E> 會寫入 /etc/hostname，不必手動編輯檔案。
+
+@CARD systemd.p_debug | 實作：自己寫的服務起不來怎麼查
+A> 服務起不來時按這個順序問：systemd 有讀到最新的檔嗎（daemon-reload）？它說了什麼（status、journalctl）？指令本身能不能跑（手動用同一個使用者執行）？是不是權限、路徑、環境變數不同？
+B> 改完檔 → **systemctl daemon-reload** → **systemctl restart x** → **systemctl status x**（看 Active、Main PID、最後幾行 log）
+B> 詳細 log：**journalctl -u x -b -e**；看依賴：**systemctl list-dependencies x**
+B> 驗證語法：**systemd-analyze verify /etc/systemd/system/x.service**
+B> 常見原因：ExecStart 不是**絕對路徑**、用了 shell 語法（| > &&）卻沒包 sh -c、**User=** 沒權限讀檔、環境變數（PATH、HOME）跟互動式 shell 不同、Type 選錯（forking 的程式配 simple 會立刻「結束」）
+B> 一直重啟後停住：**start-limit-hit** → 修好後 **systemctl reset-failed x**
+X> $ systemd-analyze verify /etc/systemd/system/myapp.service
+X> $ sudo -u myapp /opt/myapp/bin/server   # 用服務的身分手動跑跑看
+X> $ systemctl reset-failed myapp
+?ord 服務改完設定後的檢查順序：
+> systemctl daemon-reload
+> systemctl restart myapp
+> systemctl status myapp
+> journalctl -u myapp -b -e
+E> 先讓 systemd 讀到新設定，再重啟、看狀態、看詳細 log。
+?cmd 檢查 /etc/systemd/system/myapp.service 有沒有語法或設定錯誤：
+= systemd-analyze verify /etc/systemd/system/myapp.service
+E> 能抓出未知的設定鍵、找不到的執行檔等錯誤。
+?mc 服務在短時間內一直崩潰，status 顯示 start request repeated too quickly，修好程式之後還要做什麼才能再啟動？
++ systemctl reset-failed myapp 清除失敗計數，再 start
+- 重新開機
+- systemctl mask myapp
+- 刪掉 unit 檔重寫
+E> 觸發 StartLimitBurst 後會進入 start-limit-hit 狀態。
+?mc 手動在 shell 執行 ExecStart 的指令都正常，用 systemd 啟動卻說找不到某個指令。最可能的原因？
++ systemd 服務的環境變數（如 PATH）和互動式 shell 不同，不會讀 ~/.bashrc
+- systemd 不支援執行 shell script
+- 需要先 systemctl enable 才能執行
+- 服務必須用 Type=forking
+E> 服務環境很乾淨：用絕對路徑或在 Environment= 設 PATH。
+</script>
 <script type="text/plain" class="sa-src" data-ch="fs">
 @CH fs | 檔案系統與權限 | 📁 | 10_FileSystem.pdf
 
@@ -6188,6 +6956,544 @@ E> 容器內的 127.0.0.1 是容器自己的 loopback，外部轉進來的連線
 = docker exec -ti web sh
 E> -i 保持 stdin、-t 配置終端機。
 </script>
+<script type="text/plain" class="sa-src" data-ch="docker2">
+@CH docker2 | Docker 進階：Dockerfile、網路、Compose | 🐋 | Docker_Advanced.pdf
+
+@CARD docker2.dockerfile | Dockerfile 常用指令
+A> Dockerfile 是「蓋 image 的食譜」：FROM 是買哪一款半成品，RUN 是加工步驟，COPY 把自家食材放進去，WORKDIR 是在哪個工作台做事，ENV 是貼在容器裡的便條，CMD / ENTRYPOINT 是「上桌時要怎麼吃」。
+B> 別人做好的 image 常常不夠用（要多裝套件、特定設定）→ 用 **Dockerfile** 自己 build image
+B> **FROM <image>**：基底 image
+B> **RUN <command>**：在 build 時於容器中執行指令（每個 RUN 產生一層 layer）
+B> **COPY <host path> <container path>**：把 host 的檔案或目錄複製進 image
+B> **WORKDIR <path>**：之後指令的工作目錄（容器裡的 pwd）
+B> **CMD [...]**：預設啟動指令；**ENTRYPOINT [...]**：容器的主要指令；**ENV <key>=<value>**：容器內的環境變數
+X> FROM python:3.13-bookworm
+X> RUN apt-get update
+X> RUN apt-get install -y curl vim git build-essential net-tools
+X> COPY . .
+X> RUN pip install --no-cache-dir -r requirements.txt
+X> CMD ["python", "main.py"]
+?mt 配對 Dockerfile 指令：
+> FROM :: 指定基底 image
+> RUN :: build 時執行指令並產生新 layer
+> COPY :: 把 host 檔案複製進 image
+> WORKDIR :: 設定之後指令的工作目錄
+> ENV :: 設定容器內的環境變數
+E> 投影片 Common instructions。
+?mc RUN 和 CMD 的差別？
++ RUN 在 build image 時執行；CMD 是容器啟動時預設執行的指令
+- RUN 在容器啟動時執行；CMD 在 build 時執行
+- 兩者完全相同，只是寫法不同
+- CMD 只能出現在 FROM 之前
+E> RUN 的結果會存進 layer；CMD 只是記錄「啟動時要做什麼」。
+?tf Dockerfile 中每一個 RUN 指令都會產生一層新的 layer。
+=T
+E> 所以合併 RUN 可以減少 layer。
+
+@CARD docker2.build | docker build 與 .dockerignore
+A> docker build 會把整個資料夾（build context）打包送給 Docker daemon 去煮。.dockerignore 是「不要放進鍋子的東西清單」：node_modules、build 快取、.git 這些不該進 image 的都寫進去，image 會小很多、也比較安全。
+B> 用法：**docker build <Dockerfile 所在目錄>**（通常是 docker build .）
+B> **-t <name>[:<tag>]**：指定 image 名稱與 tag；**-f** 指定 Dockerfile 路徑
+B> 傳給 docker build 的目錄稱為 **build context**，COPY 只能複製 context 內的檔案
+B> **COPY . .** 容易把不需要的東西（node_modules、build cache）複製進去
+B> **.dockerignore**：排除這些檔案 → **減少 image 大小**（也避免把 .env、金鑰包進 image）
+X> $ docker build -t myapp:1.0 .
+X> $ cat .dockerignore
+X> node_modules
+X> .git
+X> build/
+X> .env
+?cmd 用目前目錄的 Dockerfile 建立名為 myapp、tag 為 1.0 的 image：
+= docker build -t myapp:1.0 .
+= docker build . -t myapp:1.0
+= docker build --tag myapp:1.0 .
+E> 最後的 . 是 build context。
+?mc .dockerignore 的主要作用是？
++ 讓 COPY 不會把不需要的檔案複製進 image，縮小 image
+- 讓 docker 忽略 Dockerfile 中的某些指令
+- 指定哪些 container 不要自動重啟
+- 列出 docker pull 時要略過的 layer
+E> 投影片：prevent you from copying these files to container and reduce the size of image。
+?tf Dockerfile 中的 COPY 可以複製 build context 以外的檔案，例如 COPY ../common /app/common。
+=F
+E> 只能存取 context 內的檔案；要用上層目錄就得把 context 設成上層（compose 的 build.context）。
+
+@CARD docker2.entrypoint | CMD vs ENTRYPOINT
+A> ENTRYPOINT 是「這台機器的固定用途」（例如永遠是 echo），CMD 是「預設的參數」（預設說 Hello world!）。docker run 後面接的東西會換掉 CMD，但換不掉 ENTRYPOINT，除非用 --entrypoint 硬改。
+B> 兩者都定義容器**啟動時要做什麼**
+B> **CMD**：提供「預設」指令，**可以被 docker run <command> 覆寫**
+B> **ENTRYPOINT**：**不能**被 docker run <command> 覆寫（比較像強制執行），但可用 **docker run --entrypoint** 覆寫
+B> 兩者都有時：**CMD 變成 ENTRYPOINT 的參數**（ENTRYPOINT ["echo"] + CMD ["Hello world!"] → echo Hello world!）
+B> 常見寫法：寫 entrypoint.sh 做初始化，**ENTRYPOINT ["./entrypoint.sh"]**，腳本最後用 exec "$@" 執行 CMD
+B> 用 JSON 陣列（exec form）時不經過 shell，程式是 PID 1、能直接收到 SIGTERM
+X> ENTRYPOINT ["echo"]
+X> CMD ["Hello world!"]
+X> $ docker run img            # Hello world!
+X> $ docker run img bye        # bye   （覆寫 CMD）
+?mc image 中有 ENTRYPOINT ["echo"] 與 CMD ["Hello world!"]，執行 docker run img hi 會輸出？
++ hi
+- Hello world!
+- echo hi
+- Hello world! hi
+E> docker run 後面的參數取代 CMD，再交給 ENTRYPOINT：echo hi。
+?mt 配對：
+> CMD :: 預設指令，docker run <command> 可覆寫
+> ENTRYPOINT :: 主要指令，需 --entrypoint 才能覆寫
+> 兩者都有 :: CMD 成為 ENTRYPOINT 的參數
+E> 投影片 CMD vs. ENTRYPOINT。
+?cmd 不管 image 的 ENTRYPOINT，改用 bash 進入 myimg 的互動式容器：
+= docker run -it --entrypoint bash myimg
+= docker run --rm -it --entrypoint bash myimg
+= docker run -it --entrypoint /bin/bash myimg
+= docker run --rm -it --entrypoint /bin/bash myimg
+E> debug 自訂 image 時很常用。
+?tf ENTRYPOINT 可以被 docker run <command> 直接覆寫。
+=F
+E> docker run 後面的參數只會取代 CMD；要換 ENTRYPOINT 得用 --entrypoint。
+
+@CARD docker2.arg | Build args：ARG 與 --build-arg
+A> ARG 是「下單時才填的選項」（例如要哪個版本），只在煮的過程（build）中有用；ENV 是「貼在成品上的標籤」，容器跑起來後還看得到。
+B> build 時可以傳參數給 Dockerfile：Dockerfile 寫 **ARG MY_VAR**，build 時 **docker build --build-arg MY_VAR=hello**
+B> 在 Dockerfile 中用 **${MY_VAR}** 取用
+B> **ARG 只在 build 階段存在**；容器執行時要用的變數用 **ENV**
+B> 不要用 ARG 傳密碼：會留在 image 的 history 中
+X> ARG MY_VAR
+X> RUN echo ${MY_VAR} > /tmp/my_file
+X> $ docker build --build-arg MY_VAR=hello -t demo .
+?cmd build 目前目錄時把 build arg VERSION 設為 1.2.3：
+= docker build --build-arg VERSION=1.2.3 .
+= docker build . --build-arg VERSION=1.2.3
+E> Dockerfile 裡要先宣告 ARG VERSION，才能用 ${VERSION} 取用。
+?mc ARG 與 ENV 的差別？
++ ARG 只在 build 時可用；ENV 會保留在 image 中，容器執行時也看得到
+- ARG 在容器執行時可用；ENV 只在 build 時可用
+- 兩者完全相同
+- ARG 只能是數字
+E> 容器裡的程式要讀的設定用 ENV（或 docker run -e）。
+?tf 用 ARG 傳入的 API token 不會出現在 image 的任何地方，所以很安全。
+=F
+E> 可能留在 docker history 或 layer 中；秘密應在執行時以 secrets / 環境變數傳入。
+
+@CARD docker2.cache | Layer cache 與指令順序
+A> build cache 像「存檔點」：某一行和它用到的檔案沒變，就直接讀檔不重做。但只要某一行變了，它之後的所有存檔點都作廢。所以要把「很少變又很花時間」的步驟（裝套件）放前面，「常常變」的（複製程式碼）放後面。
+B> Dockerfile 與相關檔案沒變 → 已建好的 layer 會被**快取**，rebuild 只重做有變動的層
+B> **某一層改變 → 它之後的所有層都要重做**
+B> 問題：先 **COPY . .** 再 **RUN pip install** → 只要改任何程式碼，pip install 也要重跑
+B> 解法：**先只 COPY requirements.txt → RUN pip install → 再 COPY . .**
+B> 原則：**耗時的指令放在常變動的指令之前**；同理 Node.js 先複製 package.json 再 npm install、C++ 先複製 conanfile.txt 再 conan install
+X> COPY requirements.txt .
+X> RUN pip install -r requirements.txt
+X> COPY . .
+X> CMD ["python", "main.py"]
+?ord 排出「改程式碼時不用重跑 pip install」的 Dockerfile 順序：
+> FROM python:3.13-slim-bookworm
+> COPY requirements.txt .
+> RUN pip install -r requirements.txt
+> COPY . .
+> CMD ["python", "main.py"]
+E> requirements.txt 沒變，pip install 那層就能沿用快取。
+?mc Dockerfile 是 COPY . . 然後 RUN pip install -r requirements.txt。只修改 main.py 後重新 build，會發生什麼？
++ COPY . . 那層失效，之後的 pip install 也要重跑
+- 只有 main.py 被重新複製，pip install 用快取
+- 全部從 FROM 開始重做
+- 什麼都不會重做，因為 requirements.txt 沒變
+E> 投影片 Utilize Cache to Save Build Time。
+?tf 某一層 layer 改變後，它之後的 layer 仍然可以全部使用快取。
+=F
+E> if a layer is modified, the layers after it require re-build。
+?sa 某 Node.js 專案的 Dockerfile 為：FROM node:22 / WORKDIR /app / COPY . . / RUN npm install / CMD ["node","server.js"]。開發時每次改一行程式就要等 npm install 幾分鐘。請說明原因並改寫 Dockerfile。
+R> 原因：Docker 以 layer 為單位快取，COPY . . 會複製所有原始碼，只要任何檔案變動該層就失效，其後的 RUN npm install 也必須重做，即使相依套件（package.json）根本沒變。
+R> 改寫：FROM node:22 / WORKDIR /app / COPY package.json package-lock.json ./ / RUN npm install（或 npm ci）/ COPY . . / CMD ["node","server.js"]。
+R> 這樣只有 package.json 或 lock 檔改變時才重跑 npm install；改程式碼只會讓最後的 COPY . . 失效。另外應在 .dockerignore 排除 node_modules，避免把 host 的 node_modules 複製進去蓋掉。
+P> 指出 layer cache：某層變動後其後各層都要重做
+P> 先只 COPY package.json（與 lock 檔）再 npm install
+P> 最後才 COPY . .
+P> （加分）.dockerignore 排除 node_modules
+
+@CARD docker2.size | 縮小 image：層數、slim、alpine
+A> 縮小 image 四招：不帶多餘行李（.dockerignore）、把多次打包合成一次（合併 RUN）、選輕量的底座（slim / alpine）、分成「工廠」與「成品」兩階段（multi-stage）。
+B> TL;DR：**不要複製不必要的檔案**（.dockerignore）、**減少 layer 數**、**用 slim 或 Alpine image**、**multi-stage build**
+B> 合併 RUN：RUN apt update && apt install -y vim tmux git python3（**注意：可能讓快取更容易失效**）
+B> python image 大小：**3.13.5-bookworm 366.1 MB**、**3.13.5-slim-bookworm 43.43 MB**、**3.13.5-alpine3.22 16.07 MB**
+B> slim 會少一些套件 → 可能有相容問題：Debian slim **沒裝 iproute2**；Alpine 用 **musl libc** 而不是 glibc
+B> 另一個常用技巧：同一個 RUN 裡清掉 apt 快取（rm -rf /var/lib/apt/lists/*），分開寫的話舊層仍保留那些檔案
+?mc 為什麼「RUN apt-get install … 」和「RUN rm -rf /var/lib/apt/lists/*」分成兩行寫，image 並不會變小？
++ 前一層已經把檔案存進 layer，後一層刪除只是加上「刪除標記」，舊層仍在 image 中
+- 因為 rm 在 build 時不會執行
+- 因為 /var/lib/apt/lists 是 volume
+- 因為 Docker 會自動還原被刪除的檔案
+E> 要在同一個 RUN 中安裝並清理，才不會留在任何一層。
+?mc 改用 Alpine 為基底的 image，可能遇到什麼相容性問題？
++ Alpine 使用 musl libc 而非 glibc，部分依賴 glibc 的程式或 wheel 無法直接執行
+- Alpine 沒有 shell
+- Alpine 不能執行 Python
+- Alpine image 無法使用 COPY 指令
+E> 投影片：Alpine-based image uses MUSL libs, instead of common glibc。
+?tf 合併多個 RUN 指令可以減少 layer 數，但可能讓 build cache 更容易失效。
+=T
+E> 合在一起的 RUN 中任何一部分改變，整層都要重做。
+?mt 配對 python image 與大小（投影片數據）：
+> 3.13.5-bookworm :: 366.1 MB
+> 3.13.5-slim-bookworm :: 43.43 MB
+> 3.13.5-alpine3.22 :: 16.07 MB
+E> slim 比完整版小很多，但會少一些套件；alpine 最小，但用 musl libc。
+
+@CARD docker2.multistage | Multi-stage build
+A> 編譯程式需要一整間「工廠」（gcc、cmake、各種 -dev 套件），但跑程式只需要「成品」加上少數零件。multi-stage 就是在第一個 stage 蓋工廠做出成品，第二個 stage 只把成品搬到乾淨的小房間，工廠整個丟掉。
+B> 情境：C++ 專案在 image 裡裝編譯工具與函式庫、make 出 binary → 結果用 **1GB 的容器跑一個 binary**
+B> 執行時其實只需要 **glibc 與 SSL library**
+B> 第一個 stage：**FROM … AS builder**，安裝編譯工具並編譯
+B> 第二個 stage：乾淨的 FROM，只安裝執行期需要的套件，**COPY --from=builder** 把成品複製過來
+B> 最終 image 只包含最後一個 stage 的內容
+X> FROM debian:trixie-slim AS builder
+X> RUN apt update && apt install -y libssl-dev cmake make gcc ...
+X> COPY . .
+X> RUN cmake -S . -B build && make -C build -j8
+X> FROM debian:trixie-slim
+X> RUN apt update && apt install -y libssl-dev
+X> COPY --from=builder /app/build/bin/my_app ./my_app
+X> CMD ["./my_app"]
+?fill 從名為 builder 的 stage 複製檔案：COPY ＿＿ /app/build/bin/my_app ./my_app
+= --from=builder
+E> --from 可以指定 stage 名稱（AS builder）或其他 image。
+?mc multi-stage build 為什麼能縮小 image？
++ 最終 image 只包含最後一個 stage，編譯工具與中間產物留在 builder stage 中不會被帶走
+- 它會自動壓縮所有 layer
+- 它會刪除所有 RUN 指令
+- 它讓多個 container 共用一個 image
+E> All we need is merely glibc and the SSL library。
+?tf multi-stage build 的最終 image 會包含所有 stage 中安裝的套件。
+=F
+E> 只有最後一個 stage 的內容會留在最終 image，builder 的編譯工具不會被帶走。
+
+@CARD docker2.netdriver | Docker network：veth、bridge 與 docker0
+A> 每個容器有自己的網路空間（namespace），像一間間關起門的房間。veth pair 是一條「兩頭都有插頭的網路線」，一頭插在容器裡（eth0），一頭插在 host 的虛擬交換器 docker0（bridge）上。容器就這樣透過 docker0 互相溝通、再經 NAT 出去。
+B> Docker 提供多種 **network driver**；課程重點：**bridge（預設）** 與 **host**
+B> **veth**：成對出現的虛擬介面，兩端可以在**不同 namespace** → 跨 namespace 通訊，像一條網路線
+B> **bridge**：虛擬介面，像**輕量的虛擬 switch / hub**，可轉送接在上面的介面的封包
+B> bridge driver 用 **Linux bridge + veth** 把容器的 network namespace 接到 eth0
+B> 容器內：eth0@if69，**172.17.0.2/16**；host：**docker0 172.17.0.1/16**，另一端 veth…@if2 的 **master docker0**
+X> # 容器內
+X> 2: eth0@if69: ... inet 172.17.0.2/16
+X> # host
+X> 9: docker0: ... inet 172.17.0.1/16
+X> 69: veth7308954@if2: ... master docker0
+?mc 預設 bridge 網路下，容器的 eth0 與 host 是怎麼連起來的？
++ 透過一對 veth：一端在容器 namespace 當 eth0，另一端接在 host 的 docker0 bridge 上
+- 容器直接使用 host 的 eth0
+- 透過 VPN tunnel
+- 透過 /var/run/docker.sock
+E> 投影片 Docker Network Drivers - Bridge。
+?fill 預設 bridge 網路中，host 上 docker0 介面的 IP 通常是 172.17.0.＿＿/16
+= 1
+E> 它也是容器的 default gateway。
+?tf veth 介面總是成對出現，兩端可以位於不同的 network namespace。
+=T
+E> 可以想成一條網路線的兩端，容器網路就是靠它跨 namespace 連到 host。
+
+@CARD docker2.bridge | 自訂 bridge 網路
+A> 預設所有容器都接在同一台 docker0 交換器上，彼此都能連。想讓某些容器自成一區，就建一台新的交換器（docker network create），只把那幾個容器接上去；新交換器還附送「用名字找人」的內建 DNS。
+B> 沒有額外設定的容器：使用 **bridge driver**、接到預設 bridge **docker0** → **容器之間可以互相通訊**
+B> 不想互通？**docker network create --driver bridge my_bridge** 建立新的 bridge
+B> 新 bridge 在 host 上是 **br-<network id>** 介面（例如 172.18.0.1/16），可用 **ip link**、**docker network ls** 查看
+B> **docker run --network my_bridge debian bash**：讓容器接到新 bridge
+B> 自訂 bridge 有內建 DNS：容器可以用**容器名稱**互相解析（預設 docker0 沒有）
+X> $ docker network create --driver bridge my_bridge
+X> $ docker network ls
+X> NETWORK ID     NAME        DRIVER    SCOPE
+X> 30ed72de30c7   my_bridge   bridge    local
+X> 295b421f0b83   bridge      bridge    local
+X> $ docker run --network my_bridge debian bash
+?cmd 建立一個名為 backend、使用 bridge driver 的 Docker 網路：
+= docker network create --driver bridge backend
+= docker network create -d bridge backend
+= docker network create backend
+E> bridge 是預設 driver，所以 --driver bridge 可省略。
+?cmd 執行一個 debian 容器並接到 my_bridge 網路（互動式 bash）：
+= docker run -it --network my_bridge debian bash
+= docker run --rm -it --network my_bridge debian bash
+= docker run -it --net my_bridge debian bash
+E> --network 和 --net 都可以；--rm 讓容器結束後自動刪除。
+?mc host 上出現 br-30ed72de30c7 這個介面，代表？
++ 一個自訂的 Docker bridge 網路（network ID 開頭 30ed72de30c7）
+- 一個故障的 veth
+- Docker 的預設 bridge
+- WireGuard 介面
+E> 預設 bridge 叫 docker0，自訂的叫 br-<id>。
+
+@CARD docker2.host | host、none、macvlan、ipvlan driver
+A> host driver 是「拆掉房間的牆」：容器直接用 host 的網路，沒有隔離，port 也跟 host 搶。none 是「只有一面鏡子的房間」（只有 loopback）。macvlan 讓容器像一台真的實體機有自己的 MAC；ipvlan 則是共用 MAC、各自有 IP。
+B> **host**：容器直接綁 host 的 eth0，**沒有網路 stack 隔離**；容器看到的網路與 host 相同
+B> host 模式下 **host 用掉的 port 容器不能用，反之亦然**；-p 對 host 模式沒有意義
+B> **none**：只有 **loopback** 介面的 network namespace
+B> **macvlan**：給容器**自己獨立的 MAC address**，在網路上看起來像實體裝置
+B> **ipvlan**：容器**共用一個 MAC address**，但各自有 IP
+?mt 配對 network driver：
+> bridge :: 預設；Linux bridge + veth，容器間可互通
+> host :: 共用 host 網路，沒有隔離
+> none :: 只有 loopback
+> macvlan :: 每個容器有自己的 MAC
+> ipvlan :: 共用 MAC、各自有 IP
+E> 課程重點是 bridge 與 host；none、macvlan、ipvlan 是補充（FYR）。
+?mc 用 --network host 執行一個監聽 80 port 的 nginx 容器，而 host 上已經有服務佔用 80，會怎樣？
++ 容器的 nginx 綁定 80 失敗，因為兩者共用同一個網路 stack
+- Docker 會自動把容器改到 8080
+- 兩者都可以同時監聽 80
+- host 的服務會被停止
+E> A port used by the host cannot be used by a container at the same time。
+?cmd 執行一個完全沒有對外網路（只有 loopback）的 alpine 容器：
+= docker run -it --network none alpine sh
+= docker run --rm -it --network none alpine sh
+= docker run -it --net none alpine sh
+E> --network none 的容器只有 lo 介面。
+
+@CARD docker2.compose | Docker Compose 設定檔
+A> Compose 是「整桌菜的菜單」：一個 YAML 檔寫好網站（web）、資料庫（db）各要用什麼 image、開哪些 port、設哪些環境變數、資料存哪裡、誰要先上桌，一個指令就把整桌端上來。
+B> 用 **YAML 設定檔**定義與管理**多容器**應用（檔名常用 compose.yml / docker-compose.yml）
+B> **services:** 底下每個服務：**image** 或 **build**、**ports**、**environment**、**depends_on**、**volumes**、**restart**
+B> ports **"5000:5000"** = host:container；只給本機：**"127.0.0.1:8000:8000"**
+B> 同一個 compose 的服務可以用**服務名稱**互相連線（例：DB_URL=…@**db**:5432）
+B> volumes：**./pgdata:/var/lib/postgresql/data**（bind mount，資料存在 host 目錄，容器刪掉也還在）
+X> services:
+X>   web:
+X>     build: ./app
+X>     ports:
+X>       - "5000:5000"
+X>     environment:
+X>       - DB_URL=postgresql://postgres:postgres@db:5432/my_app
+X>     depends_on:
+X>       - db
+X>   db:
+X>     image: postgres:16.9-bookworm
+X>     restart: always
+X>     volumes:
+X>       - ./pgdata:/var/lib/postgresql/data
+?mc 上面的 compose 檔中，web 的 DB_URL 用 db:5432 連資料庫，db 這個名稱是怎麼解析的？
++ Compose 建立的網路有內建 DNS，服務名稱 db 會解析成 db 容器的 IP
+- 要手動寫進 host 的 /etc/hosts
+- db 是 PostgreSQL 的保留字
+- 透過 docker0 的 DHCP
+E> They can communicate with each other by IP addresses or by domain name (the service name)。
+?mc ports 寫 "127.0.0.1:8100:8080" 的意思是？
++ 只在 host 的 127.0.0.1:8100 監聽，轉到容器的 8080；外部機器連不到
+- 容器監聽 127.0.0.1:8100
+- 對所有介面開放 8100 與 8080
+- 只允許容器 8100 連到 host 8080
+E> HW3 要求除了 PostgreSQL 外的 port 都只綁 127.0.0.1，由 host 的 NGINX 對外。
+?tf ports 只寫 "5432:5432" 時，Docker 會在 host 的所有介面（0.0.0.0）開放 5432。
+=T
+E> 而且 Docker 會自行加 iptables 規則，可能繞過你以為的防火牆，所以內部服務要明確綁 127.0.0.1。
+
+@CARD docker2.composecmd | docker compose 指令
+A> compose 指令就是 docker 指令的「整桌版」：up 是把整桌菜依菜單端上來（菜單改了就重做那道），down 是整桌收掉（桌子、網路一起收，但冰箱裡的 volume 預設留著）。
+B> **docker compose up -d**：啟動，YAML 改變時重建對應容器（-d 背景執行）
+B> **docker compose down**：**移除所有容器與網路**（named volume 預設保留，加 **-v** 才會刪）
+B> **docker compose start / restart / stop [<service>]**：啟動 / 重啟 / 停止（不刪容器）
+B> 多數 docker 指令都有 compose 版本：**docker compose logs**、ps、exec、pull、build
+B> **-f**：指定 compose 檔位置
+X> $ docker compose -f /home/judge/hw3/compose.yml up -d
+X> $ docker compose logs -f web
+X> $ docker compose exec db psql -U postgres
+?mt 配對 docker compose 指令：
+> up -d :: 在背景啟動（或依新設定重建）所有服務
+> down :: 移除所有容器與網路
+> stop :: 停止容器但不刪除
+> logs :: 查看服務輸出
+> -f :: 指定 compose 檔的位置
+E> down 會刪除容器與網路；stop 只停止不刪除。
+?cmd 在背景啟動目前目錄 compose 檔的所有服務：
+= docker compose up -d
+= docker compose up --detach
+E> -d（--detach）讓服務在背景執行，不佔用終端機。
+?mc 執行 docker compose down 之後再 up -d，下列哪種資料一定還在？
++ bind mount 到 host 目錄（如 ./pgdata）的資料
+- 容器內 /tmp 的檔案
+- 容器可寫層（沒有掛 volume 的路徑）中的資料
+- 執行中 process 的記憶體內容
+E> down 會刪容器（可寫層一起消失）；bind mount 與 named volume（沒加 -v）會保留。HW3 要求 down + up 後服務仍能恢復。
+?cmd 持續追蹤 compose 中 web 服務的 log：
+= docker compose logs -f web
+= docker compose logs --follow web
+= docker compose logs web -f
+E> -f 持續追蹤；--tail N 只顯示最後 N 行。
+
+@CARD docker2.composebuild | Compose 的 image 與 build
+A> image 是「直接買現成的」，build 是「照食譜自己做」。build.context 是「廚房範圍」：COPY 只能拿廚房裡的食材，所以要用上層目錄的共用程式，就得把廚房設在上層，再用 dockerfile 指出食譜放哪。
+B> **image**：要啟動的 image
+B> **build.context**：Docker build context（大多是 Dockerfile 所在目錄）
+B> **build.dockerfile**：Dockerfile 的位置（是**檔案**，不是目錄）
+B> **build.args**：build args（對應 ARG）
+B> 若 backend 的 Dockerfile 要 COPY ../common /app/common → **context 設為上層目錄**、**dockerfile 設為 backend/Dockerfile**，否則 COPY 會失敗
+B> **image 與 build 同時存在**時，image 代表 build 出來的 image 名稱
+X> services:
+X>   backend:
+X>     build:
+X>       context: .
+X>       dockerfile: backend/Dockerfile
+X>       args:
+X>         - MY_VAR=hello
+X>     image: registry.example.com/backend:1.0
+?mc backend/Dockerfile 需要 COPY common/ /app/common/（common 與 backend 同層）。compose 應該怎麼設定？
++ context 設為兩者的上層目錄，dockerfile: backend/Dockerfile，Dockerfile 裡寫 COPY common/ …
+- context: backend，Dockerfile 裡寫 COPY ../common /app/common
+- 只要把 common 加進 .dockerignore 的例外
+- 改用 volumes 掛載就好，不需改 build
+E> build context 外的檔案 COPY 不到。
+?tf compose 中同時寫 image 與 build 時，image 欄位會被忽略。
+=F
+E> image 會成為 build 出來的 image 名稱（之後也可 push）。
+
+@CARD docker2.depends | depends_on 與 healthcheck
+A> depends_on 只是「排隊順序」：資料庫的容器先開門，網站再開門，但不保證資料庫已經準備好接客。加上 condition: service_healthy，就變成「等資料庫的健康檢查通過才開網站」。
+B> **depends_on** 只寫服務名稱 → 讓依賴**先啟動**，**不檢查依賴是否失敗或就緒**
+B> condition：**service_started**（同上）、**service_completed_successfully**（exit code 必須 0）、**service_healthy**（health check 必須通過）
+B> **healthcheck**：**CMD**（直接 exec，推薦）或 **CMD-SHELL**（經過 shell，可用 && 等）
+B> 選項：**test、interval、timeout、retries、start_period**（啟動期間失敗不算）、**start_interval**（啟動期間的檢查間隔）
+B> 也可寫在 Dockerfile（**HEALTHCHECK**）或 docker run（--health-cmd、--health-interval…）；docker ps 會顯示 (healthy)
+X>   web:
+X>     depends_on:
+X>       db:
+X>         condition: service_healthy
+X>   db:
+X>     healthcheck:
+X>       test: ["CMD", "pg_isready", "-U", "user"]
+X>       interval: 10s
+X>       timeout: 5s
+X>       retries: 5
+?mc web 寫了 depends_on: [db]（只有名稱）。PostgreSQL 容器啟動但還在初始化時，web 會？
++ 照樣被啟動，可能因為資料庫還沒準備好而連線失敗
+- 等到 PostgreSQL 可以接受連線才啟動
+- 永遠不會被啟動
+- 自動重試直到成功
+E> 只有名稱時 No checks for container failure；要等就緒用 condition: service_healthy。
+?mt 配對 depends_on condition：
+> service_started :: 依賴啟動即可
+> service_healthy :: 依賴的 health check 必須通過
+> service_completed_successfully :: 依賴必須以 exit code 0 結束
+E> 最後一種適合「先跑 migration 再啟動 app」。
+?mc healthcheck 的 test 用 CMD 與 CMD-SHELL 的差別？
++ CMD 直接 exec 指令；CMD-SHELL 交給 shell 執行，可以用 &&、| 等 shell 功能
+- CMD 只能檢查 HTTP；CMD-SHELL 可以檢查任何東西
+- CMD-SHELL 比較安全，所以是推薦的寫法
+- 兩者完全相同
+E> 投影片：In most of cases, CMD is recommended。
+?mt 配對 healthcheck 選項：
+> interval :: 多久檢查一次
+> timeout :: 單次檢查的逾時
+> retries :: 允許連續失敗幾次才判定 unhealthy
+> start_period :: 啟動初期，失敗不計入
+E> start_interval 則是 start_period 期間的檢查間隔。
+?fill Dockerfile 中宣告健康檢查的指令是＿＿
+= HEALTHCHECK
+E> 例：HEALTHCHECK --interval=10s --timeout=5s CMD pg_isready -U user。
+
+@CARD docker2.restart | Restart policy：no、on-failure、always、unless-stopped
+A> 重啟策略是「容器倒下要不要扶起來」。always 和 unless-stopped 平常一樣都會扶，差別在「你親手關掉的容器，Docker daemon 重開後要不要再把它叫起來」：always 會，unless-stopped 尊重你的決定。
+B> **no**：不重啟（**預設**）
+B> **on-failure**：**exit code 非 0** 時重啟
+B> **always**：停止就重啟（手動 stop 除外）；**Docker daemon 重啟後連手動停掉的也會被啟動**
+B> **unless-stopped**：停止就重啟（手動 stop 除外）；daemon 重啟後**手動停掉的保持停止**
+B> Compose：**restart: always**；docker run：**--restart <mode>**
+B> 想要「重開機後服務自動回來」：restart: always / unless-stopped，且 **docker.service 有 enable**
+?mc 對一個設定 restart: unless-stopped 的容器執行 docker stop，然後重開機（Docker daemon 重啟），容器會？
++ 保持停止
+- 自動啟動
+- 被刪除
+- 變成 paused
+E> 若是 always，daemon 重啟後會被啟動。
+?mt 配對 restart policy：
+> no :: 預設，不自動重啟
+> on-failure :: exit code 非 0 才重啟
+> always :: daemon 重啟後連手動停的也會啟動
+> unless-stopped :: 手動停掉的，daemon 重啟後仍保持停止
+E> always 與 unless-stopped 的差別只在 daemon 重啟後，手動停止的容器要不要啟動。
+?cmd 執行 nginx 容器（背景），並設定除非手動停止否則永遠自動重啟：
+= docker run -d --restart unless-stopped nginx
+= docker run -d --restart=unless-stopped nginx
+= docker run --restart unless-stopped -d nginx
+E> --restart 也接受 no、on-failure、always。
+?tf 只要 compose 寫了 restart: always，不需要 enable docker.service，重開機後容器也會自動啟動。
+=F
+E> 容器靠 Docker daemon 拉起來，daemon 本身要開機自動啟動（Debian 安裝時通常已 enable）。
+
+@CARD docker2.composenet | Compose 網路與 IPAM
+A> Compose 預設幫整桌菜準備一台專屬交換器（新的 bridge 網路），大家用服務名稱互叫。需要固定 IP 或指定網段時，才自己寫 networks 區段；但要注意你指定的網段，host 的路由會被 Docker 拿去用。
+B> 預設：所有容器使用 **一個新的 bridge 網路**（通常不需要額外設定）
+B> 容器間可用 **IP** 或 **服務名稱**（domain name）互相連線
+B> 可在 YAML 加 **networks** 區段設定：driver、**ipam.config.subnet / gateway**；服務中用 **ipv4_address** 指定固定 IP
+B> **注意：設定的 subnet 路由會被 Docker 拿走**（與既有網段如 WireGuard 192.168.x.x 衝突時要小心）
+X> services:
+X>   coredns:
+X>     image: coredns/coredns
+X>     networks:
+X>       coredns:
+X>         ipv4_address: 192.168.0.2
+X> networks:
+X>   coredns:
+X>     driver: bridge
+X>     ipam:
+X>       config:
+X>         - subnet: 192.168.0.0/16
+X>           gateway: 192.168.0.1
+?mc compose 中把網路 subnet 設成 192.168.0.0/16，而 VM 的 WireGuard 網段是 192.168.1.0/24，可能發生什麼？
++ Docker 會在 host 加上 192.168.0.0/16 的路由，可能和 WireGuard 網段衝突，導致連不到 VPN 上的機器
+- 沒有影響，Docker 網路與 host 路由完全無關
+- WireGuard 會自動改用其他網段
+- 容器會無法啟動
+E> 投影片：The route to configured subnet will be taken by Docker。
+?fill compose 中替服務指定固定 IPv4 位址的鍵是＿＿
+= ipv4_address
+E> 要搭配 networks 區段的 ipam.config.subnet。
+?tf Compose 預設會為專案建立一個新的 bridge 網路。
+=T
+E> 網路名稱通常是 <專案名>_default，服務可以用名稱互相解析。
+
+@CARD docker2.prune | 清理未使用的資源：prune
+A> Docker 不會主動丟垃圾：沒人用的 image、volume、網路會一直堆著。prune 是「大掃除」，-a 是「連看起來還能用、但沒人用的也一起丟」。
+B> 預設：**沒有容器使用的資源也不會被刪除**
+B> **docker <resource> prune**：docker volume / network / image / container prune
+B> **docker system prune**：一次清全部（預設不含 volume，要加 --volumes）
+B> **-a**：清得更多：**docker image prune** 只刪 **dangling image**（沒有 tag 的），**-a** 刪除**所有沒有容器使用**的 image
+?mc docker image prune 與 docker image prune -a 的差別？
++ 前者只刪 dangling（無 tag）image；-a 刪除所有沒有被任何容器使用的 image
+- 前者刪全部 image；-a 只刪 dangling
+- -a 會連執行中的容器一起刪
+- 兩者相同
+E> dangling image 指的是沒有任何 tag 的 image（常是 rebuild 後留下的舊層）。
+?cmd 刪除所有沒有被使用的 Docker volume：
+= docker volume prune
+= docker volume prune -f
+E> 小心：資料庫資料若在 named volume 且容器已刪，會被一起清掉。
+?cmd 一次清除停止的容器、未使用的網路、dangling image 與 build cache：
+= docker system prune
+= docker system prune -f
+E> 預設不刪 volume，要加 --volumes；加 -a 會刪掉所有沒有容器使用的 image。
+
+@CARD docker2.p_debug | 實作：Compose 服務起不來怎麼查
+A> Compose 出問題時依序問：設定檔解析得對嗎（config）？容器在不在、狀態是什麼（ps）？它說了什麼（logs）？能不能進去看（exec）？網路與名稱解析通不通？
+B> 檢查合併後的設定：**docker compose config**（YAML 錯誤、變數替換結果）
+B> 狀態：**docker compose ps -a**（Exit code、health 狀態）；log：**docker compose logs --tail 50 <svc>**
+B> 進容器：**docker compose exec <svc> sh**；容器起不來就用 **docker compose run --rm --entrypoint sh <svc>**
+B> 網路：**docker network inspect <proj>_default**、在容器內 getent hosts db 測名稱解析
+B> 常見原因：port 已被佔用（host 上 **ss -tlnp**）、容器裡的程式只聽 **127.0.0.1**（從外面連不到，要聽 0.0.0.0）、volume 權限（UID 不同）、環境變數沒進去、image 沒重 build（**up -d --build**）
+X> $ docker compose config
+X> $ docker compose ps -a
+X> $ docker compose logs --tail 50 web
+X> $ docker compose up -d --build
+?mc 容器內的 Web 程式監聽 127.0.0.1:8000，compose 也寫了 ports: "8000:8000"，但 host 上 curl localhost:8000 連不到。原因？
++ 容器內的程式只聽容器自己的 loopback，從 veth 進來的連線到不了；應改為監聽 0.0.0.0
+- host 的 docker0 沒有啟動
+- 需要改用 --network none
+- ports 的寫法要倒過來
+E> port mapping 是把流量轉到容器的 eth0，容器裡的程式要在該介面上監聽。
+?cmd 顯示 compose 檔解析與變數替換後的最終設定：
+= docker compose config
+E> YAML 寫錯、變數沒替換、縮排問題都能從這裡看出來。
+?cmd 修改 Dockerfile 後，重新 build 並在背景啟動所有服務：
+= docker compose up -d --build
+= docker compose up --build -d
+E> 只有 up -d 不會重新 build 已存在的 image。
+</script>
 <script type="text/plain" class="sa-src" data-ch="hw2">
 @CH hw2 | HW2 實戰觀念：救援、SFTP、log、daemon | 🛠️ | hw2.pdf
 
@@ -6556,8 +7862,657 @@ E> is-active 則是查現在有沒有在跑。
 - journald 重複記錄
 E> 監看時排除 .violated（例如 inotifywait 的 --exclude），或處理時略過這個路徑。
 </script>
+<script type="text/plain" class="sa-src" data-ch="hw3">
+@CH hw3 | HW3 實戰觀念：Web 服務、PKI、OIDC、可觀測性 | 🔐 | hw3.pdf
+
+@CARD hw3.overview | HW3 全貌：LLM Sandbox Platform
+A> HW3 是在你的 VM 上開一間「AI 實驗室」：使用者開 sandbox（隔離的容器房間）讓 AI agent 做事，平台是房間唯一的門，所有網路流量都要經過它、被它記錄；agent 做危險動作時會發警報。周邊還要架好門口警衛（NGINX）、身分證中心（OIDC）、資料庫、Git 與 CI/CD、監控與日誌。
+B> 主角：**LLM Sandbox Platform**：建立 sandbox、在裡面執行指令或交給 agent，**控制所有網路流量並記錄 agent 每個動作**，危險行為**送出 alert**
+B> 周邊服務：**NGINX、OIDC provider、PostgreSQL、Forgejo、Forgejo runner、Prometheus**
+B> **NGINX 在 host 上**接 HTTP/HTTPS 再轉給 Docker Compose 裡的服務；**PostgreSQL 不經過 NGINX**，直接開 5432
+B> 平台是 sandbox 的 **gateway**：所有 sandbox 流量都經過它
+B> 七大部分：Environment、PKI、NGINX、Identity & Database、Git & CI/CD、LLM Sandbox Platform、Metrics / Logs / Traces / Alerts；Deadline **2026/12/21 23:59**，以**最後一次**提交計分
+?mc HW3 中，哪個服務「不」經過 host 上的 NGINX？
++ PostgreSQL（直接服務 5432）
+- Forgejo
+- OIDC provider
+- Prometheus
+E> PostgreSQL also runs in Docker Compose, but it does not go through NGINX。
+?tf HW3 的 NGINX 要以 systemd service 的形式跑在 host 上，而不是容器裡。
+=T
+E> Install NGINX with apt on the host; runs as a systemd service, NOT in a container。
+
+@CARD hw3.stuid | {STU_ID} 與 Docker Compose 環境
+A> {STU_ID} 是你在這份作業的「座號」，從 WireGuard IP 算出來：192.168.A.B → A×16 + B/16（整數除法）。所有服務都用 Compose 管，除了 NGINX；只讓該開的門開著。
+B> **{STU_ID} = A × 16 + B / 16**（整數除法），IP 為 192.168.A.B；例：192.168.1.50 → 16 + 3 = **19**（不是學號）
+B> 除 NGINX 外都用 **Docker Compose**，compose 檔放 **/home/judge/hw3/compose.yml**
+B> 發布的 port：IP-Srv ×3 **127.0.0.1:8000–8002**、OIDC **8100**、Forgejo **8101**、Prometheus **8102**、Platform **8103**、**PostgreSQL 0.0.0.0:5432**；除了 PostgreSQL 都只綁 **127.0.0.1**
+B> host 只監聽 **TCP 22、80、443、5432**（用 ss -tlnp 檢查）
+B> **docker compose down + up -d** 或 **Docker 重啟**後所有服務都要恢復 → 資料放 volume、設定 restart policy；**重開機後也要自動恢復**
+?fill WireGuard IP 為 192.168.2.40 時，{STU_ID} = 2×16 + 40/16 = ＿＿
+= 34
+E> 40/16 整數除法 = 2，32 + 2 = 34。
+?fill WireGuard IP 為 192.168.0.200 時，{STU_ID} = ＿＿
+= 12
+E> 0×16 + 200/16 = 12（整數除法）。
+?cmd 列出 host 上所有正在監聽的 TCP port 與對應 process：
+= ss -tlnp
+= ss -ltnp
+= ss -tnlp
+= ss -lntp
+= ss -tulpn
+E> 用來確認只開了 22、80、443、5432。
+?mc 為什麼 IP-Srv、Forgejo 等容器的 port 要綁 127.0.0.1，而不是 0.0.0.0？
++ 讓它們只能透過 host 上的 NGINX（HTTPS、header 處理）存取，外部無法繞過 NGINX 直接連
+- 因為 Docker 不支援 0.0.0.0
+- 為了讓容器之間可以互相連線
+- 0.0.0.0 只能用於 UDP
+E> 而且 Docker 發布的 port 會自己加 iptables 規則，容易繞過 host 防火牆。
+
+@CARD hw3.host | Host 設定：信任 CA、APT 來源、分流 DNS、/etc/hosts
+A> 讓 VM「認得助教的世界」：先信任助教的根憑證（才敢跟助教的 HTTPS 網站講話），再加入助教的套件倉庫並驗證它的簽章鑰匙，ta.cs.nycu 的名字交給助教的 DNS 查，自己的服務名稱則寫死在 /etc/hosts 指向自己。
+B> 信任 TA root CA：放到 **/usr/local/share/ca-certificates/xxx.crt**（副檔名要 .crt）→ **update-ca-certificates**（更新 /etc/ssl/certs/ca-certificates.crt）
+B> TA APT repo：https://apt.ta.cs.nycu/debian、suite **trixie**、component **main**；GPG key 放 **/etc/apt/keyrings/**，在來源檔用 **Signed-By=** 指定（apt-key 已淘汰）
+B> 分流 DNS：**ta.cs.nycu 與所有子網域**交給 **192.168.255.66**（systemd-resolved 的 routing domain **~ta.cs.nycu**，或 dnsmasq 的 server=/ta.cs.nycu/192.168.255.66）
+B> /etc/hosts：{STU_ID}.cs.nycu、auth.、pg.、git.、prom.、sandbox.{STU_ID}.cs.nycu 都指向自己的 VM
+B> NGINX 用 **apt** 裝在 host，以 **systemd service** 執行
+X> # /etc/apt/sources.list.d/ta.sources
+X> Types: deb
+X> URIs: https://apt.ta.cs.nycu/debian
+X> Suites: trixie
+X> Components: main
+X> Signed-By: /etc/apt/keyrings/ta.gpg
+?cmd 把 /usr/local/share/ca-certificates/ 下新放入的 CA 憑證加入系統信任清單：
+= update-ca-certificates
+= sudo update-ca-certificates
+E> 會更新 /etc/ssl/certs/ca-certificates.crt；憑證檔名必須以 .crt 結尾。
+?mc 為什麼新增 APT 來源時要用 Signed-By= 指定金鑰，而不是把金鑰加進全域信任？
++ 限定這把金鑰只能驗證這個 repo，避免第三方金鑰被拿來替其他來源（如 Debian 官方套件）簽章
+- Signed-By 可以讓下載速度變快
+- 全域信任的金鑰無法驗證 https 來源
+- Signed-By 會自動更新金鑰
+E> apt-key 的全域信任已被淘汰，原因就是任何一把金鑰都能替所有來源背書。
+?mc 想讓「只有 ta.cs.nycu 與其子網域」的查詢送到 192.168.255.66，其他照舊用原本的 DNS，這種設定叫做？
++ split DNS（依網域分流）
+- DNS round-robin
+- reverse DNS
+- DNSSEC
+E> systemd-resolved 用 ~ta.cs.nycu 表示「只用於路由這個網域」。
+?tf 加入 https 的 APT 來源前，必須先信任它所使用的 CA，否則 apt update 會因憑證驗證失敗而出錯。
+=T
+E> apt.ta.cs.nycu 的憑證由 TA root CA 簽發。
+
+@CARD hw3.pki | 自建 PKI：Root CA 與 Intermediate CA
+A> 自己開一間「發證中心」：Root CA 是總部的鋼印，平常鎖在保險箱；Intermediate CA 是分部的印章，日常發證都用它。分部印章被限制「只能發一般證件，不能再開分部」（pathlen:0）。客戶只要信任總部，就能沿著鏈條驗證所有證件。
+B> **Root CA**：自簽；Subject C=TW, O=National Yang Ming Chiao Tung University, CN=SA-{STU_ID} Root CA；**/home/judge/hw3/ca/root.crt**
+B> **Intermediate CA**：由 root 簽發；**不能再簽其他 CA 憑證** → **basicConstraints = critical, CA:TRUE, pathlen:0**；keyUsage keyCertSign, cRLSign
+B> **VM 要信任你的 root CA**；intermediate 簽發 Part 1 所有主機的 **TLS 憑證**與所有 **client 憑證**
+B> 伺服器憑證：主機名放在 **SAN（subjectAltName）**（現代用戶端不看 CN）、EKU **serverAuth**；client 憑證：EKU **clientAuth**
+B> 伺服器要送 **leaf + intermediate**（fullchain），用戶端用 root 驗證整條鏈
+X> openssl req -x509 -new -key root.key -days 3650 -subj "/C=TW/O=National Yang Ming Chiao Tung University/CN=SA-19 Root CA" -out root.crt
+X> # intermediate 的 extension
+X> basicConstraints = critical, CA:TRUE, pathlen:0
+X> keyUsage = critical, keyCertSign, cRLSign
+X> openssl verify -CAfile root.crt -untrusted intermediate.crt server.crt
+?mc 要讓 intermediate CA「可以簽發一般憑證，但不能再簽其他 CA」，應設定？
++ basicConstraints = CA:TRUE, pathlen:0
+- basicConstraints = CA:FALSE
+- keyUsage = digitalSignature
+- extendedKeyUsage = serverAuth
+E> pathlen:0 表示它底下不能再有 CA；CA:FALSE 則連一般憑證都不能簽（它就不是 CA 了）。
+?mc 現代瀏覽器檢查憑證是否屬於 git.19.cs.nycu 時，看的是？
++ SAN（subjectAltName）中的 DNS 名稱
+- Subject 的 O（organization）
+- 憑證的序號
+- Issuer 的 CN
+E> 只看 SAN；沒有 SAN 的憑證會被拒絕。
+?cmd 用 root.crt 當信任根、intermediate.crt 當中繼，驗證 server.crt：
+= openssl verify -CAfile root.crt -untrusted intermediate.crt server.crt
+E> -untrusted 提供中繼憑證，但不把它當成信任根。
+?mt 配對憑證 extension：
+> basicConstraints CA:TRUE, pathlen:0 :: 只能簽發終端憑證的中繼 CA
+> subjectAltName DNS:pg.19.cs.nycu :: 憑證適用的主機名稱
+> extendedKeyUsage serverAuth :: 可用於 TLS 伺服器
+> extendedKeyUsage clientAuth :: 可用於 TLS 用戶端認證（mTLS）
+E> 伺服器憑證放 serverAuth 與 SAN；mTLS 的 client 憑證放 clientAuth。
+?sa 請說明為什麼實務上會用「Root CA + Intermediate CA」兩層架構，而不是直接用 Root CA 簽所有伺服器憑證？並說明用戶端如何驗證一張由 intermediate 簽發的伺服器憑證。
+R> 原因：Root CA 的私鑰是整個信任體系的根，一旦外洩所有憑證都失去意義，而且 root 已預先安裝在各用戶端的信任清單中，更換成本極高。因此 root 私鑰應離線保存、極少使用，只用來簽發 intermediate；日常簽發由 intermediate 負責。intermediate 若外洩，可以由 root 撤銷（CRL/OCSP）並重發新的 intermediate，不必更動所有用戶端的信任根；也可以為不同用途分出不同的 intermediate 並以 pathlen、name constraints 限制權限。
+R> 驗證：伺服器在 TLS handshake 送出 leaf 憑證與 intermediate 憑證。用戶端用 intermediate 的公鑰驗證 leaf 的簽章、用自己信任清單中的 root 公鑰驗證 intermediate 的簽章，建立 leaf → intermediate → root 的鏈；同時檢查每張憑證的有效期限、basicConstraints（中間節點必須是 CA 且符合 pathlen）、keyUsage/EKU（leaf 需 serverAuth）、leaf 的 SAN 是否符合連線的主機名，以及撤銷狀態。
+P> root 私鑰離線保存、降低外洩風險
+P> intermediate 外洩可撤銷並重發，不必更換用戶端信任根
+P> 伺服器送出 leaf + intermediate，用戶端逐層驗簽章直到信任的 root
+P> 檢查有效期、CA 限制、EKU、SAN 主機名、撤銷
+
+@CARD hw3.weakca | 有缺陷的 Intermediate CA：私鑰可被算出
+A> RSA 的安全性靠「兩個超大質數相乘很容易，反過來分解很難」。如果私鑰是用很小的數字產生的，壞人就能把公鑰的 n 分解掉、算出私鑰，等於偷到 CA 的印章，可以替任何網站發「合法」的假證件，瀏覽器也會相信。
+B> 背景：2026 年 10 月 Mozilla 發現 8 張 **eMudhra** intermediate CA 憑證的私鑰來自**非常小的數字** → 任何人都能算出私鑰
+B> 作業中 TA root CA 也替每位學生簽了一張**同樣有缺陷的 intermediate CA**，並用它簽發 https://{STU_ID}.vuln.ta.cs.nycu
+B> 要求：在 /etc/hosts 把 {STU_ID}.vuln.ta.cs.nycu 指向自己，用**算出私鑰的缺陷 CA** 簽一張 **SAN 只有該主機名**的憑證，能通過 **TA root CA** 驗證，回應原站內容並加上 header **X-Intercepted-By: {STU_ID}**
+B> 教訓：CA 私鑰外洩 = 可以冒充任何網站；所以需要**撤銷（CRL / OCSP）**、**Certificate Transparency**，以及正確的金鑰產生
+?mc 為什麼拿到一張 intermediate CA 的私鑰，就能冒充網站且瀏覽器不會警告？
++ 用它簽出的憑證可以串到瀏覽器信任的 root，整條鏈驗證都會通過
+- 因為瀏覽器不檢查 intermediate
+- 因為 intermediate 的私鑰也能解密所有 TLS 流量
+- 因為這種憑證不需要 SAN
+E> 信任是沿著鏈傳遞的，所以 CA 私鑰外洩後必須撤銷那張 intermediate。
+?mc RSA 私鑰若由「很小的數字」產生，為什麼不安全？
++ 公鑰的模數 n 可以被輕易分解成兩個質數，進而算出私鑰
+- 小數字會讓簽章無法驗證
+- 公鑰長度會變成 0
+- 小數字的憑證無法放入 SAN
+E> RSA 的安全性建立在大整數分解的困難度上。
+?tf CA 私鑰外洩後，最主要的補救方式是把該 CA 憑證撤銷（例如列入上層 CA 的 CRL）。
+=T
+E> 撤銷後，檢查 CRL 的用戶端就會拒絕它簽出的所有憑證（這正是 tls_revoked 的情境）。
+
+@CARD hw3.nginxtls | NGINX：HTTPS、301、HSTS、隱藏 header
+A> NGINX 是大門口的警衛：所有 HTTP 訪客都被請到 HTTPS 門口（301 永久轉址）；HSTS 是「告訴瀏覽器以後一年內直接走 HTTPS，別再走 HTTP」；不要告訴外人裡面用的是什麼軟體、什麼版本（拿掉 Server、X-Powered-By、Via）。
+B> Part 1 所有主機（pg 除外）：**HTTPS**（你的 CA 簽的憑證）、**HTTP → HTTPS 用 301**、**HSTS max-age ≥ 31536000**
+B> 依主機轉發到 port 表中的服務（**reverse proxy**）
+B> 回應**不能有 Server、X-Powered-By、Via** header
+B> **server_tokens off** 只會拿掉版本號，Server: nginx 還在；完全移除要用 **headers-more** 模組（more_clear_headers Server）
+B> 後端送出的 header 用 **proxy_hide_header X-Powered-By;** 隱藏
+X> server { listen 80; server_name git.19.cs.nycu; return 301 https://$host$request_uri; }
+X> server {
+X>   listen 443 ssl; server_name git.19.cs.nycu;
+X>   ssl_certificate /etc/nginx/tls/git.fullchain.crt; ssl_certificate_key /etc/nginx/tls/git.key;
+X>   add_header Strict-Transport-Security "max-age=31536000" always;
+X>   proxy_hide_header X-Powered-By;
+X>   location / { proxy_pass http://127.0.0.1:8101; proxy_set_header Host $host;
+X>     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto https; }
+X> }
+?fill 把所有 HTTP 請求以 301 轉到 HTTPS：return 301 https://$host＿＿;
+= $request_uri
+E> $request_uri 包含原始路徑與 query string。
+?mc HSTS（Strict-Transport-Security）的作用是？
++ 告訴瀏覽器在 max-age 期間內，對這個網域一律直接使用 HTTPS
+- 讓伺服器的憑證有效期限延長
+- 加密 HTTP header
+- 防止 XSS 攻擊
+E> 可避免使用者第一次打 http:// 時被中間人攔截降級（SSL stripping）。
+?mc 只設定 server_tokens off 後，回應的 Server header 會是？
++ Server: nginx（只是沒有版本號）
+- 完全沒有 Server header
+- Server: hidden
+- Server: off
+E> 要完全移除得用 headers-more 模組的 more_clear_headers。
+?tf ssl_certificate 應該指向「伺服器憑證 + intermediate 憑證」串在一起的檔案。
+=T
+E> 用戶端只信任 root，伺服器必須送出 intermediate 才能建立完整的鏈。
+?cmd 檢查 nginx 設定檔語法：
+= nginx -t
+= sudo nginx -t
+E> 通過後再 systemctl reload nginx。
+
+@CARD hw3.lb | NGINX 負載平衡：upstream 與 failover
+A> upstream 是「排班表」：三個 IP-Srv 分身輪流接客（round-robin）。其中一個倒了，NGINX 發現連不上就把這位客人改帶到下一位，客人完全不知道（passive health check + proxy_next_upstream）。
+B> TA 提供 **IP-Srv** image：容器內聽 **8000**，/ 回 JSON：**host_ip**（處理請求的 replica IP）、**client_ip**（取自 **X-Forwarded-For**）
+B> IP-Srv 環境變數：IP_SRV_METRICS_USER / IP_SRV_METRICS_PASSWORD（/metrics 的 basic auth）
+B> 3 個 replica 各發布 8000、8001、8002；https://{STU_ID}.cs.nycu/ 用 **round-robin** 分配
+B> **任一 replica 停掉，每個請求仍要成功** → 依賴 **proxy_next_upstream**（預設 error timeout：連線失敗就換下一台）與 max_fails / fail_timeout
+B> 要正確設定 **X-Forwarded-For**，IP-Srv 才回得出真正的 client IP
+X> upstream ipsrv {
+X>   server 127.0.0.1:8000 max_fails=1 fail_timeout=10s;
+X>   server 127.0.0.1:8001 max_fails=1 fail_timeout=10s;
+X>   server 127.0.0.1:8002 max_fails=1 fail_timeout=10s;
+X> }
+X> location / { proxy_pass http://ipsrv; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+?mc NGINX upstream 沒有指定演算法時，預設的負載平衡方式是？
++ round-robin（輪流）
+- least_conn
+- ip_hash
+- random
+E> 可改用 least_conn、ip_hash、hash 等；也可以用 weight= 調整比例。
+?mc 三個 replica 中一個被 docker stop 了，為什麼使用者的請求仍然能成功？
++ NGINX 連線失敗時（error/timeout）會依 proxy_next_upstream 把請求轉給下一台，並暫時標記失敗的 server
+- Docker 會自動把流量導到其他容器
+- 使用者瀏覽器會自動重試
+- round-robin 會自動跳過沒有回應的 port，不需任何機制
+E> 預設 proxy_next_upstream error timeout；對非冪等請求（POST）預設不重試。
+?fill 把 client IP 附加到 X-Forwarded-For 的 NGINX 變數是 $＿＿
+= proxy_add_x_forwarded_for
+E> 若原本已有 X-Forwarded-For，會在後面附加 $remote_addr。
+?tf IP-Srv 回傳的 client_ip 取自 TCP 連線的來源 IP。
+=F
+E> 取自 X-Forwarded-For header；後端看到的連線來源永遠是 NGINX。
+
+@CARD hw3.oidc | OIDC provider：client credentials、discovery、introspection
+A> OIDC provider 是「身分證中心」。機器對機器時用 client credentials：程式拿自己的帳號密碼（client ID / secret）換一張通行證（access token），沒有真人參與。discovery 是中心門口的「服務說明牌」，寫好各窗口地址；introspection 是「打電話問中心這張證還有效嗎」，revocation 是「註銷這張證」。
+B> 在 https://auth.{STU_ID}.cs.nycu 提供 OIDC provider（推薦 **Keycloak、Authentik、kanidm**）
+B> 給 judge 的 **confidential client**：支援 **client credentials grant**；issuer = SA_OIDC_ISSUER，judge 用 **OIDC Discovery** 取得設定
+B> Discovery：**{issuer}/.well-known/openid-configuration** → token_endpoint、jwks_uri、introspection_endpoint、revocation_endpoint…
+B> access token 要能 **introspect**（RFC 7662，回 active: true/false）與 **revoke**（RFC 7009）
+B> Forgejo 與 Platform 都用它登入 / 驗證；Platform API **只接受這個 provider 發的 bearer token**
+X> $ curl -s "$SA_OIDC_ISSUER/.well-known/openid-configuration" | jq .token_endpoint
+X> $ curl -s -u "$SA_OIDC_CLIENT_ID:$SA_OIDC_CLIENT_SECRET" \
+X>     -d grant_type=client_credentials "$TOKEN_ENDPOINT" | jq -r .access_token
+X> $ curl -H "Authorization: Bearer $TOKEN" https://sandbox.19.cs.nycu/api/sandboxes
+?fill OIDC Discovery 文件的路徑是 {issuer}/＿＿
+= .well-known/openid-configuration
+= /.well-known/openid-configuration
+E> 用戶端只要知道 issuer，就能從這份 JSON 找到所有 endpoint。
+?mc client credentials grant 適用於哪種情境？
++ 沒有使用者參與的機器對機器（服務對服務）存取
+- 使用者在瀏覽器登入第三方網站
+- 手機 App 讓使用者輸入密碼
+- 單頁應用程式不保存 secret 的登入
+E> 只有 confidential client（能安全保存 secret）可以用。
+?mc 平台用 JWKS 在本機驗證 JWT 簽章與 exp，但 judge 把 token revoke 之後仍要拒絕它。平台應該怎麼做？
++ 呼叫 introspection endpoint 確認 token 是否仍 active（或縮短 token 有效期並搭配 introspection）
+- 只檢查 JWT 簽章就夠了
+- 檢查 token 字串長度
+- 要求 judge 重新登入
+E> 自包含的 JWT 在 exp 之前簽章永遠有效，撤銷只有問 provider 才知道。
+?mt 配對 OAuth2 / OIDC endpoint：
+> token_endpoint :: 用 client ID / secret 換 access token
+> introspection_endpoint :: 查詢 token 是否仍有效
+> revocation_endpoint :: 撤銷 token
+> jwks_uri :: 取得驗證 JWT 簽章用的公鑰
+E> 這些網址都列在 discovery 文件中。
+
+@CARD hw3.pg | PostgreSQL：只接受 TLS 與 client 憑證登入
+A> 資料庫的門禁三層：只准走加密通道（hostssl）、伺服器要拿你 CA 簽的證件讓客戶驗明正身（verify-full 會核對主機名）、judge 進門不收密碼只看 client 證件，證件上的名字（CN）就是使用者名稱。
+B> **PostgreSQL 18** 在 pg.{STU_ID}.cs.nycu:5432；使用者 llm_sandbox_platform、forgejo **只能存取自己的資料庫**；**judge 是 superuser**
+B> **只接受 TLS**（Docker 網路內也是）→ pg_hba.conf 只用 **hostssl**（不要有 host / hostnossl 允許規則）
+B> 伺服器憑證由 intermediate 簽、SAN 含 pg.{STU_ID}.cs.nycu，能通過 **sslmode=verify-full**
+B> client 憑證由 intermediate 簽，**cert CN 對應 username**（auth method **cert**）；judge 透過網路**只能用 client 憑證**，密碼被拒
+B> postgresql.conf：**ssl = on**、ssl_cert_file、ssl_key_file、**ssl_ca_file**（用來驗證 client 憑證）；私鑰權限要 0600
+X> # pg_hba.conf
+X> hostssl all             judge                 all  cert
+X> hostssl forgejo         forgejo               all  scram-sha-256
+X> hostssl llm_sandbox_platform llm_sandbox_platform all scram-sha-256
+X> $ psql "host=pg.19.cs.nycu dbname=postgres user=judge sslmode=verify-full \
+X>   sslrootcert=root.crt sslcert=judge.crt sslkey=judge.key"
+?mt 配對 libpq 的 sslmode：
+> require :: 一定要加密，但不驗證伺服器憑證
+> verify-ca :: 驗證憑證由信任的 CA 簽發
+> verify-full :: 驗證 CA 且主機名要符合憑證的 SAN
+> disable :: 不使用 TLS
+E> 只有 verify-full 能防止中間人用「同一個 CA 簽的別台機器憑證」冒充。
+?mc pg_hba.conf 中 hostssl 與 host 的差別？
++ hostssl 只匹配使用 TLS 的 TCP 連線；host 匹配 TLS 與非 TLS 的 TCP 連線
+- hostssl 用於 Unix socket；host 用於 TCP
+- 兩者相同，只是寫法不同
+- host 會自動升級成 TLS
+E> 要「只接受 TLS」就不能留下允許的 host 規則。
+?mc pg_hba.conf 中 judge 使用 auth method cert 時，PostgreSQL 如何決定是哪個使用者？
++ 驗證 client 憑證由信任的 CA 簽發，並要求憑證的 CN 等於登入的使用者名稱（或經 pg_ident.conf 對應）
+- 讀取 client 憑證中的 email 欄位
+- 仍然要求輸入密碼
+- 依 client 的 IP 決定
+E> CN 不符就拒絕；這就是「CN maps to username」。
+?cmd 在 psql 中建立資料庫 forgejo 並指定擁有者為 forgejo（SQL）：
+= CREATE DATABASE forgejo OWNER forgejo;
+= create database forgejo owner forgejo;
+= CREATE DATABASE forgejo OWNER forgejo
+E> 再 REVOKE CONNECT ON DATABASE forgejo FROM PUBLIC; 讓其他使用者連不進來。
+?mc 要讓 forgejo 使用者「不能連到」llm_sandbox_platform 資料庫，下列哪個 SQL 是關鍵？
++ REVOKE CONNECT ON DATABASE llm_sandbox_platform FROM PUBLIC;
+- DROP USER forgejo;
+- ALTER DATABASE llm_sandbox_platform OWNER TO forgejo;
+- GRANT ALL ON DATABASE llm_sandbox_platform TO PUBLIC;
+E> 預設 PUBLIC 有 CONNECT 權限；撤掉後只有擁有者與 superuser 能連（也可在 pg_hba.conf 依資料庫限制使用者）。
+
+@CARD hw3.forgejo | Forgejo、container registry 與受保護分支
+A> Forgejo 是自架的 GitHub：程式碼放這裡、image 也放在它附帶的倉庫（container registry），登入交給 OIDC。main 分支設成「受保護」，誰都不能 force push 改寫歷史。runner 是「工人」，用 Docker-in-Docker 在隔離環境裡幫你跑 CI。
+B> https://git.{STU_ID}.cs.nycu；資料存在 PostgreSQL 的 **forgejo** 資料庫；使用者用 **OIDC provider 登入**
+B> repo **hw3/llm-sandbox-platform** 存平台程式碼；image 推到 Forgejo **container registry**：**git.{STU_ID}.cs.nycu/hw3/llm-sandbox-platform:<tag>**
+B> **main 是預設分支，歷史不能被改寫** → 設定 **branch protection**、禁止 force push
+B> **Forgejo runner** 用 **Docker-in-Docker** 執行 job
+B> judge 的 SA_FORGEJO_TOKEN 需要 scope **write:repository、read:package**
+X> $ docker login git.19.cs.nycu
+X> $ docker tag lmsp:dev git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+X> $ docker push git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+?mc 「main 分支的歷史不能被改寫」主要是要阻止哪個操作？
++ git push --force（強制覆寫遠端歷史）
+- git pull
+- 建立新分支
+- 推送新的 commit
+E> 用 branch protection 禁止 force push（以及刪除分支）。
+?cmd 把本地 image lmsp:dev 標記成要推到 Forgejo registry 的 v1.0.0（主機 git.19.cs.nycu）：
+= docker tag lmsp:dev git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+E> image 名稱開頭的主機名決定要推到哪個 registry。
+?tf push image 到 git.19.cs.nycu 之前，Docker 必須信任該網站的 TLS 憑證（由你的 CA 簽發）。
+=T
+E> 否則 docker login / push 會出現 x509: certificate signed by unknown authority。
+
+@CARD hw3.cicd | CI/CD：推 tag 自動 build 與部署
+A> CI/CD 是自動化的生產線：你推一個版本標籤 v1.2.3，生產線就自動做出同名的 image、放進倉庫、透過 SSH 到 host 換上新版。只認「三段都是數字」的標籤，其他標籤或分支不開工。
+B> 推 tag **v<major>.<minor>.<patch>**（全數字）後 **5 分鐘內**：registry 有同 tag 的 image、host 上的平台容器用這個 image、**GET /api/version 回傳這個 tag**
+B> **其他 tag 或分支不能 build image** → workflow 只在符合 v數字.數字.數字 的 tag 觸發（並在 job 內用正規表示式再檢查）
+B> 部署後 **docker compose down + up -d 仍要用最新部署的 image** → 把 tag 寫進 host 上 compose 讀取的設定（例如 .env 的 LMSP_TAG），不要只靠臨時的 docker run
+B> pipeline 透過 **SSH key** 部署到 host（私鑰存成 CI secret；host 端可用 authorized_keys 的 command= / restrict 限制這把 key 只能做部署）
+X> # .forgejo/workflows/release.yml
+X> on:
+X>   push:
+X>     tags: ['v[0-9]+.[0-9]+.[0-9]+']
+X> # host 上的 compose.yml
+X>   platform:
+X>     image: git.19.cs.nycu/hw3/llm-sandbox-platform:${LMSP_TAG}
+?mc 下列哪個 tag 應該觸發 build？
++ v2.10.3
+- v2.10
+- v2.10.3-rc1
+- release-2.10.3
+E> 必須剛好是 v + 三段數字。
+?fill 檢查 tag 是否符合 v<數字>.<數字>.<數字> 的正規表示式：^v[0-9]+\.[0-9]+\.＿＿$
+= [0-9]+
+= \d+
+E> + 表示至少一位數字；^ 和 $ 確保整個字串完全符合。
+?mc 為什麼部署時要把新 tag 寫進 compose 讀取的 .env，而不是只在 host 上 docker run 新 image？
++ 這樣 docker compose down + up -d 之後仍會使用最新部署的 image，設定是持久的
+- docker run 不能拉取私有 registry 的 image
+- .env 會讓 image build 得比較快
+- Forgejo 只支援 .env
+E> HW3：After a deploy, docker compose down + up -d still uses the latest deployed image。
+?sa 請設計 HW3 的 CI/CD 流程：從開發者推送 git tag 到 host 上的平台換成新版本，列出各步驟與需要注意的安全措施。
+R> 1. 開發者推送 tag（如 v1.2.3）到 Forgejo；workflow 只在 tag 符合 v數字.數字.數字 時觸發，job 開頭再用 ^v[0-9]+\.[0-9]+\.[0-9]+$ 檢查一次，不符就結束。
+R> 2. Forgejo runner 以 Docker-in-Docker 執行 job：checkout 程式碼，docker build，並把 tag 寫進 image（例如 --build-arg VERSION=v1.2.3，讓 /api/version 回傳它）。
+R> 3. 用 registry 憑證（或 runner 提供的 token）docker login git.{STU_ID}.cs.nycu，push git.{STU_ID}.cs.nycu/hw3/llm-sandbox-platform:v1.2.3。
+R> 4. 用存在 CI secret 中的 SSH 私鑰連到 host，更新 compose 使用的 tag（例如改 .env 中的 LMSP_TAG），執行 docker compose pull platform && docker compose up -d platform。
+R> 安全：SSH key 專用於部署，在 host 的 authorized_keys 用 restrict、command= 限制只能執行部署腳本；私鑰只放在 secret 中、不進 repo；registry 與 host 的 TLS 憑證要被 runner 信任；main 分支受保護、禁止 force push；只有 tag 推送才部署，避免任何分支都能改動正式環境。
+P> tag 格式過濾（workflow 觸發條件與再次檢查）
+P> build 並 push 同名 tag 的 image 到 Forgejo registry
+P> 透過 SSH 更新 host 上持久的 compose 設定並 up -d
+P> 部署 key 權限限制、secret 不外洩、受保護分支
+
+@CARD hw3.sandbox | Sandbox 容器與 sallm-cli
+A> 每個 sandbox 是一間容器房間，agent 在裡面當 root（反正房間是隔離的）。agent 只有四樣工具：讀、寫、改檔、跑 bash；它的每個動作都以「一行一個 JSON 事件」的方式報告，平台就靠這些事件記錄與畫出 trace。
+B> **sallm-cli**：只有 4 個 tool：**read、write、edit、bash**；沒有 session、沒有 log
+B> 非互動模式：**sallm-cli run --json --task "<task>"** → stdout **每行一個 JSON event**；完成 exit 0、錯誤非 0；收到 **SIGTERM** 會停止
+B> 環境變數：**AGENT_BASE_URL**（https://llm.ta.cs.nycu/v1，OpenAI 相容）、**AGENT_API_KEY**、**AGENT_MODEL**（SA2026-LLM）；平台在**建立容器時設定**
+B> event：每個都有 **type、time（RFC 3339）**；**message**（content）、**tool_call**（call_id、tool、args）、**tool_result**（call_id 對應 tool_call、output、is_error）、**done**、**error**（message）
+B> sandbox image 從 TA 的 sandbox-base 建立，並**信任平台的攔截 root CA**
+X> {"type":"tool_call","time":"2026-12-01T10:00:01+08:00","call_id":"c1","tool":"bash","args":{"command":"ls /workspace"}}
+X> {"type":"tool_result","time":"2026-12-01T10:00:02+08:00","call_id":"c1","output":"README.md\n","is_error":false}
+?mc 平台要把 tool_call 與它的 tool_result 配對起來（例如畫出 tool call span），應該依據哪個欄位？
++ call_id
+- time
+- tool
+- type
+E> tool_result 的 call_id 與對應的 tool_call 相同。
+?mt 配對 sallm-cli event type：
+> message :: agent 的文字回應
+> tool_call :: agent 呼叫 read/write/edit/bash
+> tool_result :: 工具執行結果
+> done :: 任務完成
+> error :: 發生錯誤
+E> 每個 event 都有 type 與 time（RFC 3339）。
+?tf sandbox image 需要信任平台的 HTTPS 攔截 root CA，否則 agent 連 HTTPS 時會出現憑證錯誤。
+=T
+E> 平台會用這個 CA 即時簽發假憑證來解密流量。
+
+@CARD hw3.states | Sandbox 狀態與 Execution
+A> pause 不是把容器「凍結」，而是「把房間裡的工作桌（/workspace）收起來，整間房拆掉」；resume 是「蓋一間新房間，把工作桌搬回來」，所以 /workspace 以外的改動都會消失。這正好是 Docker 的 volume 概念：容器可丟、資料留在 volume。
+B> **Create**：建立並啟動容器 → running；**Pause**：停止所有執行中的 execution、保留 /workspace、**刪除容器** → paused
+B> **Resume**：**建立新容器**，/workspace 與 pause 前相同 → running；**Close**：刪除容器與保留的內容 → closed
+B> **/workspace 以外的變更在 resume 後會消失**（容器可寫層隨容器刪除）
+B> 平台停止時 **pause 所有 running sandbox**；平台重啟後它們**保持 paused，不自動 resume**
+B> Execution：type **command** → bash -c "<input>"，output = **stdout 與 stderr 依序（同 2>&1）**；type **agent** → sallm-cli run --json --task "<input>"
+B> status：**running**（exit_code、output 皆 null）、**succeeded**（0、完整輸出）、**failed**（實際 exit code、完整輸出）、**stopped**（被 stop API 或 sandbox pause/close，exit_code null、output 為停止前的輸出）
+?mc 在 sandbox 中執行 apt-get install vim（安裝到 /usr/bin），然後 pause 再 resume，vim 還在嗎？
++ 不在，/workspace 以外的變更在 resume 後消失
+- 在，因為 pause 會凍結容器
+- 在，因為 Docker 會保留 image layer
+- 要看 vim 的版本
+E> Resume 會建立新容器，只有 /workspace 被保留（例如用 volume）。
+?mt 配對 execution status：
+> running :: 還在執行，exit_code 與 output 都是 null
+> succeeded :: exit code 0，回傳完整輸出
+> failed :: exit code 非 0，回傳實際 exit code
+> stopped :: 被 stop 或 sandbox 被 pause/close
+E> stopped 的 exit_code 是 null，output 是停止前已產生的輸出。
+?fill command 類型的 execution 要讓 stdout 和 stderr 依序合併輸出，相當於在指令後加＿＿
+= 2>&1
+E> 先把 stderr 導向目前的 stdout，兩者就會依產生順序寫在一起。
+?mc 實作 pause 時，最適合用來保留 /workspace 的 Docker 機制是？
++ 把 /workspace 放在 volume（或 bind mount），刪除容器後 volume 仍存在，resume 時掛到新容器
+- docker pause
+- docker commit 成新 image
+- 把檔案存在容器的可寫層
+E> docker pause 只是凍結 process，容器沒被刪除，不符合規格；commit 會把 /workspace 外的變更也保留下來。
+
+@CARD hw3.netctl | Sandbox 網路控制：gateway、allowlist、SNI
+A> 平台是 sandbox 唯一的出口和電話簿：sandbox 的預設路由和 DNS 都指向平台。平台只放行「打給 ta.cs.nycu」的 HTTP/HTTPS 與 DNS；而且不信任客人自己報的地址，一律自己查電話簿後再撥，避免「嘴上說要去合法網站、實際上連到別的 IP」。
+B> sandbox 的 **default route 與 DNS resolver 都是平台容器 IP**；sandbox 內的程式**不能改路由或防火牆**（不給 **CAP_NET_ADMIN**）
+B> 只允許兩種流量：**TCP 80/443**（交給平台的 HTTP/HTTPS proxy）與**給平台的 DNS 查詢**；其他全部擋掉
+B> 只放行 **ta.cs.nycu 及其子網域**：HTTP 看 **Host header**、HTTPS 看 **SNI**（TLS ClientHello 中的主機名）
+B> **擋掉直接連 IP 位址**的連線
+B> proxy 用**平台的 DNS** 解析 Host / SNI，再連到該 IP；**不使用 sandbox 原本的目的 IP**
+?mc 為什麼 proxy 不能直接使用 sandbox 連線的原始目的 IP，而要自己解析 SNI？
++ 否則 sandbox 可以在 SNI 填允許的網域、實際連向任意 IP，繞過 allowlist
+- 因為原始目的 IP 一定是錯的
+- 因為 TLS 不允許轉送到原本的 IP
+- 為了讓連線速度變快
+E> 名稱與實際連線目標必須一致，allowlist 才有意義。
+?mc 平台在「還沒解密」的情況下，如何知道 sandbox 的 HTTPS 連線要去哪個網站？
++ 讀取 TLS ClientHello 中的 SNI（Server Name Indication）
+- 讀取 HTTP Host header
+- 查詢目的 IP 的反向 DNS
+- 讀取憑證的 SAN
+E> HTTP 才能直接看 Host header；HTTPS 的 Host 在加密層內。
+?tf 只要不給容器 CAP_NET_ADMIN，容器內即使是 root 也無法修改路由表與 iptables 規則。
+=T
+E> 修改網路設定需要 CAP_NET_ADMIN；Docker 預設不給。
+?mc sandbox 執行 curl http://1.2.3.4/，依規格平台應該？
++ 擋下並記錄為 network event，reason 為 ip_address
+- 放行，因為是 HTTP
+- 反查 1.2.3.4 的網域後決定
+- 轉送到 TA DNS
+E> Block connections to IP addresses。
+
+@CARD hw3.mitm | HTTPS 攔截、憑證驗證與 CRL
+A> 平台扮演「合法的中間人」：對 sandbox 出示自己 CA 臨時簽的假憑證（sandbox 被設定成信任它），解開流量記錄後，再以真正客戶的身分去連真網站，並且嚴格檢查真網站的證件與「黑名單」（CRL）。真網站有問題就拒絕，並回 TLS alert。
+B> 平台有專用的**攔截 root CA**，只用來攔截 sandbox 的 HTTPS；**不是** Part 2 的 root CA，**VM 不信任它**
+B> 平台解密 sandbox 的 HTTPS，再**連到真正的網站**；用 **VM 信任的 root CA** 驗證真網站憑證
+B> 用 **CRL** 檢查真網站憑證鏈的撤銷狀態：**每 60 秒內重新下載**；**POST /api/crl/refresh** 立即下載
+B> 驗證失敗 → **拒絕連線並送 tls alert**（tls_invalid / tls_revoked）
+B> 測試 tls_revoked：https://revoked.ta.cs.nycu（CRL 撤銷了它的 **intermediate CA**）
+?mc 為什麼攔截用的 root CA「不應該」被 VM（host）信任？
++ 這把 CA 可以替任何網域即時簽憑證，若 host 也信任它，私鑰外洩時 host 上所有 HTTPS 都可能被冒充
+- 因為 host 不需要上網
+- 因為一台機器只能信任一個 CA
+- 因為 CRL 不支援攔截 CA
+E> 攔截 CA 的信任範圍應只限 sandbox。
+?mc revoked.ta.cs.nycu 的 leaf 憑證本身沒被撤銷，但它的 intermediate CA 在 CRL 中。平台應該？
++ 判定 tls_revoked 並拒絕連線，因為要檢查整條憑證鏈的撤銷狀態
+- 放行，因為 leaf 沒被撤銷
+- 只記錄警告但放行
+- 改用 HTTP 連線
+E> checks revocation of the real site cert chain with CRLs。
+?mt 配對 TLS 驗證失敗原因與 network event 的 reason：
+> 憑證鏈無法串到信任的 root :: tls_invalid
+> 憑證或其 CA 在 CRL 中 :: tls_revoked
+> 網域不在 allowlist :: not_allowlisted
+> 直接連 IP 位址 :: ip_address
+E> blocked 的 network event 中，status 與 response_body 都是 null。
+?tf CRL 只要在平台啟動時下載一次就夠了。
+=F
+E> 規格要求至少每 60 秒重新下載，否則新撤銷的憑證會被放行。
+
+@CARD hw3.dnsevents | DNS 過濾與事件紀錄
+A> 平台的 DNS 是「只接特定號碼的總機」：問 ta.cs.nycu 家族就轉給 TA 的 DNS，問別的一律回「查無此號」（NXDOMAIN）。每通電話、每次上網、每次呼叫 LLM 都寫進資料庫的事件簿。
+B> DNS：allowlist 的名稱**轉送給 TA resolver 192.168.255.66**；其他名稱回 **NXDOMAIN**
+B> 事件類型：https://llm.ta.cs.nycu 的請求 → **llm**；其他 HTTP/HTTPS（**含被擋的連線**）→ **network**；DNS 查詢 → **dns**；syscall 監控 → **syscall**
+B> 資料表 **events**（資料庫 llm_sandbox_platform）：**id uuid、sandbox_id uuid（pause/resume 不變）、time timestamptz、type text、verdict text（allow / block，syscall 一律 allow）、detail jsonb**
+B> network：一組 request+response 一個 event（同連線多個 request 各一個）；body 用 **base64**、去掉 chunked 編碼、保留 Content-Encoding 的原始 bytes
+B> dns：qname（小寫、無結尾 .）、qtype、rcode、answers（name、type、ttl、data；data 用 dig 的 RDATA 格式）；被擋 → verdict block、NXDOMAIN、answers []
+B> llm：model、stream、status、request_body、response_body（串流時包含所有 data: 行與最後的 data: [DONE]）
+X> SELECT time, detail->>'host' AS host, detail->>'reason' AS reason
+X>   FROM events
+X>  WHERE type = 'network' AND verdict = 'block'
+X>  ORDER BY time DESC;
+?mc sandbox 查詢 example.com 的 DNS，平台應該？
++ 回 NXDOMAIN，記錄 dns event，verdict 為 block、answers 為空陣列
+- 轉送給 TA resolver 再回應
+- 不回應讓查詢逾時
+- 回應 127.0.0.1
+E> 只有 ta.cs.nycu 及其子網域會被轉送給 192.168.255.66。
+?fill 從 jsonb 欄位 detail 取出 host 的「文字」值，PostgreSQL 運算子是 detail＿＿'host'
+= ->>
+E> -> 取出 jsonb，->> 取出 text。
+?mc 為什麼 events 的 sandbox_id 要在 pause/resume 之後保持不變，而不是用 Docker 的 container ID？
++ resume 會建立新容器，container ID 會變；sandbox_id 才能把同一個 sandbox 的所有事件串起來
+- container ID 太長無法存進 uuid
+- Docker 不提供 container ID
+- 為了讓查詢比較快
+E> pause 會刪除容器、resume 建新容器，所以 container ID 會改變。
+?tf 被平台擋下、根本沒送出 HTTP request 的 HTTPS 連線不需要記錄 event。
+=F
+E> 規格：Other HTTP and HTTPS requests, including blocked connections → network event（method、url、body 為 null）。
+
+@CARD hw3.falco | Syscall 監控：偵測危險行為
+A> 只看 agent「說它要做什麼」不夠，換個寫法就能騙過；要直接看它向 kernel 要了什麼（syscall）。不管是 cat、python 還是 dd 讀 /etc/shadow，在 syscall 層都是「open 這個檔案來讀」，一個規則全部抓到。
+B> 在 **syscall 層**監控每個 sandbox（推薦 **Falco**）；6 種行為 → 記錄 syscall event 並送 alert；**同一行為的不同做法都要偵測**；符合多個類別就**每類各記一筆**（/tmp/nc 同時是 suspicious_command 與 tmp_script）
+B> **讀敏感檔**（read_sensitive_file）：/etc/shadow、/etc/gshadow、/etc/sudoers、/root/.bash_history、/proc/1/environ、/root/.ssh/id_*（非 .pub）、/run/secrets/、/etc/ssl/private/
+B> **改受保護檔**（modify_protected_file）：write、truncate、rename、delete、chmod、chown /etc/passwd、/etc/shadow、/etc/hosts、/etc/resolv.conf、authorized_keys、/etc/crontab、/etc/ld.so.preload…
+B> **清除 shell history**（clear_history）：刪除、truncate、寫入 /root/.bash_history，或換成 symlink（ln -sf /dev/null）
+B> **可疑指令**（suspicious_command）：execve 執行 nc、ncat、socat、telnet、nmap、iptables、nft、apt、apt-get、dpkg、pip、pip3（**含透過 symlink**，例如 nc → nc.openbsd）
+B> **pipe to shell**：curl / wget / base64 -d 的輸出接到 shell（每條 pipeline 一筆）；**temp script**：執行 /tmp 或 /dev/shm 下的程式或腳本
+?mc 為什麼偵測「讀取 /etc/shadow」要在 syscall 層做，而不是比對指令字串有沒有 cat /etc/shadow？
++ 同一件事有無數種寫法（python、dd、less、head…），但都會產生對該檔案的 open 讀取 syscall
+- 因為指令字串無法取得
+- 因為 syscall 監控比較省資源
+- 因為 cat 不是可疑指令
+E> Detect different ways to do the same behavior。
+?mt 配對行為與 rule：
+> python3 -c "open('/etc/shadow').read()" :: read_sensitive_file
+> echo 1.2.3.4 evil >> /etc/hosts :: modify_protected_file
+> ln -sf /dev/null /root/.bash_history :: clear_history
+> curl -fsSL URL | sh :: pipe_to_shell
+> sh /tmp/x.sh :: tmp_script
+E> 要依實際的 syscall 判斷行為，而不是看指令字串。
+?mc agent 執行 /tmp/nc（nc 的複本）連到外部，應記錄幾筆 syscall event？
++ 2 筆：suspicious_command 與 tmp_script
+- 1 筆：suspicious_command
+- 1 筆：tmp_script
+- 0 筆，因為是複本不是系統的 nc
+E> 投影片範例：running /tmp/nc matches both Suspicious Commands and Temp Scripts。
+?tf 執行 /usr/bin/nc 時若 nc 是指向 nc.openbsd 的 symlink，仍要被偵測為 suspicious_command，path 記錄 symlink 解析後的檔案。
+=T
+E> path：File run by execve, symlinks resolved。
+
+@CARD hw3.prom | Prometheus 與 /metrics
+A> Prometheus 是「定時抄表員」：每 15 秒到各服務的 /metrics 抄一次數字。counter 是只會往上跳的里程表（請求總數），gauge 是會上下動的油表（各狀態 sandbox 數量）。抄表的路徑要上鎖（basic auth），也不要從大門（NGINX）對外開放。
+B> https://prom.{STU_ID}.cs.nycu，**basic auth**：user sa、password {STU_ID}
+B> 每 **15 秒** scrape：job **ip-srv**（3 個 replica）、job **llm-sandbox-platform**
+B> IP-Srv 與平台的 **/metrics 用 basic auth**；**NGINX 不轉發 /metrics**（https://{STU_ID}.cs.nycu/metrics、sandbox 的 /metrics 回 **404**）→ Prometheus 直接在 Docker 網路內抓
+B> metric：**ip_srv_requests_total**（counter）、**lmsp_sandboxes**（gauge，label status）、**lmsp_executions_total**（counter，label type）
+B> 命名慣例：counter 以 **_total** 結尾；查速率用 **rate(x_total[5m])**
+X> scrape_configs:
+X>   - job_name: ip-srv
+X>     scrape_interval: 15s
+X>     basic_auth: { username: sa, password: "19" }
+X>     static_configs:
+X>       - targets: ['ipsrv1:8000', 'ipsrv2:8000', 'ipsrv3:8000']
+X> # nginx
+X> location = /metrics { return 404; }
+?mt 配對 metric 與型別：
+> ip_srv_requests_total :: counter
+> lmsp_sandboxes{status="running"} :: gauge
+> lmsp_executions_total{type="agent"} :: counter
+E> 數量會減少的（sandbox 數）用 gauge；只增不減的累計數用 counter。
+?mc counter 與 gauge 的差別？
++ counter 只會增加（重啟時歸零）；gauge 可以上升也可以下降
+- counter 可以上下變動；gauge 只會增加
+- counter 只能是整數；gauge 只能是小數
+- 兩者相同
+E> counter 要用 rate() / increase() 看變化速度；gauge 直接看當下的值。
+?fill 計算 ip_srv_requests_total 最近 5 分鐘每秒的平均請求數：＿＿(ip_srv_requests_total[5m])
+= rate
+E> rate() 會自動處理 counter 重啟歸零的情況。
+?tf /metrics 應該透過 NGINX 對外公開，讓 Prometheus 經由 HTTPS 抓取。
+=F
+E> 規格要求 NGINX 對 /metrics 回 404；Prometheus 在內部網路直接 scrape。
+
+@CARD hw3.otel | OpenTelemetry：Logs、Traces 與 mTLS
+A> 可觀測性三兄弟：metrics 是「數字儀表板」，logs 是「流水帳」，traces 是「一次請求的完整行程表」。每段行程（span）有父子關係：API 請求是起點（SERVER），途中呼叫 Docker（CLIENT），執行任務（INTERNAL），工具呼叫又是它底下的小行程。log 帶上 trace ID，就能從流水帳跳回行程表。
+B> TA **OTLP** collector：https://otel.ta.cs.nycu:**4318**（**OTLP/HTTP**；gRPC 慣例是 4317）
+B> 用 **client 憑證**認證（**mTLS**）：由 intermediate 簽、**CN = {STU_ID}**、EKU 含 **clientAuth**；handshake 時送出 **client 憑證 + intermediate**
+B> NGINX access log：所有主機寫到 /home/judge/hw3/logs/access.log（每請求一行），每行送成一筆 log record：**service.name=nginx**、body = 該行、sa.uri、sa.host、sa.method、sa.user_agent、sa.status（integer）；**User-Agent 為 sa-probe/{STU_ID} 的請求不記錄也不送**
+B> 平台 log：service.name **llm-sandbox-platform**；事件 api_request、sandbox_status、execution_start、execution_end（INFO）、error（ERROR）；帶 **trace ID / span ID**
+B> Traces：每個 API 請求一條 trace；span kind：**API request = SERVER（root）**、**Docker API call = CLIENT**、**execution = INTERNAL**（parent 是 API span，可以比它晚結束）、**tool call = INTERNAL**（parent 是 execution，從 tool_call 到同 call_id 的 tool_result）；失敗 → span status **ERROR**
+X> # nginx：不記錄特定 User-Agent
+X> map $http_user_agent $loggable { "sa-probe/19" 0; default 1; }
+X> access_log /home/judge/hw3/logs/access.log combined if=$loggable;
+?mt 配對 span 與 span kind：
+> 平台收到的 API 請求 :: SERVER
+> 平台呼叫 Docker API :: CLIENT
+> 一次 execution :: INTERNAL
+> agent 的一次 tool call :: INTERNAL
+E> SERVER 處理進來的請求、CLIENT 發出對外的呼叫、INTERNAL 是內部工作。
+?mc 為什麼平台的 log record 要帶上 trace ID 與 span ID？
++ 讓 log 能和產生它的 trace / span 關聯，從一筆錯誤 log 直接找到整個請求的執行過程
+- 為了加密 log
+- collector 要求每筆 log 都有唯一 ID
+- 為了減少 log 大小
+E> 這叫 log 與 trace 的關聯（correlation），OTLP log record 本身就有 trace_id、span_id 欄位。
+?mc 用 client 憑證連 OTLP collector 時，為什麼要連 intermediate 憑證一起送出？
++ collector 需要從 client 憑證建立到它信任的 root 的完整鏈；它沒有你的 intermediate
+- 因為 client 憑證太短
+- intermediate 用來加密資料
+- OTLP 規定一定要送兩張憑證
+E> 跟伺服器送 fullchain 是同一個道理。
+?fill OTLP/HTTP 的慣用 port 是＿＿
+= 4318
+E> OTLP/gRPC 是 4317。
+?fill nginx 依變數決定是否記錄：access_log /path/access.log combined ＿＿=$loggable;
+= if
+E> $loggable 為 0 或空字串時，這筆請求就不會被記錄。
+
+@CARD hw3.alerts | Alerts：規則、DNS 異常與 Alert API
+A> alert 是「打電話報警」：每個符合規則的事件都要打一通（符合多條規則就打多通）。DNS 的三條規則都在抓「把資料偷偷塞在 DNS 查詢裡送出去」（DNS tunneling）：超長的子網域標籤、TXT 查詢、短時間大量查詢。
+B> 每個符合的事件送一個 alert；**符合多條規則就每條各送一個**
+B> syscall 規則（read_sensitive_file、modify_protected_file、clear_history、suspicious_command、tmp_script → detail 是 **path**；pipe_to_shell → detail 是 **command**）
+B> tls 規則：**tls_invalid、tls_revoked** → detail 是真網站的 host
+B> dns 規則：**dns_long_label**（qname 中某個 label **超過 40 字元**）、**dns_txt**（查詢類型 **TXT**）、**dns_burst**（同一 sandbox **任意 10 秒內超過 20 次**查詢，含被擋的；**第 21 次時送一次，之後 10 秒內不重複**）
+B> Alert API：**POST https://alert.ta.cs.nycu/api/alerts**、**Authorization: Bearer <token>**、成功回 **201**；JSON 欄位 sandbox_id、type、rule、time（RFC 3339）、detail
+X> {"sandbox_id":"3f2b8c1e-...","type":"file_read","rule":"read_sensitive_file",
+X>  "time":"2026-12-01T10:00:05+08:00","detail":"/etc/shadow"}
+?mc dns_long_label、dns_txt、dns_burst 這三條規則，主要想偵測哪種攻擊手法？
++ DNS tunneling：把資料編碼在 DNS 查詢或 TXT 回應中偷偷傳出或接收指令
+- DNS cache poisoning
+- DDoS 攻擊 DNS 伺服器
+- 釣魚網站
+E> 長 label 可以塞編碼後的資料；TXT 記錄可以攜帶任意文字。
+?mc 某 sandbox 在 10 秒內送出 25 次 DNS 查詢，依 dns_burst 規則會送出幾個 alert？
++ 1 個（在第 21 次時），之後 10 秒內不重複
+- 5 個（第 21–25 次各一個）
+- 25 個
+- 0 個，因為被擋的查詢不算
+E> 被擋的查詢也算；第 21 次送一次後冷卻 10 秒。
+?fill Alert API 成功建立 alert 時回傳的 HTTP 狀態碼是＿＿
+= 201
+E> 201 Created。
+?tf 一個 DNS 查詢若同時是 TXT 類型且有超過 40 字元的 label，只需要送一個 alert。
+=F
+E> 每條符合的規則各送一個。
+
+@CARD hw3.judgeenv | Judge 設定與作業注意事項
+A> 評分機器人會用非互動式 SSH 登入、讀環境變數、甚至故意關容器、推 tag、改檔案。所以每個設定都要「自動復原」，環境變數要放在非互動式 shell 也讀得到的地方；提交前先拍快照。
+B> judge 能讀 /home/judge/hw3/ 下所有檔案
+B> 環境變數要在 **judge 的非互動式 SSH session** 生效：SA_OIDC_ISSUER、SA_OIDC_CLIENT_ID、SA_OIDC_CLIENT_SECRET、SA_FORGEJO_TOKEN
+B> Debian 的 ~/.bashrc 開頭會在「非互動式」時直接 return → export 要寫在那段**之前**（ssh 執行指令時 bash 會讀 ~/.bashrc）
+B> judge 會**改變你的系統**（停容器、推 git tag、改檔案）→ **重開機後所有服務要自動恢復**；**每次提交前拍 VM snapshot**
+B> 提醒：確認服務**聽在哪個 IP**、容器與應用**信任哪些憑證**、**檔案權限**；**用官方文件驗證 LLM 的輸出**；必要時讀原始碼；用自動化工具（如 **Ansible**）
+?mc 在 ~/.bashrc 最後一行加了 export SA_OIDC_ISSUER=…，但 judge 用 ssh judge@vm 'echo $SA_OIDC_ISSUER' 卻是空的。最可能的原因？
++ Debian 預設 .bashrc 開頭在非互動式 shell 時就 return，後面的 export 沒有執行
+- ssh 不支援環境變數
+- 變數名稱不能有底線
+- 需要重開機才生效
+E> 把 export 移到 .bashrc 中「case $- in *i*) …」那段之前。
+?mc 作業規格要求服務「重開機後自動恢復」。下列何者「不是」必要的？
++ 把所有容器 docker commit 成 image
+- nginx.service 與 docker.service 已 enable
+- Compose 服務設定 restart: always 或 unless-stopped
+- 資料存放在 volume 或 bind mount
+E> commit 不需要；重點是 daemon 會自動啟動、容器會被重新拉起、資料不在容器可寫層。
+?tf HW3 的評分只看最後一次提交，遲交不被接受。
+=T
+E> 所以每次提交前都要確認全部功能，並先拍 VM snapshot。
+</script>
 <script type="text/plain" class="sa-src" data-ch="ext1">
-@CH ext1 | 考古延伸①：Docker 進階、儲存、Web 與認證 | 🧭 | 歷屆考古題（今年簡報尚未上傳）
+@CH ext1 | 考古延伸①：Docker 考古、儲存、Web 與認證 | 🧭 | 歷屆考古題
 
 @CARD ext1.imgsize | 縮小 Docker image
 A> Image 是一層層疊起來的千層蛋糕，每一層一旦烤好就永遠在裡面，在後面一層「刪掉」前面的東西，蛋糕不會變輕。所以要：選小的底（slim/alpine）、同一層裡裝完就清垃圾、用 multi-stage 只把成品搬進新蛋糕、用 .dockerignore 不要把雜物帶進廚房。
@@ -6764,7 +8719,7 @@ P> B. 共用 IP 依 Host 區分 vs 每站獨立 IP
 P> C. name-based，節省 IPv4 位址
 </script>
 <script type="text/plain" class="sa-src" data-ch="ext2">
-@CH ext2 | 考古延伸②：FreeBSD、syslog、防火牆與經典題 | 🦊 | 歷屆考古題（今年簡報尚未上傳）
+@CH ext2 | 考古延伸②：FreeBSD、syslog、防火牆與經典題 | 🦊 | 歷屆考古題
 
 @CARD ext2.syslog | syslog：facility.level 與 selector
 A> syslog 的每則訊息貼著兩張標籤：「哪個部門」（facility：kern、auth、mail、local0-7…）和「多嚴重」（level：debug < info < notice < warning < err < crit < alert < emerg）。syslog.conf 每行是「挑選條件 → 送去哪」；facility.level 表示「這個等級以上（含）」，.none 表示「排除這個部門」。
@@ -6934,10 +8889,11 @@ E> 考差異題時要說清楚兩邊各怎麼做。
 <script>
 'use strict';
 /* ═════════════════════ 0. VERSION ═════════════════════ */
-const CONTENT_VERSION = 2;
+const CONTENT_VERSION = 3;
 const CHANGELOG = [
   {v:1, date:'2026-11-12', note:'初版：Shell、Shell Programming、網路、開機關機、使用者、Process、cron、檔案系統、LVM、Btrfs、Docker、HW2，加上歷屆考古題延伸（共 14 章）'},
-  {v:2, date:'2026-11-15', note:'新增 56 張實作卡：find、grep、journalctl、systemd 除錯、LUKS 與 initramfs 救援、ACL、fstab 驗證、LVM 縮容與 RAID、Btrfs rollback、sshd 設定陷阱、SFTP 驗收與 chroot log、sftp_watchd 測試等。新卡排在各章最後，會自然混進每日新題。'}
+  {v:2, date:'2026-11-15', note:'新增 56 張實作卡：find、grep、journalctl、systemd 除錯、LUKS 與 initramfs 救援、ACL、fstab 驗證、LVM 縮容與 RAID、Btrfs rollback、sshd 設定陷阱、SFTP 驗收與 chroot log、sftp_watchd 測試等。新卡排在各章最後，會自然混進每日新題。'},
+  {v:3, date:'2026-11-16', note:'新增 3 章、65 張卡、239 題：systemd 深入（cgroups v2、資源控制、unit 依賴與順序、Type 與 Restart、timer、template）、Docker 進階（Dockerfile、layer cache、multi-stage、network driver、Compose、healthcheck、restart policy）、HW3 實戰觀念（PKI、NGINX、OIDC、PostgreSQL TLS、CI/CD、sandbox 網路與 syscall 監控、Prometheus、OpenTelemetry）。每章都有新魔王與房間家具。'}
 ];
 
 /* ═════════════════════ 1. CONTENT PARSER ═════════════════════
@@ -7645,7 +9601,10 @@ const BOSSES={
   docker:['serpent','s','貨櫃深海蛇','把你的 port 吞進容器裡'],
   hw2:['golem','r','救援模式魔王','HW2 的最終關卡'],
   ext1:['imp','g','憑證過期小惡魔','讓你的 TLS 半夜失效'],
-  ext2:['serpent','y','防火牆巨蛇','drop 掉所有不認識的封包']
+  ext2:['serpent','y','防火牆巨蛇','drop 掉所有不認識的封包'],
+  systemd:['golem','y','依賴循環石像','Requires 了自己又 After 了自己'],
+  docker2:['imp','s','肥大映像小惡魔','把 node_modules 整包 COPY 進 image'],
+  hw3:['reaper','y','中間人憑證死神','握著一把被算出來的 CA 私鑰']
 };
 const BOSS_HP=8, BOSS_HEARTS=4;
 function spriteSVG(rows,map,size,extra,cls){
@@ -7794,7 +9753,10 @@ const ROOM_ITEMS=[
  {id:'books',ch:'fs',name:'檔案書櫃',x:100,y:34,layer:1,rows:["oooooooooooooo","okkkkkkkkkkkko","okrosoyogowoko","okrosoyogowoko","okrosoyogowoko","okkkkkkkkkkkko","okdowoorosgoko","okdowoorosgoko","okdowoorosgoko","okkkkkkkkkkkko","okyogodowosoko","okyogodowosoko","okyogodowosoko","okkkkkkkkkkkko","okkkkkkkkkkkko","okkkkkkkkkkkko","okkkkkkkkkkkko","okkkkkkkkkkkko","okkkkkkkkkkkko","oooooooooooooo"]},
  {id:'disks',ch:'lvm',name:'LVM 磁碟塔',x:86,y:44,layer:1,rows:["oooooooo","ommmmmgo","oooooooo","ommmmmgo","oooooooo","ommmmmgo","oooooooo","ommmmmgo","oooooooo","ommmmmmo","ommmmmmo","oooooooo"]},
  {id:'crate',ch:'docker',name:'貨櫃收納箱',x:3,y:58,layer:2,rows:["oooooooooooo","oddoddoddodo","odsodsodsodo","odsodsodsodo","odsodsodsodo","odsodsodsodo","oddoddoddodo","oooooooooooo"]},
- {id:'plant',ch:'ext1',name:'藍葉盆栽',x:107,y:55,layer:2,rows:["...oo...","..ogo.o.",".ogggogo","ogggggo.",".oggggo.","..oggo..","...oo...","oooooooo","orrrrrro",".orrrro.",".orrrro.","..oooo.."]}
+ {id:'plant',ch:'ext1',name:'藍葉盆栽',x:107,y:55,layer:2,rows:["...oo...","..ogo.o.",".ogggogo","ogggggo.",".oggggo.","..oggo..","...oo...","oooooooo","orrrrrro",".orrrro.",".orrrro.","..oooo.."]},
+ {id:'panel',ch:'systemd',name:'服務開關面板',x:74,y:24,layer:0,rows:["oooooooooo","ommmmmmmmo","omgmgmrmmo","omomomommo","ommmmmmmmo","omgmrmgmmo","omomomommo","ommmmmmmmo","omwwwwwwmo","oooooooooo"]},
+ {id:'cert',ch:'hw3',name:'自簽憑證框',x:44,y:22,layer:0,rows:["oooooooooooo","okkkkkkkkkko","okwwwwwwwwko","okwnnnnnnwko","okwwwwwwwwko","okwnnnnwwwko","okwwwwwrrwko","okwnnwwrrwko","okkkkkkkkkko","oooooooooooo"]},
+ {id:'whale',ch:'docker2',name:'鯨魚抱枕',x:88,y:62,layer:2,rows:["..oooooo...o.o","ossssssssoo.oso",".osssssssssoso.","osossssssssso..","ossssssssssso..","owwwwwwwwwso...",".owwwwwwwoo....","..ooooooo......"]},
 ];
 const ROOM_INK={o:'q-o',w:'q-w',x:'q-x',r:'q-r',y:'q-y',g:'q-g',s:'q-s',d:'q-d',n:'q-n',m:'q-m',k:'q-k',K:'q-K',a:'q-a'};
 /* light comes from the pendant lamp at (62,17): each piece gets a soft shadow on the far side,
