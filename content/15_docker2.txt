@@ -1,0 +1,876 @@
+@CH docker2 | Docker 進階：Dockerfile、網路、Compose | 🐋 | Docker_Advanced.pdf
+
+@CARD docker2.dockerfile | Dockerfile 常用指令
+A> Dockerfile 是「蓋 image 的食譜」：FROM 是買哪一款半成品，RUN 是加工步驟，COPY 把自家食材放進去，WORKDIR 是在哪個工作台做事，ENV 是貼在容器裡的便條，CMD / ENTRYPOINT 是「上桌時要怎麼吃」。
+B> 別人做好的 image 常常不夠用（要多裝套件、特定設定）→ 用 **Dockerfile** 自己 build image
+B> **FROM <image>**：基底 image
+B> **RUN <command>**：在 build 時於容器中執行指令（每個 RUN 產生一層 layer）
+B> **COPY <host path> <container path>**：把 host 的檔案或目錄複製進 image
+B> **WORKDIR <path>**：之後指令的工作目錄（容器裡的 pwd）
+B> **CMD [...]**：預設啟動指令；**ENTRYPOINT [...]**：容器的主要指令；**ENV <key>=<value>**：容器內的環境變數
+X> FROM python:3.13-bookworm
+X> RUN apt-get update
+X> RUN apt-get install -y curl vim git build-essential net-tools
+X> COPY . .
+X> RUN pip install --no-cache-dir -r requirements.txt
+X> CMD ["python", "main.py"]
+?mt 配對 Dockerfile 指令：
+> FROM :: 指定基底 image
+> RUN :: build 時執行指令並產生新 layer
+> COPY :: 把 host 檔案複製進 image
+> WORKDIR :: 設定之後指令的工作目錄
+> ENV :: 設定容器內的環境變數
+E> 投影片 Common instructions。
+?mc RUN 和 CMD 的差別？
++ RUN 在 build image 時執行；CMD 是容器啟動時預設執行的指令
+- RUN 在容器啟動時執行；CMD 在 build 時執行
+- 兩者完全相同，只是 CMD 可以寫成 JSON 陣列的格式
+- CMD 必須出現在 FROM 之前，RUN 在之後；兩者都只在 build 時執行
+E> RUN 的結果會存進 layer；CMD 只是記錄「啟動時要做什麼」。
+?tf Dockerfile 中每一個 RUN 指令都會產生一層新的 layer。
+=T
+E> 所以合併 RUN 可以減少 layer。
+
+@CARD docker2.build | docker build 與 .dockerignore
+A> docker build 會把整個資料夾（build context）打包送給 Docker daemon 去煮。.dockerignore 是「不要放進鍋子的東西清單」：node_modules、build 快取、.git 這些不該進 image 的都寫進去，image 會小很多、也比較安全。
+B> 用法：**docker build <Dockerfile 所在目錄>**（通常是 docker build .）
+B> **-t <name>[:<tag>]**：指定 image 名稱與 tag；**-f** 指定 Dockerfile 路徑
+B> 傳給 docker build 的目錄稱為 **build context**，COPY 只能複製 context 內的檔案
+B> **COPY . .** 容易把不需要的東西（node_modules、build cache）複製進去
+B> **.dockerignore**：排除這些檔案 → **減少 image 大小**（也避免把 .env、金鑰包進 image）
+X> $ docker build -t myapp:1.0 .
+X> $ cat .dockerignore
+X> node_modules
+X> .git
+X> build/
+X> .env
+?cmd 用目前目錄的 Dockerfile 建立名為 myapp、tag 為 1.0 的 image：
+= docker build -t myapp:1.0 .
+= docker build . -t myapp:1.0
+= docker build --tag myapp:1.0 .
+E> 最後的 . 是 build context。
+?mc .dockerignore 的主要作用是？
++ 讓 COPY 不會把不需要的檔案複製進 image，縮小 image
+- 讓 docker 忽略 Dockerfile 中的某些指令
+- 指定哪些 container 不要自動重啟，也不要被 prune 掉
+- 列出 docker pull 時要略過的 layer
+E> 投影片：prevent you from copying these files to container and reduce the size of image。
+?tf Dockerfile 中的 COPY 可以複製 build context 以外的檔案，例如 COPY ../common /app/common。
+=F
+E> 只能存取 context 內的檔案；要用上層目錄就得把 context 設成上層（compose 的 build.context）。
+
+@CARD docker2.entrypoint | CMD vs ENTRYPOINT
+A> ENTRYPOINT 是「這台機器的固定用途」（例如永遠是 echo），CMD 是「預設的參數」（預設說 Hello world!）。docker run 後面接的東西會換掉 CMD，但換不掉 ENTRYPOINT，除非用 --entrypoint 硬改。
+B> 兩者都定義容器**啟動時要做什麼**
+B> **CMD**：提供「預設」指令，**可以被 docker run <command> 覆寫**
+B> **ENTRYPOINT**：**不能**被 docker run <command> 覆寫（比較像強制執行），但可用 **docker run --entrypoint** 覆寫
+B> 兩者都有時：**CMD 變成 ENTRYPOINT 的參數**（ENTRYPOINT ["echo"] + CMD ["Hello world!"] → echo Hello world!）
+B> 常見寫法：寫 entrypoint.sh 做初始化，**ENTRYPOINT ["./entrypoint.sh"]**，腳本最後用 exec "$@" 執行 CMD
+B> 用 JSON 陣列（exec form）時不經過 shell，程式是 PID 1、能直接收到 SIGTERM
+X> ENTRYPOINT ["echo"]
+X> CMD ["Hello world!"]
+X> $ docker run img            # Hello world!
+X> $ docker run img bye        # bye   （覆寫 CMD）
+?mc image 中有 ENTRYPOINT ["echo"] 與 CMD ["Hello world!"]，執行 docker run img hi 會輸出？
++ hi
+- Hello world!
+- echo hi
+- Hello world! hi
+E> docker run 後面的參數取代 CMD，再交給 ENTRYPOINT：echo hi。
+?mt 配對：
+> CMD :: 預設指令，docker run <command> 可覆寫
+> ENTRYPOINT :: 主要指令，需 --entrypoint 才能覆寫
+> 兩者都有 :: CMD 成為 ENTRYPOINT 的參數
+E> 投影片 CMD vs. ENTRYPOINT。
+?cmd 不管 image 的 ENTRYPOINT，改用 bash 進入 myimg 的互動式容器：
+= docker run -it --entrypoint bash myimg
+= docker run --rm -it --entrypoint bash myimg
+= docker run -it --entrypoint /bin/bash myimg
+= docker run --rm -it --entrypoint /bin/bash myimg
+E> debug 自訂 image 時很常用。
+?tf ENTRYPOINT 可以被 docker run <command> 直接覆寫。
+=F
+E> docker run 後面的參數只會取代 CMD；要換 ENTRYPOINT 得用 --entrypoint。
+
+@CARD docker2.arg | Build args：ARG 與 --build-arg
+A> ARG 是「下單時才填的選項」（例如要哪個版本），只在煮的過程（build）中有用；ENV 是「貼在成品上的標籤」，容器跑起來後還看得到。
+B> build 時可以傳參數給 Dockerfile：Dockerfile 寫 **ARG MY_VAR**，build 時 **docker build --build-arg MY_VAR=hello**
+B> 在 Dockerfile 中用 **${MY_VAR}** 取用
+B> **ARG 只在 build 階段存在**；容器執行時要用的變數用 **ENV**
+B> 不要用 ARG 傳密碼：會留在 image 的 history 中
+X> ARG MY_VAR
+X> RUN echo ${MY_VAR} > /tmp/my_file
+X> $ docker build --build-arg MY_VAR=hello -t demo .
+?cmd build 目前目錄時把 build arg VERSION 設為 1.2.3：
+= docker build --build-arg VERSION=1.2.3 .
+= docker build . --build-arg VERSION=1.2.3
+E> Dockerfile 裡要先宣告 ARG VERSION，才能用 ${VERSION} 取用。
+?mc ARG 與 ENV 的差別？
++ ARG 只在 build 時可用；ENV 會保留在 image 中，容器執行時也看得到
+- ARG 在容器執行時可用；ENV 只在 build 階段可用
+- 兩者完全相同，ARG 只是 ENV 的舊寫法，新版 Dockerfile 建議都改用 ENV
+- ARG 只能是數字，ENV 才能放字串；兩者在執行時都看得到
+E> 容器裡的程式要讀的設定用 ENV（或 docker run -e）。
+?tf 用 ARG 傳入的 API token 不會出現在 image 的任何地方，所以很安全。
+=F
+E> 可能留在 docker history 或 layer 中；秘密應在執行時以 secrets / 環境變數傳入。
+
+@CARD docker2.cache | Layer cache 與指令順序
+A> build cache 像「存檔點」：某一行和它用到的檔案沒變，就直接讀檔不重做。但只要某一行變了，它之後的所有存檔點都作廢。所以要把「很少變又很花時間」的步驟（裝套件）放前面，「常常變」的（複製程式碼）放後面。
+B> Dockerfile 與相關檔案沒變 → 已建好的 layer 會被**快取**，rebuild 只重做有變動的層
+B> **某一層改變 → 它之後的所有層都要重做**
+B> 問題：先 **COPY . .** 再 **RUN pip install** → 只要改任何程式碼，pip install 也要重跑
+B> 解法：**先只 COPY requirements.txt → RUN pip install → 再 COPY . .**
+B> 原則：**耗時的指令放在常變動的指令之前**；同理 Node.js 先複製 package.json 再 npm install、C++ 先複製 conanfile.txt 再 conan install
+X> COPY requirements.txt .
+X> RUN pip install -r requirements.txt
+X> COPY . .
+X> CMD ["python", "main.py"]
+?ord 排出「改程式碼時不用重跑 pip install」的 Dockerfile 順序：
+> FROM python:3.13-slim-bookworm
+> COPY requirements.txt .
+> RUN pip install -r requirements.txt
+> COPY . .
+> CMD ["python", "main.py"]
+E> requirements.txt 沒變，pip install 那層就能沿用快取。
+?mc Dockerfile 是 COPY . . 然後 RUN pip install -r requirements.txt。只修改 main.py 後重新 build，會發生什麼？
++ COPY . . 那層失效，之後的 pip install 也要重跑
+- 只有 main.py 被重新複製，pip install 用快取
+- 全部從 FROM 開始重做
+- 什麼都不會重做，因為 requirements.txt 沒變
+E> 投影片 Utilize Cache to Save Build Time。
+?tf 某一層 layer 改變後，它之後的 layer 仍然可以全部使用快取。
+=F
+E> if a layer is modified, the layers after it require re-build。
+?sa 某 Node.js 專案的 Dockerfile 為：FROM node:22 / WORKDIR /app / COPY . . / RUN npm install / CMD ["node","server.js"]。開發時每次改一行程式就要等 npm install 幾分鐘。請說明原因並改寫 Dockerfile。
+R> 原因：Docker 以 layer 為單位快取，COPY . . 會複製所有原始碼，只要任何檔案變動該層就失效，其後的 RUN npm install 也必須重做，即使相依套件（package.json）根本沒變。
+R> 改寫：FROM node:22 / WORKDIR /app / COPY package.json package-lock.json ./ / RUN npm install（或 npm ci）/ COPY . . / CMD ["node","server.js"]。
+R> 這樣只有 package.json 或 lock 檔改變時才重跑 npm install；改程式碼只會讓最後的 COPY . . 失效。另外應在 .dockerignore 排除 node_modules，避免把 host 的 node_modules 複製進去蓋掉。
+P> 指出 layer cache：某層變動後其後各層都要重做
+P> 先只 COPY package.json（與 lock 檔）再 npm install
+P> 最後才 COPY . .
+P> （加分）.dockerignore 排除 node_modules
+
+@CARD docker2.size | 縮小 image：層數、slim、alpine
+A> 縮小 image 四招：不帶多餘行李（.dockerignore）、把多次打包合成一次（合併 RUN）、選輕量的底座（slim / alpine）、分成「工廠」與「成品」兩階段（multi-stage）。
+B> TL;DR：**不要複製不必要的檔案**（.dockerignore）、**減少 layer 數**、**用 slim 或 Alpine image**、**multi-stage build**
+B> 合併 RUN：RUN apt update && apt install -y vim tmux git python3（**注意：可能讓快取更容易失效**）
+B> python image 大小：**3.13.5-bookworm 366.1 MB**、**3.13.5-slim-bookworm 43.43 MB**、**3.13.5-alpine3.22 16.07 MB**
+B> slim 會少一些套件 → 可能有相容問題：Debian slim **沒裝 iproute2**；Alpine 用 **musl libc** 而不是 glibc
+B> 另一個常用技巧：同一個 RUN 裡清掉 apt 快取（rm -rf /var/lib/apt/lists/*），分開寫的話舊層仍保留那些檔案
+?mc 為什麼「RUN apt-get install … 」和「RUN rm -rf /var/lib/apt/lists/*」分成兩行寫，image 並不會變小？
++ 前一層已經把檔案存進 layer，後一層刪除只是加上「刪除標記」，舊層仍在 image 中
+- 因為 rm 在 build 階段不會真的執行，要等容器啟動才刪除
+- 因為 /var/lib/apt/lists 被宣告成 volume，不會存進 image
+- 因為 Docker 會自動還原被刪除的檔案，保持 layer 一致
+E> 要在同一個 RUN 中安裝並清理，才不會留在任何一層。
+?mc 改用 Alpine 為基底的 image，可能遇到什麼相容性問題？
++ 用 musl libc 而不是 glibc
+- Alpine 沒有 shell
+- Alpine 不能執行 Python
+- Alpine image 無法使用 COPY 指令
+E> Alpine 使用 musl libc 而非 glibc，部分依賴 glibc 的程式或 wheel 無法直接執行。投影片：Alpine-based image uses MUSL libs, instead of common glibc。
+?tf 合併多個 RUN 指令可以減少 layer 數，但可能讓 build cache 更容易失效。
+=T
+E> 合在一起的 RUN 中任何一部分改變，整層都要重做。
+?mt 配對 python image 與大小（投影片數據）：
+> 3.13.5-bookworm :: 366.1 MB
+> 3.13.5-slim-bookworm :: 43.43 MB
+> 3.13.5-alpine3.22 :: 16.07 MB
+E> slim 比完整版小很多，但會少一些套件；alpine 最小，但用 musl libc。
+
+@CARD docker2.multistage | Multi-stage build
+A> 編譯程式需要一整間「工廠」（gcc、cmake、各種 -dev 套件），但跑程式只需要「成品」加上少數零件。multi-stage 就是在第一個 stage 蓋工廠做出成品，第二個 stage 只把成品搬到乾淨的小房間，工廠整個丟掉。
+B> 情境：C++ 專案在 image 裡裝編譯工具與函式庫、make 出 binary → 結果用 **1GB 的容器跑一個 binary**
+B> 執行時其實只需要 **glibc 與 SSL library**
+B> 第一個 stage：**FROM … AS builder**，安裝編譯工具並編譯
+B> 第二個 stage：乾淨的 FROM，只安裝執行期需要的套件，**COPY --from=builder** 把成品複製過來
+B> 最終 image 只包含最後一個 stage 的內容
+X> FROM debian:trixie-slim AS builder
+X> RUN apt update && apt install -y libssl-dev cmake make gcc ...
+X> COPY . .
+X> RUN cmake -S . -B build && make -C build -j8
+X> FROM debian:trixie-slim
+X> RUN apt update && apt install -y libssl-dev
+X> COPY --from=builder /app/build/bin/my_app ./my_app
+X> CMD ["./my_app"]
+?fill 從名為 builder 的 stage 複製檔案：COPY ＿＿ /app/build/bin/my_app ./my_app
+= --from=builder
+E> --from 可以指定 stage 名稱（AS builder）或其他 image。
+?mc multi-stage build 為什麼能縮小 image？
++ 最終 image 只包含最後一個 stage，編譯工具與中間產物留在 builder stage 中不會被帶走
+- 它會在 build 結束後刪除所有 RUN 產生的檔案，只保留每個 stage 用 COPY 帶進來的內容
+- 它會在 build 結束後刪除所有 RUN 指令產生的檔案，只保留 COPY 進來的內容
+- 讓多個 container 共用同一個 image 的 layer，所以每個容器佔用的空間變小
+E> All we need is merely glibc and the SSL library。
+?tf multi-stage build 的最終 image 會包含所有 stage 中安裝的套件。
+=F
+E> 只有最後一個 stage 的內容會留在最終 image，builder 的編譯工具不會被帶走。
+
+@CARD docker2.netdriver | Docker network：veth、bridge 與 docker0
+A> 每個容器有自己的網路空間（namespace），像一間間關起門的房間。veth pair 是一條「兩頭都有插頭的網路線」，一頭插在容器裡（eth0），一頭插在 host 的虛擬交換器 docker0（bridge）上。容器就這樣透過 docker0 互相溝通、再經 NAT 出去。
+B> Docker 提供多種 **network driver**；課程重點：**bridge（預設）** 與 **host**
+B> **veth**：成對出現的虛擬介面，兩端可以在**不同 namespace** → 跨 namespace 通訊，像一條網路線
+B> **bridge**：虛擬介面，像**輕量的虛擬 switch / hub**，可轉送接在上面的介面的封包
+B> bridge driver 用 **Linux bridge + veth** 把容器的 network namespace 接到 eth0
+B> 容器內：eth0@if69，**172.17.0.2/16**；host：**docker0 172.17.0.1/16**，另一端 veth…@if2 的 **master docker0**
+X> # 容器內
+X> 2: eth0@if69: ... inet 172.17.0.2/16
+X> # host
+X> 9: docker0: ... inet 172.17.0.1/16
+X> 69: veth7308954@if2: ... master docker0
+?mc 預設 bridge 網路下，容器的 eth0 與 host 是怎麼連起來的？
++ 一對 veth 接到 docker0 bridge
+- 容器直接使用 host 的 eth0
+- 透過 VPN tunnel
+- 透過 /var/run/docker.sock
+E> 透過一對 veth：一端在容器 namespace 當 eth0，另一端接在 host 的 docker0 bridge 上。投影片 Docker Network Drivers - Bridge。
+?fill 預設 bridge 網路中，host 上 docker0 介面的 IP 通常是 172.17.0.＿＿/16
+= 1
+E> 它也是容器的 default gateway。
+?tf veth 介面總是成對出現，兩端可以位於不同的 network namespace。
+=T
+E> 可以想成一條網路線的兩端，容器網路就是靠它跨 namespace 連到 host。
+
+@CARD docker2.bridge | 自訂 bridge 網路
+A> 預設所有容器都接在同一台 docker0 交換器上，彼此都能連。想讓某些容器自成一區，就建一台新的交換器（docker network create），只把那幾個容器接上去；新交換器還附送「用名字找人」的內建 DNS。
+B> 沒有額外設定的容器：使用 **bridge driver**、接到預設 bridge **docker0** → **容器之間可以互相通訊**
+B> 不想互通？**docker network create --driver bridge my_bridge** 建立新的 bridge
+B> 新 bridge 在 host 上是 **br-<network id>** 介面（例如 172.18.0.1/16），可用 **ip link**、**docker network ls** 查看
+B> **docker run --network my_bridge debian bash**：讓容器接到新 bridge
+B> 自訂 bridge 有內建 DNS：容器可以用**容器名稱**互相解析（預設 docker0 沒有）
+X> $ docker network create --driver bridge my_bridge
+X> $ docker network ls
+X> NETWORK ID     NAME        DRIVER    SCOPE
+X> 30ed72de30c7   my_bridge   bridge    local
+X> 295b421f0b83   bridge      bridge    local
+X> $ docker run --network my_bridge debian bash
+?cmd 建立一個名為 backend、使用 bridge driver 的 Docker 網路：
+= docker network create --driver bridge backend
+= docker network create -d bridge backend
+= docker network create backend
+E> bridge 是預設 driver，所以 --driver bridge 可省略。
+?cmd 執行一個 debian 容器並接到 my_bridge 網路（互動式 bash）：
+= docker run -it --network my_bridge debian bash
+= docker run --rm -it --network my_bridge debian bash
+= docker run -it --net my_bridge debian bash
+E> --network 和 --net 都可以；--rm 讓容器結束後自動刪除。
+?mc host 上出現 br-30ed72de30c7 這個介面，代表？
++ 自訂的 Docker bridge 網路
+- 一個故障的 veth
+- Docker 的預設 bridge
+- WireGuard 介面
+E> 一個自訂的 Docker bridge 網路（network ID 開頭 30ed72de30c7）預設 bridge 叫 docker0，自訂的叫 br-<id>。
+
+@CARD docker2.host | host、none、macvlan、ipvlan driver
+A> host driver 是「拆掉房間的牆」：容器直接用 host 的網路，沒有隔離，port 也跟 host 搶。none 是「只有一面鏡子的房間」（只有 loopback）。macvlan 讓容器像一台真的實體機有自己的 MAC；ipvlan 則是共用 MAC、各自有 IP。
+B> **host**：容器直接綁 host 的 eth0，**沒有網路 stack 隔離**；容器看到的網路與 host 相同
+B> host 模式下 **host 用掉的 port 容器不能用，反之亦然**；-p 對 host 模式沒有意義
+B> **none**：只有 **loopback** 介面的 network namespace
+B> **macvlan**：給容器**自己獨立的 MAC address**，在網路上看起來像實體裝置
+B> **ipvlan**：容器**共用一個 MAC address**，但各自有 IP
+?mt 配對 network driver：
+> bridge :: 預設；Linux bridge + veth，容器間可互通
+> host :: 共用 host 網路，沒有隔離
+> none :: 只有 loopback
+> macvlan :: 每個容器有自己的 MAC
+> ipvlan :: 共用 MAC、各自有 IP
+E> 課程重點是 bridge 與 host；none、macvlan、ipvlan 是補充（FYR）。
+?mc 用 --network host 執行一個監聽 80 port 的 nginx 容器，而 host 上已經有服務佔用 80，會怎樣？
++ 容器的 nginx 綁定 80 失敗，因為兩者共用同一個網路 stack
+- Docker 偵測到 port 衝突，自動把容器的 nginx 改到 8080
+- 兩者都可以同時監聽 80，因為容器有自己的 namespace
+- host 上原本的服務會被 Docker 停止，讓給容器使用
+E> A port used by the host cannot be used by a container at the same time。
+?cmd 執行一個完全沒有對外網路（只有 loopback）的 alpine 容器：
+= docker run -it --network none alpine sh
+= docker run --rm -it --network none alpine sh
+= docker run -it --net none alpine sh
+E> --network none 的容器只有 lo 介面。
+
+@CARD docker2.compose | Docker Compose 設定檔
+A> Compose 是「整桌菜的菜單」：一個 YAML 檔寫好網站（web）、資料庫（db）各要用什麼 image、開哪些 port、設哪些環境變數、資料存哪裡、誰要先上桌，一個指令就把整桌端上來。
+B> 用 **YAML 設定檔**定義與管理**多容器**應用（檔名常用 compose.yml / docker-compose.yml）
+B> **services:** 底下每個服務：**image** 或 **build**、**ports**、**environment**、**depends_on**、**volumes**、**restart**
+B> ports **"5000:5000"** = host:container；只給本機：**"127.0.0.1:8000:8000"**
+B> 同一個 compose 的服務可以用**服務名稱**互相連線（例：DB_URL=…@**db**:5432）
+B> volumes：**./pgdata:/var/lib/postgresql/data**（bind mount，資料存在 host 目錄，容器刪掉也還在）
+X> services:
+X>   web:
+X>     build: ./app
+X>     ports:
+X>       - "5000:5000"
+X>     environment:
+X>       - DB_URL=postgresql://postgres:postgres@db:5432/my_app
+X>     depends_on:
+X>       - db
+X>   db:
+X>     image: postgres:16.9-bookworm
+X>     restart: always
+X>     volumes:
+X>       - ./pgdata:/var/lib/postgresql/data
+?mc 上面的 compose 檔中，web 的 DB_URL 用 db:5432 連資料庫，db 這個名稱是怎麼解析的？
++ Compose 建立的網路有內建 DNS，服務名稱 db 會解析成 db 容器的 IP
+- 要手動在 host 的 /etc/hosts 加一行 db 指向容器的 IP
+- 透過 docker0 的 DHCP，容器啟動時會自動拿到其他容器的名稱與 IP 對照表
+- 透過 docker0 的 DHCP，容器啟動時會自動拿到其他容器的名稱
+E> They can communicate with each other by IP addresses or by domain name (the service name)。
+?mc ports 寫 "127.0.0.1:8100:8080" 的意思是？
++ 只在 host 的 127.0.0.1:8100 監聽，轉到容器的 8080；外部機器連不到
+- 容器內的程式監聽 127.0.0.1:8100，host 的 8080 轉發給它
+- host 的所有介面都開放 8100 與 8080 兩個 port 給外部連線
+- 只允許容器的 8100 port 主動連到 host 上 127.0.0.1:8080 的服務
+E> HW3 要求除了 PostgreSQL 外的 port 都只綁 127.0.0.1，由 host 的 NGINX 對外。
+?tf ports 只寫 "5432:5432" 時，Docker 會在 host 的所有介面（0.0.0.0）開放 5432。
+=T
+E> 而且 Docker 會自行加 iptables 規則，可能繞過你以為的防火牆，所以內部服務要明確綁 127.0.0.1。
+
+@CARD docker2.composecmd | docker compose 指令
+A> compose 指令就是 docker 指令的「整桌版」：up 是把整桌菜依菜單端上來（菜單改了就重做那道），down 是整桌收掉（桌子、網路一起收，但冰箱裡的 volume 預設留著）。
+B> **docker compose up -d**：啟動，YAML 改變時重建對應容器（-d 背景執行）
+B> **docker compose down**：**移除所有容器與網路**（named volume 預設保留，加 **-v** 才會刪）
+B> **docker compose start / restart / stop [<service>]**：啟動 / 重啟 / 停止（不刪容器）
+B> 多數 docker 指令都有 compose 版本：**docker compose logs**、ps、exec、pull、build
+B> **-f**：指定 compose 檔位置
+X> $ docker compose -f /home/judge/hw3/compose.yml up -d
+X> $ docker compose logs -f web
+X> $ docker compose exec db psql -U postgres
+?mt 配對 docker compose 指令：
+> up -d :: 在背景啟動（或依新設定重建）所有服務
+> down :: 移除所有容器與網路
+> stop :: 停止容器但不刪除
+> logs :: 查看服務輸出
+> -f :: 指定 compose 檔的位置
+E> down 會刪除容器與網路；stop 只停止不刪除。
+?cmd 在背景啟動目前目錄 compose 檔的所有服務：
+= docker compose up -d
+= docker compose up --detach
+E> -d（--detach）讓服務在背景執行，不佔用終端機。
+?mc 執行 docker compose down 之後再 up -d，下列哪種資料一定還在？
++ bind mount 到 host 目錄（如 ./pgdata）的資料
+- 容器內 /tmp 目錄中的暫存檔案（重啟不會清除）
+- 容器可寫層中、沒有掛 volume 的資料
+- 執行中 process 在記憶體裡的資料（down 時會自動寫回磁碟）
+E> down 會刪容器（可寫層一起消失）；bind mount 與 named volume（沒加 -v）會保留。HW3 要求 down + up 後服務仍能恢復。
+?cmd 持續追蹤 compose 中 web 服務的 log：
+= docker compose logs -f web
+= docker compose logs --follow web
+= docker compose logs web -f
+E> -f 持續追蹤；--tail N 只顯示最後 N 行。
+
+@CARD docker2.composebuild | Compose 的 image 與 build
+A> image 是「直接買現成的」，build 是「照食譜自己做」。build.context 是「廚房範圍」：COPY 只能拿廚房裡的食材，所以要用上層目錄的共用程式，就得把廚房設在上層，再用 dockerfile 指出食譜放哪。
+B> **image**：要啟動的 image
+B> **build.context**：Docker build context（大多是 Dockerfile 所在目錄）
+B> **build.dockerfile**：Dockerfile 的位置（是**檔案**，不是目錄）
+B> **build.args**：build args（對應 ARG）
+B> 若 backend 的 Dockerfile 要 COPY ../common /app/common → **context 設為上層目錄**、**dockerfile 設為 backend/Dockerfile**，否則 COPY 會失敗
+B> **image 與 build 同時存在**時，image 代表 build 出來的 image 名稱
+X> services:
+X>   backend:
+X>     build:
+X>       context: .
+X>       dockerfile: backend/Dockerfile
+X>       args:
+X>         - MY_VAR=hello
+X>     image: registry.example.com/backend:1.0
+?mc backend/Dockerfile 需要 COPY common/ /app/common/（common 與 backend 同層）。compose 應該怎麼設定？
++ context 設為上層目錄，dockerfile: backend/Dockerfile，再 COPY common/ …
+- context: backend，Dockerfile 裡寫 COPY ../common /app/common
+- 把 common 加進 .dockerignore 的例外清單，COPY 就能讀到它
+- 改用 volumes 把 common 掛進去，build 時 COPY 就讀得到，不需要改 context 或 dockerfile 設定
+E> build context 外的檔案 COPY 不到。
+?tf compose 中同時寫 image 與 build 時，image 欄位會被忽略。
+=F
+E> image 會成為 build 出來的 image 名稱（之後也可 push）。
+
+@CARD docker2.depends | depends_on 與 healthcheck
+A> depends_on 只是「排隊順序」：資料庫的容器先開門，網站再開門，但不保證資料庫已經準備好接客。加上 condition: service_healthy，就變成「等資料庫的健康檢查通過才開網站」。
+B> **depends_on** 只寫服務名稱 → 讓依賴**先啟動**，**不檢查依賴是否失敗或就緒**
+B> condition：**service_started**（同上）、**service_completed_successfully**（exit code 必須 0）、**service_healthy**（health check 必須通過）
+B> **healthcheck**：**CMD**（直接 exec，推薦）或 **CMD-SHELL**（經過 shell，可用 && 等）
+B> 選項：**test、interval、timeout、retries、start_period**（啟動期間失敗不算）、**start_interval**（啟動期間的檢查間隔）
+B> 也可寫在 Dockerfile（**HEALTHCHECK**）或 docker run（--health-cmd、--health-interval…）；docker ps 會顯示 (healthy)
+X>   web:
+X>     depends_on:
+X>       db:
+X>         condition: service_healthy
+X>   db:
+X>     healthcheck:
+X>       test: ["CMD", "pg_isready", "-U", "user"]
+X>       interval: 10s
+X>       timeout: 5s
+X>       retries: 5
+?mc web 寫了 depends_on: [db]（只有名稱）。PostgreSQL 容器啟動但還在初始化時，web 會？
++ 照樣被啟動，可能因為資料庫還沒準備好而連線失敗
+- 等到 PostgreSQL 可以接受連線才啟動
+- 永遠不會被啟動
+- 自動重試直到成功
+E> 只有名稱時 No checks for container failure；要等就緒用 condition: service_healthy。
+?mt 配對 depends_on condition：
+> service_started :: 依賴啟動即可
+> service_healthy :: 依賴的 health check 必須通過
+> service_completed_successfully :: 依賴必須以 exit code 0 結束
+E> 最後一種適合「先跑 migration 再啟動 app」。
+?mc healthcheck 的 test 用 CMD 與 CMD-SHELL 的差別？
++ CMD 直接 exec；CMD-SHELL 交給 shell 執行，可用 &&、| 等語法
+- CMD 只能檢查 HTTP 端點的狀態碼；CMD-SHELL 才能執行任意的檢查指令
+- CMD-SHELL 會在獨立的 sidecar 容器裡執行，比較安全，所以是官方推薦的寫法
+- 兩者完全相同，只是舊版 compose 使用 CMD-SHELL、新版改用 CMD，效果沒有任何差異
+E> 投影片：In most of cases, CMD is recommended。
+?mt 配對 healthcheck 選項：
+> interval :: 多久檢查一次
+> timeout :: 單次檢查的逾時
+> retries :: 允許連續失敗幾次才判定 unhealthy
+> start_period :: 啟動初期，失敗不計入
+E> start_interval 則是 start_period 期間的檢查間隔。
+?fill Dockerfile 中宣告健康檢查的指令是＿＿
+= HEALTHCHECK
+E> 例：HEALTHCHECK --interval=10s --timeout=5s CMD pg_isready -U user。
+
+@CARD docker2.restart | Restart policy：no、on-failure、always、unless-stopped
+A> 重啟策略是「容器倒下要不要扶起來」。always 和 unless-stopped 平常一樣都會扶，差別在「你親手關掉的容器，Docker daemon 重開後要不要再把它叫起來」：always 會，unless-stopped 尊重你的決定。
+B> **no**：不重啟（**預設**）
+B> **on-failure**：**exit code 非 0** 時重啟
+B> **always**：停止就重啟（手動 stop 除外）；**Docker daemon 重啟後連手動停掉的也會被啟動**
+B> **unless-stopped**：停止就重啟（手動 stop 除外）；daemon 重啟後**手動停掉的保持停止**
+B> Compose：**restart: always**；docker run：**--restart <mode>**
+B> 想要「重開機後服務自動回來」：restart: always / unless-stopped，且 **docker.service 有 enable**
+?mc 對一個設定 restart: unless-stopped 的容器執行 docker stop，然後重開機（Docker daemon 重啟），容器會？
++ 保持停止
+- 自動啟動
+- 被刪除
+- 變成 paused
+E> 若是 always，daemon 重啟後會被啟動。
+?mt 配對 restart policy：
+> no :: 預設，不自動重啟
+> on-failure :: exit code 非 0 才重啟
+> always :: daemon 重啟後連手動停的也會啟動
+> unless-stopped :: 手動停掉的，daemon 重啟後仍保持停止
+E> always 與 unless-stopped 的差別只在 daemon 重啟後，手動停止的容器要不要啟動。
+?cmd 執行 nginx 容器（背景），並設定除非手動停止否則永遠自動重啟：
+= docker run -d --restart unless-stopped nginx
+= docker run -d --restart=unless-stopped nginx
+= docker run --restart unless-stopped -d nginx
+E> --restart 也接受 no、on-failure、always。
+?tf 只要 compose 寫了 restart: always，不需要 enable docker.service，重開機後容器也會自動啟動。
+=F
+E> 容器靠 Docker daemon 拉起來，daemon 本身要開機自動啟動（Debian 安裝時通常已 enable）。
+
+@CARD docker2.composenet | Compose 網路與 IPAM
+A> Compose 預設幫整桌菜準備一台專屬交換器（新的 bridge 網路），大家用服務名稱互叫。需要固定 IP 或指定網段時，才自己寫 networks 區段；但要注意你指定的網段，host 的路由會被 Docker 拿去用。
+B> 預設：所有容器使用 **一個新的 bridge 網路**（通常不需要額外設定）
+B> 容器間可用 **IP** 或 **服務名稱**（domain name）互相連線
+B> 可在 YAML 加 **networks** 區段設定：driver、**ipam.config.subnet / gateway**；服務中用 **ipv4_address** 指定固定 IP
+B> **注意：設定的 subnet 路由會被 Docker 拿走**（與既有網段如 WireGuard 192.168.x.x 衝突時要小心）
+X> services:
+X>   coredns:
+X>     image: coredns/coredns
+X>     networks:
+X>       coredns:
+X>         ipv4_address: 192.168.0.2
+X> networks:
+X>   coredns:
+X>     driver: bridge
+X>     ipam:
+X>       config:
+X>         - subnet: 192.168.0.0/16
+X>           gateway: 192.168.0.1
+?mc compose 中把網路 subnet 設成 192.168.0.0/16，而 VM 的 WireGuard 網段是 192.168.1.0/24，可能發生什麼？
++ host 路由被佔用，和 VPN 網段衝突
+- 沒有影響，Docker 網路與 host 路由完全無關
+- WireGuard 會自動改用其他網段
+- 容器會無法啟動
+E> Docker 會在 host 加上 192.168.0.0/16 的路由，可能和 WireGuard 網段衝突，導致連不到 VPN 上的機器。投影片：The route to configured subnet will be taken by Docker。
+?fill compose 中替服務指定固定 IPv4 位址的鍵是＿＿
+= ipv4_address
+E> 要搭配 networks 區段的 ipam.config.subnet。
+?tf Compose 預設會為專案建立一個新的 bridge 網路。
+=T
+E> 網路名稱通常是 <專案名>_default，服務可以用名稱互相解析。
+
+@CARD docker2.prune | 清理未使用的資源：prune
+A> Docker 不會主動丟垃圾：沒人用的 image、volume、網路會一直堆著。prune 是「大掃除」，-a 是「連看起來還能用、但沒人用的也一起丟」。
+B> 預設：**沒有容器使用的資源也不會被刪除**
+B> **docker <resource> prune**：docker volume / network / image / container prune
+B> **docker system prune**：一次清全部（預設不含 volume，要加 --volumes）
+B> **-a**：清得更多：**docker image prune** 只刪 **dangling image**（沒有 tag 的），**-a** 刪除**所有沒有容器使用**的 image
+?mc docker image prune 與 docker image prune -a 的差別？
++ 前者只刪 dangling image；-a 刪除所有沒被容器使用的 image
+- 前者刪除全部沒在執行的 image；加 -a 時只刪 dangling 的 image
+- 加 -a 時，連正在執行的容器與它們使用的 image 也會一起強制刪掉
+- 兩者相同，-a 只是讓指令不再詢問確認（等同 -f），也會順便清掉 build cache
+E> dangling image 指的是沒有任何 tag 的 image（常是 rebuild 後留下的舊層）。
+?cmd 刪除所有沒有被使用的 Docker volume：
+= docker volume prune
+= docker volume prune -f
+E> 小心：資料庫資料若在 named volume 且容器已刪，會被一起清掉。
+?cmd 一次清除停止的容器、未使用的網路、dangling image 與 build cache：
+= docker system prune
+= docker system prune -f
+E> 預設不刪 volume，要加 --volumes；加 -a 會刪掉所有沒有容器使用的 image。
+
+@CARD docker2.p_debug | 實作：Compose 服務起不來怎麼查
+A> Compose 出問題時依序問：設定檔解析得對嗎（config）？容器在不在、狀態是什麼（ps）？它說了什麼（logs）？能不能進去看（exec）？網路與名稱解析通不通？
+B> 檢查合併後的設定：**docker compose config**（YAML 錯誤、變數替換結果）
+B> 狀態：**docker compose ps -a**（Exit code、health 狀態）；log：**docker compose logs --tail 50 <svc>**
+B> 進容器：**docker compose exec <svc> sh**；容器起不來就用 **docker compose run --rm --entrypoint sh <svc>**
+B> 網路：**docker network inspect <proj>_default**、在容器內 getent hosts db 測名稱解析
+B> 常見原因：port 已被佔用（host 上 **ss -tlnp**）、容器裡的程式只聽 **127.0.0.1**（從外面連不到，要聽 0.0.0.0）、volume 權限（UID 不同）、環境變數沒進去、image 沒重 build（**up -d --build**）
+X> $ docker compose config
+X> $ docker compose ps -a
+X> $ docker compose logs --tail 50 web
+X> $ docker compose up -d --build
+?mc 容器內的 Web 程式監聽 127.0.0.1:8000，compose 也寫了 ports: "8000:8000"，但 host 上 curl localhost:8000 連不到。原因？
++ 程式只聽容器自己的 loopback
+- host 的 docker0 沒有啟動
+- 需要改用 --network none
+- ports 的寫法要倒過來
+E> 容器內的程式只聽容器自己的 loopback，從 veth 進來的連線到不了；應改為監聽 0.0.0.0。port mapping 是把流量轉到容器的 eth0，容器裡的程式要在該介面上監聽。
+?cmd 顯示 compose 檔解析與變數替換後的最終設定：
+= docker compose config
+E> YAML 寫錯、變數沒替換、縮排問題都能從這裡看出來。
+?cmd 修改 Dockerfile 後，重新 build 並在背景啟動所有服務：
+= docker compose up -d --build
+= docker compose up --build -d
+E> 只有 up -d 不會重新 build 已存在的 image。
+
+@CARD docker2.p_pid1 | 實作：exec form、PID 1 與 docker stop
+A> 容器裡的第一個 process 是 PID 1，它要負責「接電話」（收 SIGTERM）和「收屍」（回收 zombie）。用 shell form 寫 CMD 時，PID 1 是 /bin/sh，它不會把 SIGTERM 轉給你的程式，於是 docker stop 只好等 10 秒後硬拔插頭（SIGKILL）。
+B> **exec form**：CMD ["python","main.py"] → 程式本身是 **PID 1**，直接收到訊號
+B> **shell form**：CMD python main.py → 實際是 **/bin/sh -c "python main.py"**，PID 1 是 sh，**SIGTERM 不一定傳給程式**
+B> **docker stop**：送 **SIGTERM**（或 STOPSIGNAL 指定的訊號），等 **10 秒**（-t / stop_grace_period）後送 **SIGKILL**
+B> entrypoint.sh 最後用 **exec "$@"**：讓 CMD 取代 shell 成為 PID 1
+B> PID 1 預設不會處理沒寫 handler 的 SIGTERM，也要負責回收 zombie → 用 **docker run --init**（tini）或 compose 的 **init: true**
+X> #!/bin/sh
+X> # entrypoint.sh
+X> set -e
+X> mkdir -p /data/cache
+X> exec "$@"
+?mc 容器用 CMD python app.py（shell form），docker stop 總要等 10 秒才結束。原因？
++ PID 1 是 sh，SIGTERM 沒轉給 python，10 秒後被 SIGKILL
+- python 直譯器預設忽略 SIGTERM，一定要在程式中自己註冊 handler
+- docker stop 一律會等滿 10 秒的寬限期才結束容器，跟 PID 1 是誰完全無關
+- 容器沒有設定 healthcheck，Docker 無法判斷程式已經停止所以一直等待
+E> 改成 exec form：CMD ["python", "app.py"]，或加 --init。
+?fill entrypoint.sh 的最後一行，讓 CMD 取代 shell 成為 PID 1：＿＿ "$@"
+= exec
+E> exec 會把目前的 shell process 換成指定的程式，所以程式繼承 PID 1，可以直接收到 docker stop 的訊號。
+?cmd 執行 myimg 容器時加上一個小型 init process 負責轉送訊號與回收 zombie：
+= docker run --init myimg
+= docker run --rm --init myimg
+= docker run -d --init myimg
+E> Compose 中寫 init: true。
+?tf docker stop 會先送 SIGTERM，逾時後才送 SIGKILL。
+=T
+E> 逾時預設 10 秒，可用 docker stop -t 30 或 stop_grace_period 調整。
+
+@CARD docker2.p_more | 實作：其他 Dockerfile 指令
+A> 除了常用的幾個，Dockerfile 還有幾個「說明書欄位」與「安全開關」：EXPOSE 只是在說明書寫「我會用這個 port」（不會真的開）；USER 讓程式不要用 root 跑；VOLUME 標示「這裡放資料」；ADD 是會自動解壓縮、能抓網址的 COPY，但通常用 COPY 比較可預期。
+B> **EXPOSE 8000**：**只是文件說明**，不會發布 port；要 -p 或 compose ports 才會對外
+B> **USER app**：之後的 RUN / CMD 以非 root 執行（降低被攻破時的權限）；搭配 RUN useradd
+B> **COPY --chown=app:app src/ /app/**：複製時設定擁有者
+B> **ADD**：類似 COPY，但會**自動解壓本地 tar**、可下載 URL → 一般用 **COPY**
+B> **VOLUME /data**：宣告資料目錄（沒指定時會自動建立匿名 volume）；**LABEL**：metadata；**STOPSIGNAL**；**SHELL**；**HEALTHCHECK**
+B> Debian 新版的 pip 預設禁止裝進系統 Python（PEP 668），投影片用 **pip install --break-system-packages**；更好的作法是 venv 或用 python 官方 image
+?mc Dockerfile 寫了 EXPOSE 8080，docker run 時沒有加 -p，從 host 能用 localhost:8080 連到嗎？
++ 不能，EXPOSE 只是說明，要用 -p 8080:8080 才會發布
+- 能，EXPOSE 會自動發布同號 port 到 host 的所有介面
+- 只有 root 執行 curl 時才連得到，一般使用者不行
+- 不能從 host 連，但可以從同網段的另一台機器連
+E> EXPOSE 的用途是文件，以及 docker run -P 時決定要發布哪些 port。
+?mt 配對 Dockerfile 指令：
+> EXPOSE :: 說明容器會使用的 port（不會真的發布）
+> USER :: 之後的指令以指定使用者執行
+> VOLUME :: 宣告資料存放位置
+> ADD :: 類似 COPY，還會自動解壓 tar、可下載 URL
+> LABEL :: 加上 metadata
+E> EXPOSE、LABEL 屬於 metadata；USER、VOLUME 會影響執行時的行為。
+?mc 為什麼建議在 Dockerfile 用 USER 切換成非 root？
++ 容器被攻破時，攻擊者拿到的不是 root，能做的事更少（尤其容器逃逸時）
+- 以非 root 執行時，容器不需要做權限檢查，速度比較快
+- Docker 不允許以 root 身分執行 CMD，一定要先切換
+- 切換成非 root 之後，COPY 才能把檔案複製進去，並保留原本的擁有者
+E> 容器內的 root 與 host 的 root 預設是同一個 UID 0。
+
+@CARD docker2.p_registry | 實作：image 命名、registry 與私有 CA
+A> image 的全名像「國家/城市/街道/門牌」：registry 主機/命名空間/repo:tag。沒寫主機就是 Docker Hub。推到自己的 registry 前要先 docker tag 成那個全名、docker login，而且 Docker 要信任該 registry 的憑證。
+B> 完整名稱：**[registry/][namespace/]repo[:tag][@sha256:digest]**；沒寫 registry → docker.io；沒寫 tag → **latest**
+B> 推送流程：**docker tag 本地名 registry/ns/repo:tag** → **docker login registry** → **docker push**
+B> **tag 可以被覆蓋**，**digest（@sha256:…）固定不變** → 要可重現就用 digest 或明確版本，不要依賴 latest
+B> 私有 CA 簽的 registry：把 CA 放到 **/etc/docker/certs.d/<registry 主機>/ca.crt**（或加入系統信任後重啟 docker），否則出現 **x509: certificate signed by unknown authority**
+B> 帳密存在 **~/.docker/config.json**（可用 credential helper）
+X> docker tag lmsp:dev git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+X> docker login git.19.cs.nycu
+X> docker push git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+X> sudo mkdir -p /etc/docker/certs.d/git.19.cs.nycu && sudo cp root.crt /etc/docker/certs.d/git.19.cs.nycu/ca.crt
+?mc docker pull nginx 實際上拉的是哪個 image？
++ docker.io/library/nginx:latest
+- 本機 /var/lib/docker 中的 nginx
+- nginx 官網提供的 tar 檔
+- registry.ta.cs.nycu/nginx
+E> 省略 registry 是 Docker Hub、官方 image 在 library 命名空間、省略 tag 是 latest。
+?mc 為什麼在正式環境不建議用 :latest？
++ tag 會被覆蓋，無法重現與回滾
+- latest 一定是測試版
+- latest 不能 push
+- latest 會停用 layer cache
+E> latest 只是一個可以被覆蓋的 tag，不同時間拉到的可能是不同 image，無法重現也難以回滾。HW3 的 CI/CD 用版本 tag（v1.2.3）部署正是這個道理。
+?fill 讓 Docker 信任 registry git.19.cs.nycu 的私有 CA：把 CA 放到 /etc/docker/certs.d/git.19.cs.nycu/＿＿
+= ca.crt
+E> 目錄名稱要和 registry 主機名稱（含 port）完全一致。
+?mc docker push 出現 x509: certificate signed by unknown authority，最可能的原因？
++ Docker 不信任該憑證的 CA
+- registry 的帳號或密碼錯誤
+- image 太大，超過上傳限制
+- tag 名稱中有大寫字母
+E> Docker daemon 不信任簽發 registry 憑證的 CA。帳密錯誤會是 unauthorized；x509 錯誤一定跟憑證信任有關。
+
+@CARD docker2.p_inspect | 實作：inspect、history、stats 等觀察工具
+A> 容器是黑盒子時，這些指令是「透視鏡」：inspect 看全部設定與狀態（IP、掛載、重啟次數、是不是被 OOM 殺掉）；history 看 image 每一層多大；stats 看即時資源；system df 看 Docker 吃掉多少硬碟。
+B> **docker inspect 容器**：JSON 格式的完整資訊；**-f '{{.State.Status}}'**、**'{{.NetworkSettings.Networks}}'**、**'{{.State.OOMKilled}}'**、**'{{.RestartCount}}'**、**'{{json .Mounts}}'**
+B> **docker image history image**：每一層由哪個指令產生、多大 → 找出肥大的層
+B> **docker stats**：即時 CPU / 記憶體 / 網路 / I/O；**docker top 容器**：容器內的 process
+B> **docker system df**：image、容器、volume、build cache 佔用空間
+B> **docker cp 容器:路徑 本機路徑**：複製檔案進出；**docker diff 容器**：看容器可寫層改了哪些檔案
+X> docker inspect -f '{{.State.OOMKilled}} {{.RestartCount}}' web
+X> docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' web
+X> docker image history myapp:1.0
+X> docker system df
+?cmd 查看 myapp:1.0 這個 image 每一層的大小與產生它的指令：
+= docker image history myapp:1.0
+= docker history myapp:1.0
+E> 常用來找出哪個 RUN 讓 image 變肥。
+?mc 容器一直重啟，想確認是不是因為超過記憶體限制被殺，最直接的是？
++ docker inspect -f '{{.State.OOMKilled}}' 容器
+- docker image history 容器，看是哪一層讓容器變大
+- docker network ls，看容器是否因為網路中斷而重啟
+- docker system df，看磁碟是否已滿、導致容器被 Docker 殺掉
+E> 也可看 dmesg / journalctl -k 的 OOM 訊息。
+?cmd 從容器 web 把 /etc/nginx/nginx.conf 複製到目前目錄：
+= docker cp web:/etc/nginx/nginx.conf .
+= docker cp web:/etc/nginx/nginx.conf ./
+= docker container cp web:/etc/nginx/nginx.conf .
+E> 反方向是 docker cp ./file web:/path。
+?cmd 查看 Docker 的 image、容器、volume、build cache 各佔用多少空間：
+= docker system df
+= docker system df -v
+E> -v 會列出每個 image、容器、volume 的明細。
+
+@CARD docker2.p_limits | 實作：容器的資源限制（就是 cgroups）
+A> Docker 的資源限制和 systemd 的 MemoryMax 是同一套東西：都是寫 cgroup 檔案。--memory 就是 memory.max，--cpus 就是 cpu.max，--pids-limit 就是 pids.max。超過記憶體上限一樣會被 OOM kill。
+B> **--memory 512m**（memory.max）、**--memory-reservation**、**--cpus 1.5**（cpu.max）、**--cpu-shares**（相對權重）、**--pids-limit 100**（pids.max，防 fork bomb）
+B> Compose：**mem_limit / cpus / pids_limit**，或 **deploy.resources.limits**
+B> 超過記憶體上限 → **OOM kill**，inspect 中 **OOMKilled: true**，exit code **137**（128+9）
+B> 查看：**docker stats**；容器的 cgroup 也在 /sys/fs/cgroup/system.slice/docker-<id>.scope/
+X> docker run -d --memory 256m --cpus 0.5 --pids-limit 200 nginx
+X> # compose
+X>   sandbox:
+X>     mem_limit: 512m
+X>     cpus: 1.0
+X>     pids_limit: 256
+?mt 配對 docker run 選項與 cgroup 檔案：
+> --memory :: memory.max
+> --cpus :: cpu.max
+> --pids-limit :: pids.max
+> --cpu-shares :: cpu.weight（相對權重）
+E> 跟 systemd 章節的 MemoryMax=、CPUQuota=、TasksMax= 是同一組機制。
+?fill 容器因為記憶體超過上限被 OOM kill（SIGKILL），exit code 通常是＿＿
+= 137
+E> 128 + 9（SIGKILL）。
+?mc HW3 的 sandbox 讓 AI agent 以 root 執行任意指令。為什麼建立容器時應該加 --pids-limit？
++ 防止 fork bomb 耗盡整台主機的 process 數
+- 限制 process 數量可以讓 agent 跑得更快
+- 沒有設定的話 docker exec 無法運作
+- Docker 規定每個容器都一定要設這個值
+E> 搭配 --memory、--cpus，避免單一 sandbox 拖垮 VM。
+
+@CARD docker2.p_sock | 實作：docker.sock 等於 root
+A> /var/run/docker.sock 是 Docker 的「萬能遙控器」：能控制 daemon，就能開一個把 host 根目錄掛進來的特權容器，等於拿到 host 的 root。所以把它掛進容器、或把人加進 docker 群組，都要當成「給 root」來看待。
+B> 能存取 **/var/run/docker.sock** = 能叫 dockerd（以 root 執行）做任何事 → **等同 host root**
+B> 例：docker run -v /:/host --privileged … → 直接改 host 檔案
+B> **docker 群組**的成員一樣等同 root
+B> HW3 的平台要掛 docker.sock 來管理 sandbox → 平台本身必須可信，**sandbox 絕對不能**拿到 docker.sock
+B> **DinD**（Docker-in-Docker）：容器裡跑一個獨立的 dockerd（需要 --privileged）；**DooD**：掛 host 的 docker.sock（共用 host daemon）
+B> 降低風險：rootless Docker、socket proxy（只開放需要的 API）、user namespace remap
+?mc 為什麼把 /var/run/docker.sock 掛進容器，等於給這個容器 host 的 root 權限？
++ 容器可以透過它叫 Docker daemon 建立掛載 host 根目錄的特權容器
+- docker.sock 裡存著 root 的密碼雜湊，容器可以拿去破解
+- 因為 docker.sock 是 setuid root 的檔案，誰打開它誰就是 root
+- 只會讓容器看到其他容器的 log，不會影響 host 的安全
+E> 所以 HW3 平台可以掛（它是你寫的管理程式），sandbox 絕對不行。
+?mt 配對：
+> DinD :: 容器內執行獨立的 dockerd，通常需要 --privileged
+> DooD :: 掛載 host 的 docker.sock，共用 host 的 daemon
+> rootless Docker :: dockerd 以一般使用者執行，降低被濫用的影響
+E> HW3 的 Forgejo runner 要求用 Docker-in-Docker 執行 job。
+?tf 把使用者加進 docker 群組，安全性上大約等同給他 sudo 權限。
+=T
+E> docker 群組的成員可以直接操作 docker.sock。
+
+@CARD docker2.p_caps | 實作：Capabilities 與容器權限
+A> Linux 把 root 的超能力拆成很多張「執照」（capabilities）：NET_ADMIN 能改網路、SYS_ADMIN 幾乎什麼都能做。Docker 預設只發給容器少數幾張，所以容器裡的 root 改不了路由；--privileged 則是把所有執照都發下去，非常危險。
+B> 容器預設**只有部分 capabilities**；沒有 **CAP_NET_ADMIN** → 不能改路由、iptables
+B> **--cap-add NET_ADMIN** / **--cap-drop ALL**：增減 capability（只給需要的）
+B> **--privileged**：給全部 capability 並存取所有裝置 → **幾乎等於 host root**，只有 DinD 這類情況才用
+B> **--read-only**：容器根檔案系統唯讀（搭配 tmpfs 給需要寫的地方）
+B> **--security-opt no-new-privileges**：禁止 setuid 提權；**--user 1000:1000**：以非 root 執行
+B> HW3：sandbox 內的程式**不能改路由或防火牆** → 不給 NET_ADMIN；平台容器做透明 proxy 則需要 NET_ADMIN
+X> docker run --cap-drop ALL --cap-add NET_BIND_SERVICE --read-only --tmpfs /tmp myimg
+X> docker run --network container:sbx1 --cap-add NET_ADMIN nicolaka/netshoot ip route
+?mc 容器內以 root 執行 ip route add default via 10.0.0.1 卻出現 Operation not permitted。原因？
++ 容器預設沒有 CAP_NET_ADMIN
+- 容器內的 root 不是 UID 0
+- ip 指令在容器裡無法使用
+- 需要先 docker restart
+E> HW3 正是利用這點：sandbox 不給 NET_ADMIN，agent 就改不了路由。
+?mt 配對選項：
+> --cap-add NET_ADMIN :: 允許修改網路設定與防火牆
+> --cap-drop ALL :: 移除所有 capability
+> --privileged :: 給予全部 capability 與裝置存取
+> --read-only :: 根檔案系統唯讀
+E> 最小權限原則：先 --cap-drop ALL，再只加回需要的。
+?mc docker run --network container:sbx1 的效果是？
++ 與 sbx1 共用 network namespace（介面、IP、路由都相同）
+- 新容器會連到一個名稱叫 container 的自訂網路，再和 sbx1 互通
+- 兩個容器共用同一個檔案系統與 /workspace 目錄，但網路各自獨立互不影響
+- 新容器會取代 sbx1，沿用它的名稱、IP 與所有設定後重新啟動一次
+E> 常用來對另一個容器的網路除錯，或由有權限的輔助容器替它設定路由。
+
+@CARD docker2.p_firewall | 實作：Docker 發布的 port 會繞過防火牆
+A> Docker 為了讓 -p 生效，會自己在 iptables 加規則，而且排在 ufw 這類工具的規則「前面」。所以你以為 ufw 擋了 5432，外面其實照樣連得到。真正關門的方法是一開始就只綁 127.0.0.1，或在 DOCKER-USER chain 加規則。
+B> -p 8000:8000 → Docker 在 nat 表加 **DNAT**，在 filter 表的 **DOCKER** chain 放行 → **ufw / 自己寫在 INPUT 的規則擋不住**（封包走的是 FORWARD）
+B> 自訂限制要寫在 **DOCKER-USER** chain（Docker 不會覆蓋它）
+B> 最簡單：**-p 127.0.0.1:8000:8000** 只在本機開
+B> **internal: true** 的網路（docker network create --internal）：**沒有對外路由**，容器只能跟同網路的容器通訊（HW3 sandbox 網路的好起點）
+B> 驗證：在**另一台機器**用 nc -vz VM 8000 或 nmap 測，不要只在本機測
+X> # compose
+X> networks:
+X>   sandbox_net:
+X>     internal: true
+X> $ sudo iptables -L DOCKER-USER -n
+?mc 用 ufw deny 8101 後，外部仍能連到用 -p 8101:3000 發布的 Forgejo 容器。原因？
++ Docker 的規則繞過了 INPUT 鏈
+- 8101 是系統保留給 Docker 的 port
+- 8101 是系統保留的 port
+- Forgejo 內建自己的防火牆
+E> Docker 自己的 iptables 規則（DNAT + FORWARD 鏈）比 ufw 的 INPUT 規則先生效，流量不經過 INPUT。正確做法：只綁 127.0.0.1，或把規則寫在 DOCKER-USER。
+?mc docker network create --internal sbxnet 建立的網路有什麼特性？
++ 容器沒有對外的路由
+- 只能從 host 連進去
+- 會自動加密流量
+- 只允許 TCP
+E> 接在上面的容器沒有對外的路由，只能跟同網路的容器互相連線。HW3 可以讓 sandbox 只接 internal 網路，平台同時接 internal 與一般網路，成為唯一出口。
+?fill Docker 保留給使用者自訂過濾規則、不會被它覆蓋的 iptables chain 是＿＿
+= DOCKER-USER
+E> 例：iptables -I DOCKER-USER -i eth0 ! -s 192.168.0.0/16 -j DROP。
+
+@CARD docker2.p_composeenv | 實作：.env、變數替換與 override
+A> compose.yml 可以留「空格」（${VAR}），由同目錄的 .env 填入，同一份設定換個 .env 就能用在不同環境。注意兩種 env 不一樣：.env 是給「compose 檔本身」填空用的；environment / env_file 才是傳進「容器」的環境變數。
+B> **.env**（與 compose.yml 同目錄）：提供 compose 檔中 **${VAR}** 的值；**${VAR:-預設值}**、**${VAR:?錯誤訊息}**（沒設就報錯）
+B> **environment:**、**env_file: app.env**：傳進**容器**的環境變數
+B> **docker compose config**：看替換後的結果
+B> **compose.override.yml** 會自動疊加；**-f a.yml -f b.yml** 依序合併；**-p 名稱** 指定專案名稱（影響容器、網路、volume 的前綴）
+B> **profiles:** 讓某些服務只在 --profile 指定時啟動；**secrets:** 以檔案掛到 /run/secrets/<name>
+X> # .env
+X> LMSP_TAG=v1.2.3
+X> # compose.yml
+X>   platform:
+X>     image: git.19.cs.nycu/hw3/llm-sandbox-platform:${LMSP_TAG:?LMSP_TAG not set}
+X>     env_file: platform.env
+X>     secrets: [llm_api_key]
+X> secrets:
+X>   llm_api_key:
+X>     file: ./secrets/llm_api_key
+?mc .env 與 env_file 的差別？
++ .env 填 compose 檔，env_file 進容器
+- .env 只在 build 階段給 Dockerfile 用，env_file 則是給 compose 檔用
+- .env 只在 build 階段使用
+- env_file 一個服務只能指定一個
+E> .env 用來替換 compose 檔中的 ${VAR}；env_file 是把變數傳進容器的環境。很多人以為寫在 .env 的變數容器裡就看得到，其實要另外用 environment 或 env_file 傳入。
+?fill compose 中 ${TAG:＿＿請設定 TAG} 表示 TAG 沒設定時直接報錯停止
+= ?
+E> 語法和 shell 的 ${var:?message} 一樣，訊息會顯示在錯誤中。
+?mc 以 secrets 傳入的 llm_api_key，容器內預設在哪個路徑讀取？
++ /run/secrets/llm_api_key
+- 環境變數 LLM_API_KEY
+- /etc/secrets/llm_api_key
+- /var/lib/docker/secrets
+E> 比起環境變數，檔案形式的 secret 不會出現在 docker inspect 的 Env 中。
+
+@CARD docker2.p_volume2 | 實作：volume 權限、備份與資料庫
+A> 資料庫容器的資料一定要放在 volume，否則容器一刪資料就沒了。bind mount 最常見的坑是「UID 對不上」：容器裡的 postgres 使用者 UID 999，host 的目錄卻屬於 1000，於是啟動失敗。
+B> **named volume**：由 Docker 管理（/var/lib/docker/volumes/），權限自動處理，適合資料庫
+B> **bind mount**：直接看得到 host 檔案，但要注意**容器內 process 的 UID** 要有權限（例：postgres 是 999）
+B> 容器內外 UID 是同一套數字（沒有 user namespace 時）→ chown 999:999 ./pgdata
+B> 備份 named volume：**docker run --rm -v pgdata:/data -v "$PWD":/backup debian tar czf /backup/pgdata.tgz -C /data .**；資料庫最好用 pg_dump
+B> **docker compose down -v** 會刪掉 named volume → 資料庫資料消失；不要隨手加 -v
+B> 官方 postgres image：**POSTGRES_USER、POSTGRES_PASSWORD、POSTGRES_DB** 只在**資料目錄是空的第一次初始化**時生效；/docker-entrypoint-initdb.d/ 的腳本也只跑那一次
+X> docker run --rm -v pgdata:/data -v "$PWD":/backup debian tar czf /backup/pgdata.tgz -C /data .
+X> docker compose exec db pg_dump -U postgres forgejo > forgejo.sql
+?mc 已經跑過一次的 postgres 容器，修改 compose 的 POSTGRES_PASSWORD 後 down 再 up，密碼會變嗎？
++ 不會，這些變數只在資料目錄為空、第一次初始化時使用
+- 會，但要先 docker compose build
+- 會，但要先重新 build image
+- 只有 superuser 的密碼會變
+E> 要改密碼請連進資料庫用 ALTER USER；或清空 volume 重新初始化（資料會消失）。
+?mc bind mount ./pgdata 給 postgres 容器，啟動時出現 permission denied。最可能的原因？
++ host 上 ./pgdata 的擁有者 UID 與容器內 postgres 使用者（999）不同
+- postgres 容器需要 --privileged 才能寫入 bind mount 的目錄
+- bind mount 無法用在資料庫，因為 PostgreSQL 只接受 named volume
+- 要先用 docker volume create pgdata 建立，bind mount 才會有寫入權限
+E> 改用 named volume，或 chown 成容器內使用者的 UID。
+?tf docker compose down -v 會刪除 compose 檔中宣告的 named volume。
+=T
+E> bind mount 的 host 目錄不會被刪。
+
+@CARD docker2.p_buildkit | 實作：build 的進階技巧
+A> 進階 build 技巧：--no-cache 是「全部重煮」；--target 是「只煮到某個 stage 就停」（拿 builder 來測試）；BuildKit 的 cache mount 是「共用的食材冰箱」，pip、apt 的下載快取放裡面，不會進 image，下次又能重用。
+B> **docker build --no-cache**：忽略所有快取；**--pull**：重新拉最新的基底 image
+B> **--target builder**：只 build 到指定 stage（除錯或做測試 image）
+B> **--progress=plain**：顯示每個步驟完整輸出（BuildKit 預設會摺疊）
+B> BuildKit cache mount：**RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt**（快取不進 image）
+B> secret mount：**RUN --mount=type=secret,id=token …**，build 時用 --secret 傳入，不會留在 layer
+X> docker build --target builder -t myapp:builder .
+X> docker build --progress=plain --no-cache -t myapp .
+X> RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+?mc build 時要用到私有 repo 的 token，最安全的傳入方式是？
++ BuildKit 的 secret mount
+- ARG TOKEN 再 --build-arg
+- ENV TOKEN=...
+- COPY token.txt . 用完再 RUN rm
+E> BuildKit 的 --secret 搭配 RUN --mount=type=secret，token 不會留在任何 layer。ARG、ENV 與 COPY 都會留在 image 歷史或 layer 中。
+?cmd 只 build Dockerfile 中名為 builder 的 stage，並標記為 myapp:builder：
+= docker build --target builder -t myapp:builder .
+= docker build -t myapp:builder --target builder .
+= docker build . --target builder -t myapp:builder
+E> --target 也常用來只 build 測試用的 stage。
+
+@CARD docker2.p_logs | 實作：容器 log 與 log rotation
+A> 容器印到 stdout/stderr 的東西，Docker 預設寫成 JSON 檔存在硬碟，而且預設不會輪替，跑久了會把磁碟塞爆。要在 daemon.json 或每個服務設定上限。
+B> 預設 logging driver：**json-file**，檔案在 /var/lib/docker/containers/<id>/<id>-json.log
+B> 預設**不輪替** → 設 **max-size**、**max-file**（daemon.json 全域，或 compose 的 logging:）
+B> 也可用 **journald** driver：log 進 journal，用 journalctl CONTAINER_NAME=web 查
+B> **docker logs --since 10m --tail 100 -f 容器**；程式要寫到 **stdout/stderr**，不要只寫容器內的檔案
+B> 改 /etc/docker/daemon.json 後要 **systemctl restart docker**（只影響之後建立的容器）
+X> # /etc/docker/daemon.json
+X> { "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "3" } }
+X> # compose
+X>     logging:
+X>       driver: json-file
+X>       options: { max-size: "10m", max-file: "3" }
+?mc 一台跑了好幾個月的 Docker 主機磁碟爆滿，/var/lib/docker/containers 底下有超大的 *-json.log。根本原因？
++ json-file 預設不輪替
+- image layer 沒有清理
+- volume 沒有備份
+- journald 壞掉了
+E> json-file logging driver 預設不輪替，log 無限增長。設定 max-size / max-file，或定期 prune。
+?cmd 查看容器 web 最近 10 分鐘的 log 並持續追蹤：
+= docker logs --since 10m -f web
+= docker logs -f --since 10m web
+= docker logs --since=10m -f web
+= docker logs --since 10m --follow web
+E> --since 可以用 10m、1h 這類相對時間，也可以用絕對時間。
+?tf 修改 /etc/docker/daemon.json 的 log 設定後，已存在的容器會立刻套用新的設定。
+=F
+E> 只影響之後建立的容器；既有容器要重建（compose up -d --force-recreate）。

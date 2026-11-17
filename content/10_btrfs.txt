@@ -1,0 +1,260 @@
+@CH btrfs | Btrfs | 🌳 | BTRFS.pdf
+
+@CARD btrfs.intro | Btrfs 是什麼
+A> Btrfs（B-tree FS）是「瑞士刀檔案系統」：內建 CoW、快照、像 LVM 的磁碟管理和軟體 RAID、會自我檢查的 checksum、透明壓縮、秒速複製（reflink）。ext4 是可靠的基本款；ZFS 也很強但比較吃記憶體。
+B> 現代 **CoW** 檔案系統，著重容錯、修復、易於管理
+B> **Snapshots**：不需完整複製檔案
+B> **內建 volume management**，支援軟體 RAID 0、RAID 1 等
+B> **Self-healing**：data 與 metadata 都有 **checksum**，自動偵測靜默資料損壞
+B> **透明壓縮**：mount -o compress=zstd /dev/sdx /mnt
+B> **Reflink**：快速有效率的檔案複製：cp --reflink=always source target
+B> 對比：ext4 最常見但只有基本功能；ZFS 功能多但記憶體用量較高
+?mt 配對 Btrfs 功能與說明：
+> Checksum :: 偵測靜默資料損壞（self-healing）
+> Reflink :: 共用資料區塊的快速複製
+> compress=zstd :: 透明壓縮
+> Snapshot :: 不完整複製檔案的時間點副本
+E> 這些都建立在 CoW 之上。
+?cmd 以 zstd 透明壓縮掛載 /dev/sdx 到 /mnt：
+= mount -o compress=zstd /dev/sdx /mnt
+= mount -t btrfs -o compress=zstd /dev/sdx /mnt
+= mount -o compress=zstd -t btrfs /dev/sdx /mnt
+E> compress 是 mount option。
+?cmd 用 reflink 方式複製 big.img 為 copy.img：
+= cp --reflink=always big.img copy.img
+= cp --reflink big.img copy.img
+E> 共用區塊，只有修改時才複製。
+
+@CARD btrfs.subvol | Subvolume
+A> Subvolume 像「一個檔案系統裡的獨立小國」：有自己的目錄樹和 inode 編號空間，可以各自掛載、各自拍快照。每個 Btrfs 都有一個 ID 5 的「頂層國家」（top-level），預設 mount 的就是它。
+B> 擁有**獨立目錄階層與 inode 編號空間**的部分檔案系統
+B> 每個 Btrfs 有 **top-level subvolume，ID = 5**，路徑為 /；預設掛載時就是掛它
+B> 其他 subvolume 都在 top-level 底下
+B> 命名慣例：以 **@** 開頭，**@** 對應 /、**@www** 對應 /var/www
+B> **btrfs subvolume create <path>**、**btrfs subvolume list <mnt>**
+?fill Btrfs top-level subvolume 的 ID 是＿＿
+= 5
+E> 也是 HW2 的「root volume」。
+?cmd 在 /mnt/home 底下建立 subvolume @ray：
+= btrfs subvolume create /mnt/home/@ray
+= btrfs sub create /mnt/home/@ray
+E> btrfs subvolume create。
+?cmd 列出掛載於 /mnt 的 Btrfs 中所有 subvolume（表格格式）：
+= btrfs subvolume list -t /mnt
+= btrfs subvolume list /mnt
+= btrfs sub list -t /mnt
+E> -t 以表格顯示；-p 顯示 parent、-a 顯示所有。
+
+@CARD btrfs.layout | Nested vs Flat layout
+A> Nested 像「俄羅斯娃娃」：子 subvolume 放在父 subvolume 裡，掛載父的時候子的自動跟著出現（也繼承掛載選項），刪父要先刪子。Flat 像「並排的抽屜」：全部直接放在 top-level 底下，每個都要自己掛，但可以各自用不同選項。HW2 要求 flat。
+B> **Nested**：subvolume 建在另一個 subvolume 裡；刪 parent 前要先刪所有 children；children 隨 parent 掛載而出現，**套用 parent 的 mount options**
+B> **Flat**：所有 subvolume 都是 **top-level 的直接子節點**；每個都要**手動掛載**（fstab），可**各自設定不同選項**
+B> Flat 的 fstab：UUID=… / btrfs **subvol=@**,defaults,autodefrag 0 0；/home btrfs **subvol=@home**,noatime …
+B> HW2：所有 subvolume（root、sftp、pool1、pool2）直接在 root volume（ID 5）底下，**不可 nested**；另建目錄 snapshot/sftp、snapshot/pool1、snapshot/pool2
+?mt 配對 layout 特性：
+> Nested :: 子 subvolume 隨父掛載，並繼承父的掛載選項
+> Flat :: 每個 subvolume 各自在 fstab 掛載，可用不同選項
+E> Flat layout 的 subvolume 都在 top-level 下。
+?tf 在 nested layout 中，可以直接刪除還有子 subvolume 的父 subvolume。
+=F
+E> 必須先刪除所有 children。
+
+@CARD btrfs.snapshot | Btrfs Snapshot
+A> Btrfs snapshot 就是「一個和原本 subvolume 共用資料的新 subvolume」（CoW），建立瞬間完成。可寫的 snapshot 和原本的 subvolume 根本沒有差別，它們是平等的雙胞胎。-r 讓它變成唯讀的「照片」。
+B> snapshot = **與另一個 subvolume 共享 data 與 metadata 的 subvolume**（CoW）
+B> **不是遞迴的**：不包含裡面巢狀的 subvolume
+B> **-r** 建立唯讀 snapshot
+B> 可寫 snapshot 與原 subvolume **沒有差別**
+B> **btrfs subvolume snapshot [-r] <source> <destination>**
+?cmd 為 /mnt/home/@ray 建立唯讀 snapshot 到 /mnt/snapshots/@homeray-1：
+= btrfs subvolume snapshot -r /mnt/home/@ray /mnt/snapshots/@homeray-1
+= btrfs sub snapshot -r /mnt/home/@ray /mnt/snapshots/@homeray-1
+E> -r 唯讀；HW2 SnApper 建立的 snapshot 也要唯讀。
+?tf Btrfs snapshot 會遞迴地包含原 subvolume 底下的巢狀 subvolume。
+=F
+E> snapshot 不是遞迴的，巢狀 subvolume 在 snapshot 中只是一個空目錄。
+
+@CARD btrfs.vslvm | LVM snapshot vs Btrfs snapshot
+A> 兩者都是 CoW，但 LVM snapshot 是「預先租一個固定大小的倉庫存舊資料」，而且每多一個 snapshot，寫入就要多抄一份；Btrfs 是檔案系統本身就懂 CoW，不用預先指定大小，多個 snapshot 也不太影響效能和空間。
+B> 共同：**Copy on Write**
+B> **LVM**：建立時**要指定 snapshot LV 大小**；同一個 LV 的多個 snapshot 都要被寫入 → 寫入變慢、略浪費空間
+B> **Btrfs**：**不需要指定大小**；多個 snapshot（reflink）不浪費效能與空間
+?mc 下列哪個是 LVM snapshot 有、而 Btrfs snapshot 沒有的限制？
++ 建立時必須預先指定 snapshot 的大小
+- 使用 copy on write 的方式保存資料
+- 可以建立唯讀的 snapshot
+- 可以用來把資料 rollback 回去
+E> Btrfs snapshot 不用指定大小。
+?tf LVM snapshot 與 Btrfs snapshot 都是用 Copy on Write 的方式實作。
+=T
+E> 差別在 LVM 要預先指定 snapshot 大小，Btrfs 不用。
+?mc 同一個 LV 建立很多個 LVM snapshot 之後，寫入效能會怎樣？
++ 變慢
+- 變快
+- 不受影響
+- 只有讀取變慢
+E> 變慢，因為每次寫入都要把舊資料複製到每個 snapshot。Btrfs 的 snapshot 共享資料區塊，沒有這個問題。
+
+@CARD btrfs.rollback | Snapshot Rollback
+A> Btrfs 沒有「一鍵還原」按鈕。常見做法：把舊照片（唯讀 snapshot）再拍一張「可寫的副本」，然後把這個副本掛到原本的位置（或改名替換掉舊的 subvolume）。原來的照片還留著，可以再還原一次。
+B> Btrfs **沒有內建 rollback 指令**，官方文件也沒有明確程序
+B> 方法一：掛載 snapshot，把檔案**複製**回目的地
+B> 方法二：**對 snapshot 再做一個可寫的 snapshot**，再把它**掛載**到原位置（或 mv 改名取代原 subvolume、更新 fstab 的 subvol=）
+X> btrfs subvolume snapshot /mnt/snapshots/@homeray-1762502638 /mnt/home/@ray_new
+X> mount -o subvol=/home/@ray_new /dev/sdb /home/ray
+B> HW2 SnApper rollback 要求：rollback 後 **snapshot 仍存在**、subvolume **可寫**、重新掛載後狀態**持續**
+?sa 目前已有一個 Btrfs 的 snapshot subvolume，請問要如何 rollback？
+S> 2025 期末 Q21
+R> Btrfs 沒有內建 rollback 指令，常見作法：
+R> ① 以該 snapshot 建立一個新的可寫 snapshot：btrfs subvolume snapshot <snapshot> <新 subvolume>（snapshot 本身若為唯讀，這樣也能保留它）。
+R> ② umount 原本的 subvolume，將原 subvolume 改名或刪除（btrfs subvolume delete），把新 subvolume 改成原本的名稱 / 位置（mv），或直接修改 mount 的 subvol= 指向新 subvolume（記得同步更新 /etc/fstab）。
+R> ③ 重新掛載：mount -o subvol=<新 subvolume> <device> <mountpoint>。
+R> 另一種較簡單但慢的方式是掛載 snapshot 後，把檔案複製回原 subvolume。
+P> 對 snapshot 再建立可寫 snapshot
+P> 以新 subvolume 取代原 subvolume（改名 / 改 subvol= / fstab）並重新掛載
+?cmd 以 subvolume /home/@ray_new 掛載 /dev/sdb 到 /home/ray：
+= mount -o subvol=/home/@ray_new /dev/sdb /home/ray
+= mount -o subvol=home/@ray_new /dev/sdb /home/ray
+E> subvol= 是 Btrfs 的 mount option。
+
+@CARD btrfs.mountopt | Btrfs mount options
+A> 掛載選項是「進門時的規矩」：subvol= 指定進哪個房間、compress= 進門就自動壓縮、noatime 不記錄每次讀取的時間（少寫很多次）、autodefrag 自動整理碎片。
+B> **subvol=<path>** / **subvolid=<id>**：掛載特定 subvolume
+B> **compress=zstd**（或 lzo、zlib）/ compress-force
+B> **noatime**：不更新存取時間，減少寫入
+B> **autodefrag**：自動重組小量隨機寫入的檔案
+B> 其他：ssd、discard、space_cache=v2、nodatacow、ro / rw、defaults
+?sa 請問 Btrfs mount option 可以設什麼？至少寫出兩個。
+S> 2025 期末 Q22
+R> 例如：subvol=@home（或 subvolid=）指定要掛載的 subvolume；compress=zstd 啟用透明壓縮；noatime 不更新 access time；autodefrag 自動重組；其他如 ssd、discard、space_cache=v2、nodatacow、ro。
+P> 寫出兩個正確的 Btrfs mount option（如 subvol=、compress=、noatime、autodefrag）
+?mt 配對 mount option：
+> subvol=@home :: 指定掛載哪個 subvolume
+> compress=zstd :: 寫入時透明壓縮
+> noatime :: 讀取時不更新 access time
+> autodefrag :: 自動重組碎片
+E> fstab 範例中這幾個都有出現。
+
+@CARD btrfs.migrate | 實戰：把 home 遷移到 Btrfs
+A> 搬家流程：裝工具 → 準備新房（區塊裝置）→ 裝潢（mkfs.btrfs）→ 先掛到暫時地址、隔出房間（subvolume）→ 搬家具（cp -a）→ 把新房掛到正式地址 → 寫進 fstab → 拍一張照片（snapshot）備用。
+B> ① apt install **btrfs-progs** ② 新增區塊裝置（分割區 / 磁碟 / LV）③ **mkfs.btrfs** ④ 掛到暫時位置並建立 subvolume（/mnt/home/@USER）⑤ **cp -a /home/USER/. /mnt/home/@USER/** ⑥ **mount -o subvol=/home/@USER** 到 /home/USER ⑦ 寫入 fstab（UUID）⑧ 建立 snapshot 到 /mnt/snapshots/
+B> **btrfs filesystem show**：顯示 Btrfs 結構（label、uuid、裝置）
+X> echo "UUID=0ed693ae-… /home/ray btrfs subvol=/home/@ray 0 0" >> /etc/fstab
+X> btrfs subvolume snapshot /mnt/home/@ray /mnt/snapshots/@homeray-$(date +%s)
+?ord 把 /home/ray 遷移到新的 Btrfs 的順序：
+> mkfs.btrfs 新的區塊裝置
+> 掛到 /mnt 並 btrfs subvolume create /mnt/home/@ray
+> cp -a /home/ray/. /mnt/home/@ray/
+> mount -o subvol=/home/@ray 裝置 /home/ray
+> 把 UUID 與 subvol= 寫入 /etc/fstab
+E> cp -a 保留權限、擁有者與時間戳。
+?cmd 顯示系統上的 Btrfs 檔案系統資訊（label、UUID、裝置）：
+= btrfs filesystem show
+= btrfs fi show
+E> 也可用 blkid 查 UUID。
+?mc 為什麼搬移家目錄時要用 cp -a？
++ 保留擁有者、權限、時間戳與 symlink 等屬性（archive 模式）
+- 因為 -a 會順便刪除原本的檔案，等於直接搬移（move）整個家目錄過去
+- 因為 -a 會在 Btrfs 上自動建立對應的 subvolume
+- 因為 -a 會用 Btrfs 的透明壓縮寫入資料，節省新磁碟空間
+E> -a = -dR --preserve=all。
+
+@CARD btrfs.scrub | btrfs scrub
+A> scrub 是 Btrfs 的「定期健康檢查」：線上讀過所有資料與 metadata，用 checksum 找出壞掉的區塊，如果有 RAID 的備份副本就自動修好。
+B> **線上**檔案系統檢查工具：讀取所有 data 與 metadata
+B> 用 **checksum** 與 RAID 的**重複副本**找出並**修復**損壞資料
+B> btrfs scrub start -B <mountpoint>（-B 前景執行直到完成）
+B> 通常由 **btrfs-scrub@.timer** 每月定期執行
+?mc btrfs scrub 能修復損壞資料的前提是？
++ 有 RAID 等重複副本，可用正確的副本取代壞掉的
+- 只要有 checksum 就能修復任何資料
+- 只要檔案系統有開啟 compression 即可
+- 必須有 LVM snapshot
+E> 沒有副本時只能偵測不能修復。
+?cmd 對掛載在 /mnt/hw2 的 Btrfs 執行 scrub，並在前景等它完成：
+= btrfs scrub start -B /mnt/hw2
+= sudo btrfs scrub start -B /mnt/hw2
+E> 沒有 -B 會在背景執行，用 btrfs scrub status 查進度。
+?tf btrfs scrub 可以在檔案系統掛載、使用中的狀態下執行。
+=T
+E> 它是線上檢查工具。
+
+@CARD btrfs.p_top | 實作：掛載 top-level（subvolid=5）來管理
+A> 平常你只掛載各個 subvolume（root 掛在 /mnt/hw2、pool1 掛在 /mnt/hw2/pool1），看不到「整棟樓的大廳」。要建立新的 subvolume、放 snapshot、做 rollback，都得另外把 top-level（ID 5）掛到某個地方，從大廳往各房間操作。
+B> 掛載大廳：`mkdir -p /mnt/root5 && mount -o subvolid=5 /dev/mapper/SA2026vg-SARaid10 /mnt/root5`
+B> 在大廳建立 subvolume 與目錄：`btrfs subvolume create /mnt/root5/pool1`、`mkdir -p /mnt/root5/snapshot/pool1`
+B> 同一個檔案系統可以同時被掛載在多個地方，不衝突；腳本裡可以臨時掛、用完 umount
+B> 確認結構：**btrfs subvolume list /mnt/root5**，每個 subvolume 的 top level 都應該是 5（不能有巢狀）
+B> 其他狀態：**btrfs filesystem show**（裝置與 label）、**btrfs filesystem usage /mnt/hw2**（空間用量，比 df 準）
+X> mount -o subvolid=5 /dev/mapper/SA2026vg-SARaid10 /mnt/root5
+X> for s in root sftp pool1 pool2; do btrfs subvolume create /mnt/root5/$s; done
+X> mkdir -p /mnt/root5/snapshot/{sftp,pool1,pool2}
+X> btrfs subvolume list /mnt/root5
+?cmd 把 /dev/mapper/SA2026vg-SARaid10 的 top-level volume（ID 5）掛載到 /mnt/root5：
+= mount -o subvolid=5 /dev/mapper/SA2026vg-SARaid10 /mnt/root5
+= mount -o subvol=/ /dev/mapper/SA2026vg-SARaid10 /mnt/root5
+= mount /dev/mapper/SA2026vg-SARaid10 /mnt/root5 -o subvolid=5
+E> 預設（沒有設 default subvolume 時）直接 mount 也會掛到 ID 5，但寫清楚比較保險。
+?mc 名叫 root 的 subvolume 與 root volume 有什麼差別？
++ root 只是頂層底下的普通子卷
+- 兩者是同一個東西
+- root subvolume 的 ID 一定是 5
+- root volume 是 / 掛載點
+E> root volume 是 ID 5 的頂層；root 只是一個建立在頂層底下、名字叫 root 的普通 subvolume。作業特別提醒的陷阱，名字一樣但層級不同。
+?cmd 顯示 /mnt/hw2 所在 Btrfs 檔案系統的詳細空間用量（包含 metadata 與 RAID 配置）：
+= btrfs filesystem usage /mnt/hw2
+= btrfs fi usage /mnt/hw2
+= btrfs filesystem df /mnt/hw2
+E> CoW 與快照讓 df 的數字不太準，要看 btrfs 自己的統計。
+
+@CARD btrfs.p_ids | 實作：取得 subvolume ID 與快照資訊
+A> 寫快照管理腳本時，你會一直需要回答三個問題：這個快照的 ID 是多少？它是哪個 subvolume 的快照？它是什麼時候拍的？答案都在 btrfs subvolume list 與 show 的輸出裡，關鍵在怎麼把需要的欄位切出來。
+B> **btrfs subvolume list 掛載點**：每行 `ID 551 gen 671 top level 5 path snapshot/pool1/@20251003-163650`，ID 在第 2 欄、path 在最後一欄
+B> 選項：**-s** 只列 snapshot、**-r** 只列唯讀、**-o** 只列該路徑底下的、**-p -a -t** 是作業範例用的表格格式
+B> **btrfs subvolume show 路徑**：顯示 Subvolume ID、Creation time、Flags（readonly）等
+B> 唯讀屬性：**btrfs property get 路徑 ro**；設定：`btrfs property set 路徑 ro true / false`
+B> 建立快照後要取得新 ID：對新路徑 `btrfs subvolume show` 取 Subvolume ID 那一行，或在 list 中用路徑比對
+X> btrfs subvolume list /mnt/root5 | awk '$NF ~ /^snapshot\// {print $2, $NF}'
+X> btrfs subvolume show /mnt/root5/snapshot/pool1/@20251003-163650 | awk '/Subvolume ID/ {print $3}'
+X> btrfs property get /mnt/root5/snapshot/pool1/@20251003-163650 ro
+?mc `btrfs subvolume list /mnt/root5` 的一行輸出為 `ID 551 gen 671 top level 5 path snapshot/pool1/@20251003-163650`。用 awk 要取出 ID，應該印哪一欄？
++ $2
+- $1
+- $3
+- $NF
+E> $1 是字串 ID，$2 才是數字；$NF 是路徑。
+?cmd 查看 /mnt/root5/snapshot/pool1/@x 這個 subvolume 是否為唯讀：
+= btrfs property get /mnt/root5/snapshot/pool1/@x ro
+= btrfs property get -ts /mnt/root5/snapshot/pool1/@x ro
+E> 輸出 ro=true 代表唯讀。
+?fill btrfs subvolume list 只列出 snapshot（不含一般 subvolume）的選項是 ＿
+= -s
+E> 要注意 -s 判斷的是「是否為快照」，而 SnApper 管理的範圍是 snapshot/ 目錄底下的那些。
+
+@CARD btrfs.p_rollback | 實作：rollback 的實際步驟與陷阱
+A> Btrfs 的 rollback 不是「把舊照片倒回去」，而是「用舊照片翻拍一張新的、可寫的，放到原本的位置」，舊的 subvolume 移走或刪掉，原本的照片保持不動。最大的陷阱：subvolume 被換掉之後 ID 會變，所以 fstab 必須用名字（subvol=pool1）掛載，不能用 subvolid。
+B> 步驟：① 掛載 top-level ② **umount 該 subvolume 的掛載點**（掛載中的 subvolume 不能刪）③ 舊的改名或 `btrfs subvolume delete` ④ `btrfs subvolume snapshot 快照 /mnt/root5/pool1`（**不加 -r**，所以是可寫的）⑤ 重新 `mount /mnt/hw2/pool1`
+B> 規格要求：rollback 後**快照仍在**、subvolume **可寫**、umount 再 mount 後狀態仍然是 rollback 後的樣子
+B> fstab 若寫 **subvolid=**，換掉 subvolume 後 ID 不同，重開機會掛不到或掛到錯的 → 一律用 **subvol=名稱**
+B> 要回溯到的 subvolume 名稱可以從快照路徑推回來：`snapshot/pool1/@...` 的第二段就是 pool1
+B> 有 process 在使用該掛載點時 umount 會失敗（target is busy），先處理掉
+X> umount /mnt/hw2/pool1
+X> btrfs subvolume delete /mnt/root5/pool1
+X> btrfs subvolume snapshot /mnt/root5/snapshot/pool1/@20251003-194529 /mnt/root5/pool1
+X> mount /mnt/hw2/pool1          # 依 fstab 的 subvol=pool1 重新掛上
+?ord Btrfs rollback pool1 到某個快照的步驟：
+> 掛載 top-level（subvolid=5）
+> umount /mnt/hw2/pool1
+> 刪除（或改名）目前的 pool1 subvolume
+> 從快照建立一個可寫的 snapshot，命名為 pool1
+> 依 fstab 重新掛載 /mnt/hw2/pool1
+E> 原本的唯讀快照從頭到尾沒被動過，所以 rollback 後它仍然存在。
+?mc fstab 用 `subvolid=257` 掛載 pool1，rollback 之後重開機，pool1 的掛載出了問題。原因？
++ rollback 後新的 pool1 是另一個 subvolume，ID 已經不是 257
+- Btrfs 不支援在 fstab 用 subvolid 選項，要改用 LABEL= 掛載
+- rollback 會把整個檔案系統標記成唯讀，所以舊的 ID 無法再寫入
+- rollback 時快照的 ID 也會跟著改變，所以 fstab 指到的變成快照
+E> 用 subvol=pool1 依名稱掛載，就不受 ID 改變影響。
+?tf rollback 時用 `btrfs subvolume snapshot -r 快照 /mnt/root5/pool1` 建立新的 pool1 即可滿足「rollback 後可寫」的要求。
+=F
+E> -r 會建立唯讀快照，rollback 後的 subvolume 必須可寫，所以不能加 -r。

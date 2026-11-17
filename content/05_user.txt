@@ -1,0 +1,500 @@
+@CH user | 使用者管理 | 👤 | 07_User_Management.pdf
+
+@CARD user.id | UID、GID 與 Supplementary Groups
+A> Kernel 不認名字只認號碼：alice 只是暱稱，系統裡真正的身分證號是 UID 1001。UID 0 是「萬能鑰匙」，不管叫什麼名字，只要號碼是 0 就是超級使用者。
+B> 檔案擁有者與 process credentials 用的是**數字 ID**
+B> 每個帳號有一個 **primary group**，並可屬於多個 **supplementary groups**
+B> **UID 0 = superuser**，不論 login name 是什麼
+B> 不要把 UID 0 給其他一般帳號
+X> $ id alice
+X> uid=1001(alice) gid=1001(alice) groups=1001(alice),2000(lab)
+?tf 把一個帳號命名為 admin 但 UID 設為 0，它就擁有 root 的權限。
+=T
+E> 權限看 UID，不看名字。
+?mc id alice 輸出 uid=1001(alice) gid=1001(alice) groups=1001(alice),2000(lab)，alice 的 primary group 是？
++ alice (1001)
+- lab (2000)
+- 兩個都是
+- root
+E> gid= 顯示的是 primary group；groups= 列出全部。
+
+@CARD user.types | 帳號類型
+A> 一般使用者是「員工」、service/system user 是「每台機器各配一個的專屬機器人」（權限最小、不能登入）、directory user 是「總公司人事系統管理的員工」（LDAP 等）。
+B> **Regular user**：真人、互動式登入，有自己的身分與家目錄
+B> **Service / system user**：跑一個 daemon，權限受限、登入受限 → 每個服務用專屬身分
+B> **Directory user**：集中管理，透過 **NSS** / 目錄服務解析
+B> daemon、bin、sys、nobody 等歷史名稱在不同平台角色不同
+?mc 為一個新的 web 服務設定執行身分，最佳做法是？
++ 建立專屬的 system user，限制其登入與權限
+- 直接用 root 執行，避免權限不足造成錯誤
+- 用 nobody 跑所有服務，統一管理比較方便
+- 用管理員自己的帳號執行，出問題時好追查
+E> 每個服務專屬身分，最小權限。
+?mt 配對帳號類型：
+> Regular user :: 真人使用，可互動登入，有家目錄
+> Service user :: 專門跑某個 daemon，權限與登入都受限
+> Directory user :: 由集中式目錄服務管理，透過 NSS 解析
+E> 每個服務用自己的專屬身分，被攻破時影響範圍才小。
+
+@CARD user.passwd | /etc/passwd 七個欄位
+A> /etc/passwd 是「公開的通訊錄」（所有人可讀），七欄：名字:密碼標記:UID:GID:備註:家:shell。密碼本身不在這，只放一個 x 代表「去看保險箱 /etc/shadow」。
+B> 格式：**name:password-marker:uid:gid:gecos:home:shell**
+B> **x** 表示密碼在受保護的 shadow 紀錄中（Debian /etc/shadow）
+B> **GECOS**：描述資訊（全名等）
+B> **gid 欄位**是 **primary group**（只能一個）
+B> **getent passwd alice** 會包含目錄帳號；本機 /etc/passwd 不一定列出所有使用者
+X> alice:x:1001:1001:Alice Example:/home/alice:/bin/bash
+?fill /etc/passwd 一行有＿＿個欄位
+= 7
+= 七
+E> name:x:uid:gid:gecos:home:shell。
+?mc root:x:0:0:root:/root:/bin/bash 中，第 6 欄 /root 代表？
++ 家目錄
+- login shell
+- GECOS
+- 密碼
+E> 第 6 欄 home、第 7 欄 shell。
+?cmd 查詢 alice 的帳號紀錄（包含透過 NSS/目錄服務解析的帳號）：
+= getent passwd alice
+E> getent 走 NSS，不只看本機檔案。
+
+@CARD user.shadow | Shadow 密碼與雜湊格式
+A> 為什麼要 shadow？/etc/passwd 必須讓每個人都能讀（程式要把 UID 轉成名字），如果雜湊放在那裡，任何人都能拿回家慢慢暴力破解。所以把雜湊搬進只有 root 能讀的「保險箱」/etc/shadow。$6$ 這種前綴是「保險箱的鎖型號」。
+B> Debian：**/etc/shadow**；FreeBSD：**/etc/master.passwd** 與資料庫（pwd.db / spwd.db）
+B> 存的是 **salted password hash**，不是可還原的加密密碼
+B> 用帳號工具（passwd、adduser、usermod、vipw）保持紀錄一致
+B> 雜湊前綴：**$1$ = MD5**（舊、不安全）、**$2…$ = bcrypt**、**$5$ = SHA-256**、**$6$ = SHA-512 crypt**、**$y$ = yescrypt**（現代 Debian）
+B> shadow 欄位：1-2 名稱與 hash、3-6 上次修改日 / 最短 / 最長 / 警告天數、7-9 inactive 天數 / 帳號到期日 / 保留
+B> **密碼到期**要求改密碼；**帳號到期**會依政策阻擋存取
+?sa A. 使用者可以屬於多個 group，在 /etc/passwd 中設定 group 與寫在 /etc/group 有何差異？ B. 何謂 shadow passwd？為何現在大多數系統都採用？ C. 如何從 /etc/master.passwd（或 /etc/shadow）判斷使用者的密碼使用哪種 hash function？（例：root:$6$gW9y$NtFj3pni:0:0:root:/root:/bin/sh）
+S> 2023 期末 Q12
+R> A. /etc/passwd 的 GID 欄位是使用者的 primary group（只能有一個，建立檔案時預設的群組）；/etc/group 每行最後的成員清單列的是 supplementary（附加）群組成員，一個使用者可以出現在多個群組中。
+R> B. shadow passwd 是把密碼 hash（與密碼期限資訊）從所有人都可讀的 /etc/passwd 移到只有 root 可讀的 /etc/shadow（FreeBSD 為 /etc/master.passwd），/etc/passwd 的密碼欄只留 x 或 *。因為 /etc/passwd 必須公開讓程式查 UID↔名稱，若 hash 放在裡面任何人都能拿去離線暴力破解，所以分開存放更安全。
+R> C. 看密碼欄位 $id$salt$hash 的前綴 id：$1$ 是 MD5、$2a$/$2b$ 是 bcrypt、$5$ 是 SHA-256、$6$ 是 SHA-512、$y$ 是 yescrypt。例子中 $6$ 表示 SHA-512（salt 為 gW9y）。
+P> A. passwd 的 GID 是 primary group；/etc/group 列 supplementary 成員
+P> B. hash 移到 root 才能讀的檔案，防止離線破解
+P> C. 由 $id$ 前綴判斷，$6$ = SHA-512
+?mt 配對 hash 前綴：
+> $1$ :: MD5（舊式，不適合新密碼）
+> $6$ :: SHA-512 crypt
+> $y$ :: yescrypt
+> $2b$ :: bcrypt
+E> 格式 $id$salt$hash。
+?tf /etc/shadow 中存的是用 root 金鑰加密、可以解密還原的密碼。
+=F
+E> 是加鹽的單向 hash，無法還原。
+?cmd 查看 alice 的密碼與帳號期限資訊（不顯示 hash）：
+= chage -l alice
+E> chage 管理 aging。
+
+@CARD user.gecos | GECOS 與 Login Shell
+A> chfn 改「名片」（finger 資訊），chsh 改「預設搭乘的交通工具」（login shell）。換 shell 前先確認它在 /etc/shells 這張「合法交通工具清單」上。
+B> **chfn**：修改 GECOS（全名、聯絡資訊）
+B> **chsh -s /bin/sh**：修改 login shell；先查 **/etc/shells**
+B> login shell 是**設定值**，不一定是目前正在執行的 shell
+B> **nologin** 阻擋一般 shell 登入，但不代表擋住所有認證路徑（如 SFTP 另有設定）
+?cmd 把自己的 login shell 改成 /bin/sh：
+= chsh -s /bin/sh
+E> 先 cat /etc/shells 確認路徑合法。
+?sa a. 下列指令已把 shell 從 tcsh 改成 sh，但印 $SHELL 仍是 tcsh，為什麼？ b. 要怎麼知道目前的 shell 是什麼？
+QX> $ echo $SHELL
+QX> /bin/tcsh
+QX> $ sh
+QX> $ echo $SHELL
+QX> /bin/tcsh
+S> 2023 期中 Q11
+R> a. 執行 sh 只是在 tcsh 底下開了一個 sh 子行程，並沒有改變帳號設定。$SHELL 是登入時根據 /etc/passwd 設定的 login shell 所設的環境變數，sh 從父行程繼承了這個環境變數，且 sh 不會去改它，所以仍是 /bin/tcsh。
+R> b. 用 echo $0（顯示目前 shell 程式名稱），或 ps -p $$（查看目前 shell PID 對應的程式），也可用 ps 看 process 樹。
+P> a. $SHELL 是 login shell 的環境變數，由父行程繼承，不會因執行 sh 而改變
+P> b. echo $0 或 ps -p $$
+?cmd 顯示目前正在執行的 shell 是哪個程式（用 ps 與 $$）：
+= ps -p $$
+= ps -p $$ -o comm
+= ps -o comm -p $$
+E> $$ 是目前 shell 的 PID。
+
+@CARD user.group | /etc/group 與群組成員
+A> /etc/group 的最後一欄是「社團的附加成員名單」；你的 primary group 寫在 /etc/passwd，所以不一定會出現在這份名單上。加入新社團後，已經在場的你（現有 process）不會自動拿到新社員證，要重新登入。
+B> 格式：**name:password-marker:gid:members**（如 lab:x:2000:alice,bob）
+B> members 列的是 **supplementary** 成員；primary group 來自帳號紀錄，可能不會列在這
+B> **既有的 process 保留舊的 credentials** → 在**新的 login session** 測試群組
+B> FreeBSD **wheel** 群組與預設 su 政策有關；Linux 的 su/sudo 規則由 PAM 與 sudoers 決定
+?tf 把 alice 加入 docker 群組後，alice 目前已開著的 shell 立刻就有 docker 群組權限。
+=F
+E> 現有 process 保留舊 credentials，要重新登入（或 newgrp）。
+?fill /etc/group 一行的格式是 name:password-marker:＿＿:members
+= gid
+= GID
+E> 例如 lab:x:2000:alice,bob。
+?mc alice 的 primary group 是 alice，但 /etc/group 的 alice 那一行 members 欄是空的。這正常嗎？
++ 正常，group 檔只列附加成員
+- 不正常，代表帳號損壞
+- 不正常，要用 usermod 修復
+- 只有 root 會這樣
+E> 正常，primary group 記在帳號紀錄（passwd）中，group 檔只列 supplementary 成員。用 id alice 才能看到完整的群組資訊。
+
+@CARD user.nsspam | NSS 與 PAM
+A> NSS 是「查名冊的人」（這個帳號是誰？從檔案、LDAP 哪裡查）；PAM 是「門口保全」，分好幾關：auth（你是本人嗎）、account（帳號能用嗎、過期了嗎）、session（登入後幫你準備環境，例如套用 limits）。
+B> **NSS**：解析使用者與群組 → **/etc/nsswitch.conf**
+B> **PAM auth / account**：驗證身分與帳號政策 → **/etc/pam.d/**
+B> **PAM session**：設定登入 session（服務專屬的 PAM stack）
+B> **getent** 顯示透過 NSS 解析到的身分
+B> 有 passwd 紀錄 ≠ 所有登入方式都允許
+?mt 配對：
+> NSS :: 查詢使用者 / 群組（/etc/nsswitch.conf）
+> PAM auth :: 驗證使用者身分（密碼等）
+> PAM account :: 帳號限制（到期、是否允許）
+> PAM session :: 設定登入 session（如 limits）
+E> 身分查詢、認證、帳號限制、session 設定是不同工作。
+?mc /etc/passwd 中有 alice 這一行，但她用 SSH 登入被拒。下列哪個說法合理？
++ 有 passwd 紀錄只代表帳號存在；能不能登入還要看 PAM 政策與各服務的設定
+- passwd 有紀錄就代表可以用任何方式登入，一定是 SSH 本身壞了
+- passwd 中的密碼欄是 x，代表帳號已被鎖住，任何方式都無法登入
+- 代表她的 UID 是 0，而 sshd 預設禁止 root 登入，要改 PermitRootLogin
+E> NSS 負責「查得到」，PAM 負責「准不准」。
+?fill 決定「使用者與群組資料要去哪裡查」的設定檔是 /etc/＿＿
+= nsswitch.conf
+E> 例如 passwd: files systemd 表示先查本機檔案，再查 systemd 提供的動態使用者。
+
+@CARD user.limits | 資源限制 limits
+A> soft limit 是「平常的額度」，使用者可以自己往上調，但不能超過 hard limit 這個「天花板」。PAM 的 limits 只管「登入的人」，systemd 服務要在 unit 裡另外設 LimitNOFILE=。
+B> 設定於 **/etc/security/limits.d/**（如 @lab soft nofile 1024、@lab hard nofile 4096）
+B> **pam_limits** 在 PAM session stack 包含它時套用
+B> **soft** 可被提高到 **hard** 為止
+B> 查看：**ulimit -Sn**（soft）、**ulimit -Hn**（hard）開檔數
+B> systemd 服務：用 **LimitNOFILE=** 等 unit 資源設定；PAM 限制**不會**自動套用到服務
+?tf 在 /etc/security/limits.d/ 設定的限制，也會自動套用到 systemd 啟動的 service。
+=F
+E> 服務不經 PAM login session，要在 unit 用 LimitNOFILE= 等設定。
+?cmd 查看目前 shell 可開啟檔案數的 hard limit：
+= ulimit -Hn
+= ulimit -n -H
+E> -H hard、-S soft、-n nofile。
+
+@CARD user.create | 建立帳號：adduser / useradd
+A> adduser 是 Debian 的「親切櫃台」，會互動式問你問題、自動建家目錄與 skeleton；useradd 是「後台表單」，參數要自己填清楚（例如 -m 才建家目錄）。兩條路選一條就好，不是兩個步驟。
+B> 流程：選唯一名稱與群組 → 用工具建立紀錄、家目錄、skeleton → 設定初始認證 → 套用配額、到期、權限政策 → **驗證**身分、家目錄擁有者、shell、實際登入
+B> Debian：**adduser alice**（互動）、**addgroup lab**、**adduser alice lab**（加入附加群組）
+B> 低階：**useradd -m -s /bin/bash alice** + **passwd alice**；預設由 /etc/default/useradd、/etc/login.defs 影響
+B> 不要把每個新帳號都加進 sudo
+?cmd 用 useradd 建立 alice，同時建立家目錄並指定 shell 為 /bin/bash：
+= useradd -m -s /bin/bash alice
+= useradd -s /bin/bash -m alice
+E> -m 建家目錄、-s 指定 shell。
+?cmd 在 Debian 上用 adduser 把既有使用者 alice 加入 lab 群組：
+= adduser alice lab
+E> adduser <user> <group>。
+?tf useradd 和 adduser 是建立帳號的兩個必要步驟，要依序都執行。
+=F
+E> 擇一即可，是兩條不同的建立路徑。
+
+@CARD user.usermod | 附加群組：-aG 陷阱
+A> usermod -G 是「重寫社團名單」，會把你原本參加的社團全部退掉；加了 -a（append）才是「再多參加一個」。
+B> **usermod -aG lab alice**：**附加** supplementary group
+B> **-G 不加 -a** 會**取代**整個附加群組清單！
+B> Debian 替代：adduser alice lab
+B> **id alice** 看帳號資料庫；在 session 中執行 **id** 看該 process 的 credentials → 新登入後驗證
+?cmd 把 alice 加入 docker 群組（保留原本的其他群組）：
+= usermod -aG docker alice
+= usermod -a -G docker alice
+= usermod -G docker -a alice
+E> 一定要有 -a。
+?mc alice 原本在 lab、video 群組，執行 usermod -G docker alice 後，她的附加群組是？
++ 只剩 docker
+- lab、video、docker
+- lab、video
+- 指令錯誤，沒有變化
+E> 沒有 -a 就是取代。
+
+@CARD user.home | 家目錄、skeleton、密碼與配額
+A> /etc/skel 是「新生入學禮包」：建帳號時複製一份到新家目錄。之後改禮包，不會影響已經入學的學生。Quota 的 soft limit 是「超過會收到警告並有寬限期」，hard limit 是「絕對不能再多」；block 限制容量、inode 限制檔案數量。
+B> **/etc/skel**：建立新使用者時複製到家目錄的範本；之後修改**不會**更新既有家目錄
+B> /home/<user>：一般本機使用者家目錄；.profile、.bashrc 等啟動檔
+B> 驗證家目錄擁有者、群組、權限；遞迴 chown 前先理解範圍
+B> **passwd alice** 設密碼
+B> 配額：需要檔案系統支援與設定；**edquota -u alice**、**quota -u alice**
+B> **soft** 有寬限期；**hard** 直接阻擋；**block** 與 **inode** 限制不同資源
+?mt 配對 quota 概念：
+> soft limit :: 超過後有寬限期（grace period）
+> hard limit :: 絕對上限，直接阻擋配置
+> block limit :: 限制使用的容量
+> inode limit :: 限制檔案（物件）數量
+E> 兩組維度：soft/hard × block/inode。
+?tf 修改 /etc/skel 中的 .bashrc，所有既有使用者的 .bashrc 都會跟著更新。
+=F
+E> skel 只在建立帳號時被複製。
+
+@CARD user.lock | 鎖定密碼與撤銷存取
+A> passwd -l 只是「把密碼這道門鎖起來」，但對方可能還有別的鑰匙：SSH key、已經登入的 session、排程工作、token… 撤銷存取要每一道門都檢查。
+B> **passwd -l alice**：鎖定**密碼**認證；**passwd -S alice** 看狀態；**passwd -u** 解鎖
+B> 鎖密碼**不會**自動撤銷 **SSH keys** 或終止**現有 session**
+B> 要檢查：帳號到期、keys、tokens、目錄政策、cron 工作、active sessions
+B> 用帳號工具，**不要**手動註解掉 passwd / shadow 的行
+?mc 對 alice 執行 passwd -l alice 後，下列哪件事「仍然可能」發生？
++ alice 用已設定好的 SSH key 登入
+- alice 用密碼登入
+- alice 用 su - alice 輸入密碼切換
+- 以上都不可能
+E> 鎖密碼不影響公鑰認證，也不會踢掉現有 session。
+?cmd 鎖定 alice 的密碼認證：
+= passwd -l alice
+= usermod -L alice
+E> -l = lock。
+
+@CARD user.remove | 帳號離職與刪除
+A> 員工離職：先收回所有鑰匙（撤銷存取）、備份他的資料、盤點他負責的東西（cron、郵件、檔案），最後才把名字從名冊刪掉。刪了帳號，他留在各處的檔案還在，只是擁有者變成「一個沒人認領的號碼」，若這個號碼之後給新人，新人就會「繼承」那些檔案。
+B> 盤點：擁有的檔案、mail、cron、keys、processes、外部憑證
+B> 先**確認備份、撤銷存取**，再刪除本機紀錄
+B> **deluser alice**：預設**保留家目錄**；**deluser --remove-home alice** 需核准
+B> 低階：**userdel alice**（-r 刪家目錄）
+B> 刪帳號**不會刪掉它所有檔案**；UID 重新使用前，要先處理以舊 UID 擁有的檔案
+?mc 刪除帳號後，若該 UID 被分配給新使用者，最大的風險是？
++ 新使用者會擁有舊帳號遺留在系統各處的檔案
+- 新使用者無法登入
+- 新使用者登入時會看到舊使用者的密碼提示
+- 新使用者的密碼會和舊使用者相同
+E> 檔案以數字 UID 記錄擁有者。
+?cmd 在 Debian 上刪除帳號 alice，並一併刪除其家目錄：
+= deluser --remove-home alice
+= userdel -r alice
+E> deluser 預設保留家目錄。
+
+@CARD user.root | Superuser 的權限與邊界
+A> root 是「大樓萬能鑰匙」：檔案、process、裝置、系統設定都能動。平常用自己的名牌上班，需要時才短暫借用萬能鑰匙。
+B> UID 0 可以：改網路設定、關機、改檔案擁有者、調整資源限制、綁定 1024 以下的 port、掛載檔案系統、載入 kernel module、修改其他使用者密碼…
+B> Linux **capabilities** 與 **namespace** 可以切分或限制 root 權力；FreeBSD jails、securelevel 也能限制
+B> 實務：日常用具名帳號，特定管理工作時才提權
+?sa 試舉三個需要 root 權限才能執行的任務。
+S> 2023 期中 Q6
+R> ① 新增 / 刪除使用者或修改其他人的密碼（寫入 /etc/passwd、/etc/shadow）。
+R> ② 把檔案擁有者改成其他使用者（chown），或修改不屬於自己的系統檔（如 /etc 下的設定）。
+R> ③ 讓服務綁定 1024 以下的 privileged port（如 80、22）。
+R> 其他：mount / umount 檔案系統、關機 / 重開機、修改網路設定（ip addr add）、載入 kernel module、把 process 的 nice 值調低（提高優先權）、安裝系統套件、修改系統時間。
+P> 舉出三個合理且確實需要 root 的任務
+?mc 一般使用者想要做下列何事時「需要」root 權限？
++ 把自己 process 的 nice 值從 0 調成 -5
+- 把自己 process 的 nice 值從 0 調成 10
+- 在自己家目錄建立檔案
+- 用 ssh 連到別台主機
+E> 降低 nice（提高優先權）需要特權。
+
+@CARD user.sshroot | Root 登入與 SSH 政策
+A> PermitRootLogin no 是「大門不准萬能鑰匙直接進來」；prohibit-password 是「萬能鑰匙可以進，但只能刷卡（公鑰），不能報密碼」。關門前先確認你自己的名牌能進來並且能借到萬能鑰匙，不然會把自己鎖在外面。
+B> Root 的 console 存取與 SSH 存取是**不同的政策**
+B> **PermitRootLogin no**：禁止 root 直接 SSH 登入
+B> **prohibit-password**：仍允許非密碼方式（如公鑰）
+B> 限制 root 前，先確認具名管理員能登入並提權
+B> 改設定後 **sshd -t** 檢查語法；Include 與 **Match** 區塊會影響實際政策；保留現有連線並測試新連線
+?mc sshd_config 中 PermitRootLogin prohibit-password 代表？
++ root 不能用密碼 SSH 登入，但可用公鑰等非密碼方式
+- root 完全不能 SSH 登入，連公鑰也不行
+- root 不能用密碼登入；其他使用者也一併禁止使用密碼
+- 所有使用者都不能用密碼登入，只有 root 例外
+E> no 才是完全禁止。
+?cmd 修改 sshd_config 後，檢查語法是否正確（不重啟服務）：
+= sshd -t
+= /usr/sbin/sshd -t
+E> 通過後再 reload，並保留現有連線、另開新連線測試。
+?mc 把 PermitRootLogin 改成 no 之前，最重要的準備是？
++ 確認至少有一個具名的管理員帳號可以登入並用 sudo 提權
+- 先刪除 root 帳號，避免它被拿來當作登入的目標
+- 把 root 的 shell 改成 nologin
+- 把 root 的密碼改得更長、更複雜，避免被人從外面暴力破解登入
+E> 否則可能把自己鎖在外面。
+
+@CARD user.su | su、su -、sudo
+A> su 是「借穿別人的制服，但口袋裡還是你自己的東西」（保留大部分環境）；su - 是「完全換成那個人的身分，連口袋都換」（login 環境）；sudo 是「拿著自己的工作證，在允許清單內代為辦一件事」。
+B> **su alice**：切換身分，保留大部分環境（依 PAM/平台政策認證）
+B> **su - alice**：以**目標使用者的 login 環境**啟動 shell
+B> **sudo command**：依 **sudoers** 政策以另一身分執行授權的操作
+B> **sudo -u user command**：指定目標身分
+B> 環境變數的處理依實作與設定而定，不要假設
+B> su 要輸入**目標**使用者的密碼；sudo 輸入**自己**的密碼
+?sa Unix 系統下一般帳號取得 root 權限主要是透過 su 與 sudo。a. 相較於 su 指令，試舉三個 sudo 的好處。 b. 編輯 sudoers 檔案應透過什麼指令？
+S> 2023 期中 Q8
+R> a. ① 不需要把 root 密碼告訴其他管理員，使用者輸入自己的密碼即可，人員異動也不用改 root 密碼；② 權限可以細分，sudoers 能限定誰在哪台主機、以誰的身分、可以執行哪些指令（最小權限）；③ 每次執行都會記錄 log（誰、何時、做了什麼），方便稽核追蹤；④ 只提權單一指令、有 timestamp 逾時，不會長時間停留在 root shell，降低誤操作風險。
+R> b. 用 visudo（會鎖定檔案並在儲存前檢查語法，避免把 sudoers 改壞），Debian 也可放在 /etc/sudoers.d/ 並以 visudo -c 檢查。
+P> 不需共享 root 密碼
+P> 可細分權限（指令、主機、身分）
+P> 有 log 可稽核 / 單一指令提權
+P> b. visudo
+?mt 配對指令：
+> su - alice :: 以 alice 的 login 環境開 shell
+> sudo -u nobody id :: 以 nobody 身分執行 id
+> sudo -l :: 列出自己可用的 sudo 權限
+> visudo :: 安全地編輯 sudoers
+E> sudo -l 用來檢查有效權限。
+?tf 使用 sudo 時要輸入的是 root 的密碼。
+=F
+E> 預設輸入自己的密碼；su 才需要目標帳號的密碼。
+
+@CARD user.visudo | visudo 與 sudoers 語法
+A> sudoers 每條規則回答四個問題：「誰」可以在「哪台主機」上，「以誰的身分」執行「什麼指令」。visudo 是編輯它唯一的安全方式：它會先上鎖、存檔前檢查文法，避免一個錯字讓所有人都不能 sudo。
+B> **visudo** 鎖定檔案並在安裝前檢查語法；**visudo -c** 檢查
+B> Debian：**/etc/sudoers** + 引入的 **/etc/sudoers.d/**
+B> **sudo -l** 檢視有效權限；sudo 會記錄 log
+B> 語法：**user host = (runas) command**
+B> 群組前加 **%**：%lab ALL = (root) /usr/bin/id -u
+B> 只寫指令不寫參數 → 允許**任意參數**
+X> alice ALL = (root) /usr/bin/id -u
+X> %sudo ALL=(ALL:ALL) ALL
+?mt 解讀 alice ALL = (root) /usr/bin/id -u：
+> alice :: 誰可以使用 sudo
+> ALL（第一個） :: 適用的主機
+> (root) :: 以哪個身分執行
+> /usr/bin/id -u :: 允許的指令與參數
+E> user host = (runas) command。
+?fill sudoers 中要指定「群組」lab，名稱前要加＿＿
+= %
+E> %lab。
+?cmd 檢查 sudoers 語法是否正確（不進入編輯）：
+= visudo -c
+E> -c = check。
+
+@CARD user.alias | sudoers Aliases 與白名單
+A> Alias 是「幫一群東西取個團名」：User_Alias 是一群人、Runas_Alias 是一群可變成的身分、Cmnd_Alias 是一組指令。允許清單（allowlist）要「只開需要的門」，而不是「全開再關掉幾扇」。
+B> **User_Alias**、**Runas_Alias**、**Host_Alias**、**Cmnd_Alias**
+B> 窄的 allowlist 比「給 ALL 再扣掉幾個程式」容易審查
+B> 測試**允許**與**被拒絕**的呼叫
+X> User_Alias LAB_TA = alice, bob
+X> Runas_Alias REPORT = nobody
+X> Cmnd_Alias WHOAMI = /usr/bin/id -u
+X> LAB_TA ALL = (REPORT) WHOAMI
+?mc 上例中，bob 可以執行哪個指令？
+QX> User_Alias LAB_TA = alice, bob
+QX> Runas_Alias REPORT = nobody
+QX> Cmnd_Alias WHOAMI = /usr/bin/id -u
+QX> LAB_TA ALL = (REPORT) WHOAMI
++ sudo -u nobody /usr/bin/id -u
+- sudo /usr/bin/id -u（以 root 執行）
+- sudo -u nobody /bin/sh
+- sudo -u root /usr/bin/id -u
+E> 只能以 nobody 身分執行 /usr/bin/id -u。
+?mt 配對 sudoers 的 alias 類型：
+> User_Alias :: 一組使用者
+> Runas_Alias :: 可以切換成的目標身分
+> Host_Alias :: 一組主機
+> Cmnd_Alias :: 一組指令
+E> 用 alias 組成窄的白名單，比「ALL 再扣掉幾個」容易審查。
+?tf 在 sudoers 中，「列出允許的指令」比「允許全部再排除幾個危險指令」更安全也更容易審查。
+=T
+E> 黑名單永遠列不完，換個路徑或用直譯器就能繞過。
+
+@CARD user.escape | 指令限制的逃脫路徑
+A> 給某人「只能用 vim 編輯檔案」的 sudo 權限，就像給他「只能用萬能鑰匙開儲藏室」，但儲藏室裡有一扇通往全大樓的暗門（vim 的 :!sh）。編輯器、pager、直譯器都可能開出 shell。
+B> 編輯器、pager（less）、直譯器、某些工具可以**啟動其他指令**
+B> 被允許的程式可能提供寫檔或選項，導致比預期更多的權限
+B> 對已有 ALL 權限的帳號，**拒絕幾個 shell 路徑沒有用**
+B> 檢查參數、可寫的執行檔、設定檔、程式完整行為
+B> 複雜操作：用審查過、**root 擁有、行為固定**的 helper，嚴格限制輸入
+?mc 為什麼「允許 alice 以 root 執行 /usr/bin/vim」很危險？
++ vim 可以用 :!sh 開出 root shell，等於給了完整 root 權限
+- vim 執行時會自動覆寫 /etc/sudoers，把 alice 加入 ALL 權限
+- vim 沒有 setuid，所以 sudo 會拒絕執行它並記錄告警
+- vim 以 root 執行會佔用大量記憶體，讓整個系統變慢
+E> 編輯器、pager、直譯器都是常見的逃脫路徑。
+?mc 管理員給 bob「sudo ALL，但禁止 /bin/bash 與 /bin/sh」。為什麼這樣擋不住 bob 拿到 root shell？
++ 他可以複製 shell 到別的路徑，或透過編輯器、直譯器、其他 shell 啟動指令
+- 因為 sudoers 不支援用 ! 排除指令，那兩行規則會被忽略
+- 因為 /bin/bash 是 symlink，sudo 比對的是 symlink 指向的實際路徑
+- 因為 root 沒有設定密碼，所以 sudo 不會檢查任何限制
+E> 對已有 ALL 權限的帳號，拒絕幾個 shell 路徑沒有用。
+
+@CARD user.nopasswd | NOPASSWD 與管理群組
+A> NOPASSWD 只是「刷卡進門不用再輸密碼」，不會讓權限變小。NOPASSWD: ALL 等於「一張不用驗證的萬能卡」，自動化很方便但風險很大。
+B> **NOPASSWD** 只是對該規則跳過密碼提示，**不會減少**授予的權限
+B> **NOPASSWD: ALL** 等於無人值守的廣泛管理權限
+B> Debian 常見：**%sudo ALL=(ALL:ALL) ALL**；要同時審查群組成員與規則
+X> alice ALL=(root) NOPASSWD: /usr/bin/id -u
+?tf 在 sudoers 規則加上 NOPASSWD，會讓該規則授予的權限變小，比較安全。
+=F
+E> 只是不問密碼，權限一樣大。
+?cmd 寫一條 sudoers 規則：讓 sudo 群組的成員可以不輸入密碼執行任何指令（HW 常要求）：
+= %sudo ALL=(ALL:ALL) NOPASSWD: ALL
+= %sudo ALL=(ALL:ALL) NOPASSWD:ALL
+= %sudo ALL=(ALL) NOPASSWD: ALL
+= %sudo ALL=(ALL) NOPASSWD:ALL
+E> 方便但等同無人看管的 root，只在作業環境使用。
+
+@CARD user.p_check | 實作：確認帳號與群組的真實狀態
+A> 帳號的資料散在好幾本帳冊（passwd、shadow、group），還可能來自 LDAP。與其去翻檔案，不如直接問系統「它現在怎麼看這個人」：id 給你身分證、getent 給你帳冊上那一行。
+B> **id 使用者**：UID、主要群組、所有附加群組；**groups 使用者**：只列群組
+B> **getent passwd 名稱** / **getent group 名稱**：透過 NSS 查，結果與系統實際看到的一致
+B> 群組變更**不會影響已登入的 session**：要重新登入，或 `newgrp 群組` 開一個新 shell；所以「usermod -aG 之後還是沒權限」先重新登入再測
+B> 以別人的身分測試權限：**sudo -u sftp-u1 ls /mnt/hw2/sftp/public**、**sudo -u anonymous touch x**
+B> 查密碼狀態：**passwd -S 使用者**（L 鎖定、P 有密碼、NP 無密碼）；**chage -l** 看到期設定
+X> id sftp-u1
+X> getent group sftpusers
+X> sudo -u sftp-u1 touch /mnt/hw2/sftp/public/t && echo "can write"
+?cmd 以 sftp-u1 的身分執行 `ls /mnt/hw2/sftp/private`，測試他能不能列出內容：
+= sudo -u sftp-u1 ls /mnt/hw2/sftp/private
+E> 驗證權限設計時，用 sudo -u 模擬各個角色最快。
+?mc 執行 `usermod -aG docker alice` 後，alice 在原本的 SSH 視窗執行 docker 還是 permission denied。最可能的原因？
++ alice 需要重新登入
+- -aG 寫錯，應該用 -G
+- docker 群組不存在
+- 需要重新開機
+E> 群組成員資格在登入時決定，alice 需要重新登入（或 newgrp）用 id 看目前 session 的群組，就會發現 docker 不在裡面。
+?cmd 透過 NSS 查詢 sysadm 這個帳號在 passwd 資料庫中的那一行：
+= getent passwd sysadm
+E> 若帳號來自 LDAP 等外部來源，直接 cat /etc/passwd 會找不到，getent 才會。
+
+@CARD user.p_sftpacct | 實作：只能 SFTP 的帳號怎麼建
+A> SFTP 專用帳號像「只能進倉庫領貨、不能進辦公室的廠商」：帳號要存在、要能用金鑰認證，但登入後只能做檔案傳輸。擋 shell 的主力是 sshd 的 ForceCommand internal-sftp；login shell 設成 nologin 是第二道保險。
+B> 建立：`useradd -m -s /usr/sbin/nologin sftp-u1`（-m 建家目錄，-s 指定 shell）；改既有帳號：`usermod -s /usr/sbin/nologin 名稱`
+B> 用共同群組管理權限：`groupadd sftpusers`、`usermod -aG sftpusers sftp-u1`
+B> 金鑰：每個帳號的 **~/.ssh/authorized_keys**（題目要求與 judge 相同的公鑰，可以複製 judge 的那份），然後把擁有者與權限設對：`chown -R 使用者: ~使用者/.ssh`、700 / 600
+B> 家目錄不在 chroot 裡也沒關係：sshd 在 chroot **之前**就讀取 authorized_keys
+B> 帳號沒有設密碼時，shadow 裡是 `!`（鎖定）；用 nologin + 金鑰的帳號可以不設密碼
+X> groupadd sftpusers
+X> for u in sftp-u1 sftp-u2 anonymous; do
+X>   useradd -m -s /usr/sbin/nologin "$u"
+X>   install -d -m 700 -o "$u" -g "$u" /home/$u/.ssh
+X>   install -m 600 -o "$u" -g "$u" /home/judge/.ssh/authorized_keys /home/$u/.ssh/
+X> done
+X> usermod -aG sftpusers sftp-u1; usermod -aG sftpusers sftp-u2
+?cmd 建立帳號 sftp-u1，同時建立家目錄，並把 login shell 設成 /usr/sbin/nologin：
+= useradd -m -s /usr/sbin/nologin sftp-u1
+= useradd -s /usr/sbin/nologin -m sftp-u1
+E> Debian 也可用 adduser，但 useradd 的選項比較好寫進腳本。
+?mc 帳號的 login shell 是 /usr/sbin/nologin，sshd 對它設了 ForceCommand internal-sftp。它能不能用 sftp 登入？
++ 可以；internal-sftp 在 sshd 內部執行，不需要使用者的 shell
+- 不行，nologin 會在 SSH 認證階段就拒絕所有連線
+- 只有密碼登入可以，金鑰登入需要可用的 shell
+- 要先把 /usr/sbin/nologin 加進 /etc/shells 才行
+E> 若用外部的 sftp-server 而不是 internal-sftp，就會需要能執行的 shell。
+?tf sshd 讀取 authorized_keys 的時機在 chroot 之前，所以 SFTP 使用者的家目錄可以在 chroot 範圍之外。
+=T
+E> 認證先完成，通過之後才 chroot 進指定目錄。
+
+@CARD user.p_sudo | 實作：sudoers 安全修改與排錯
+A> sudoers 寫錯一個字，可能整台機器都沒人能 sudo，所以一定要經過 visudo 這個「會先檢查文法的編輯器」。規則是由上往下讀、**最後一條符合的規則勝出**，這解釋了大部分「明明寫了 NOPASSWD 卻還是問密碼」的問題。
+B> 編輯：**visudo**（主檔）、**visudo -f /etc/sudoers.d/judge**（附加檔）；只檢查：**visudo -c**
+B> /etc/sudoers.d/ 內的檔名**不能有 . 或以 ~ 結尾**，否則會被略過；權限應為 0440
+B> 範例：`judge ALL=(ALL:ALL) NOPASSWD: ALL`；群組前加 %：`%sudo ALL=(ALL:ALL) ALL`
+B> **最後符合的規則生效**：使用者若同時在 sudo 群組，而 %sudo 那行排在你的 NOPASSWD 之後，就會又要密碼 → 把自己的規則放在後面（@includedir 在主檔最後，所以 sudoers.d 通常會贏）
+B> 查某人最後到底有哪些權限：**sudo -l -U 使用者**
+X> echo 'judge ALL=(ALL:ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/judge
+X> sudo chmod 0440 /etc/sudoers.d/judge
+X> sudo visudo -c
+X> sudo -l -U judge
+?cmd 檢查 sudoers 主檔與所有 include 檔案的語法是否正確：
+= visudo -c
+= sudo visudo -c
+E> 用 tee 或 echo 直接寫入 sudoers.d 之後，一定要跑這行。
+?mc 在 /etc/sudoers.d/ 建立了 judge.conf 寫入 NOPASSWD 規則，但完全沒有生效。原因最可能是？
++ 檔名含有 .，被 sudo 略過
+- 需要重新開機
+- 要先 systemctl restart sudo
+- NOPASSWD 只能寫在主檔
+E> sudoers.d 內含 . 或以 ~ 結尾的檔名都會被忽略（避免讀到 .bak、.swp）。
+?mc 同時符合兩條 sudoers 規則（一條要密碼、一條 NOPASSWD）時，以哪一條為準？
++ 檔案中較後面（最後符合）的那一條
+- 檔案中較前面（最先符合）的那一條
+- 兩條中比較寬鬆的那一條
+- 兩條中比較嚴格的那一條
+E> sudoers 是「last match wins」。
+?cmd 列出 judge 這個使用者可以透過 sudo 執行哪些指令：
+= sudo -l -U judge
+= sudo -U judge -l
+E> 不加 -U 則是查目前使用者自己。

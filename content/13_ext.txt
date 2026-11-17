@@ -1,0 +1,379 @@
+@CH ext1 | 考古延伸①：Docker 考古、儲存、Web 與認證 | 🧭 | 歷屆考古題
+
+@CARD ext1.imgsize | 縮小 Docker image
+A> Image 是一層層疊起來的千層蛋糕，每一層一旦烤好就永遠在裡面，在後面一層「刪掉」前面的東西，蛋糕不會變輕。所以要：選小的底（slim/alpine）、同一層裡裝完就清垃圾、用 multi-stage 只把成品搬進新蛋糕、用 .dockerignore 不要把雜物帶進廚房。
+B> 用較小的 **base image**：*-slim、alpine、distroless、scratch
+B> **Multi-stage build**：編譯在 builder stage，最後 stage 只 COPY --from 成品
+B> **合併 RUN 並在同一層清理**：apt-get install --no-install-recommends … && rm -rf /var/lib/apt/lists/*（在不同層刪除不會變小）
+B> **.dockerignore** 排除 .git、node_modules、測試資料等不必要的 build context
+B> 只安裝 runtime 需要的套件；移除 build 工具與快取（pip --no-cache-dir）
+?sa 如何在維持相同功能狀況下減少 docker build 出來的 Docker image 大小？列出至少三種方式。
+S> 2025 期末 Q5
+R> ① 使用較小的 base image，例如 debian:trixie-slim、alpine、distroless 取代完整版 image。
+R> ② 使用 multi-stage build：在前面的 stage 安裝編譯工具並 build，最後的 stage 只用乾淨的 runtime image 並 COPY --from=builder 需要的執行檔 / 產物，編譯器與原始碼不會留在最終 image。
+R> ③ 減少 layer 並在同一個 RUN 中清理：把多個 RUN 合併，安裝後立即刪除套件快取（apt-get install --no-install-recommends … && rm -rf /var/lib/apt/lists/*、pip --no-cache-dir），因為在後面的 layer 刪除檔案不會讓前面 layer 變小。
+R> ④ 使用 .dockerignore 排除不需要的檔案（.git、測試資料、node_modules），避免被 COPY 進 image。
+R> ⑤ 只安裝必要套件、移除 build-time 依賴。
+P> 較小的 base image
+P> multi-stage build
+P> 同一層 RUN 內清除快取 / 合併 layer
+P> .dockerignore 或只裝必要套件
+?mc 下列 Dockerfile 寫法，哪個無法讓最終 image 變小？
++ 先 RUN install build-essential，另起一個 RUN 再 purge 掉
+- 在同一個 RUN 裡安裝套件，最後再 rm -rf /var/lib/apt/lists/* 清掉套件索引
+- 改用 debian:trixie-slim 當基底，少掉許多預設安裝的套件
+- 用 multi-stage build，最後一個 stage 只複製編譯好的執行檔
+E> 後面的 layer 刪除，前面 layer 的內容仍在 image 中。
+
+@CARD ext1.multistage | Multi-stage build 的使用時機
+A> Multi-stage 像「在工廠做好家具，只把成品搬進新家」：工廠裡的鋸子、刨木屑（編譯器、原始碼、dev 套件）都不會跟進家門。所以只要「建置時需要、執行時不需要」的東西很多，就適合用。
+B> 適用：**build-time 依賴在 runtime 不需要**時
+B> 例：編譯語言（C/C++、Go、Rust、Java）先編譯，最後只拷貝 binary / jar；前端專案 npm build 後只把靜態檔放進 nginx image
+B> 好處：image 更小、攻擊面更小、不洩漏原始碼 / 建置憑證
+X> FROM golang:1.23 AS builder
+X> WORKDIR /src
+X> COPY . .
+X> RUN go build -o app
+X> FROM debian:trixie-slim
+X> COPY --from=builder /src/app /usr/local/bin/app
+X> CMD ["app"]
+?sa 在何種情況下可以在 docker build 時使用 multi-stage building 技巧？
+S> 2025 期末 Q6
+R> 當建置（build）過程需要的工具或依賴，在執行（runtime）時並不需要的情況。例如需要編譯器、SDK、dev headers 來編譯程式（C/Go/Rust/Java），或前端需要 Node.js 與 npm 套件來 build 靜態檔，但最後執行只需要編譯出的 binary 或靜態檔。這時可在第一個 stage 安裝工具並 build，最後的 stage 以精簡的 base image 並用 COPY --from=<stage> 只複製產物，最終 image 不含 build 工具與原始碼，更小也更安全。
+P> build-time 需要但 runtime 不需要的依賴
+P> 舉例（編譯型語言 / 前端 build）並說明只複製產物
+?fill 在後面的 stage 從名為 builder 的 stage 複製檔案：COPY --from=＿＿ /src/app /app
+= builder
+E> AS 命名 stage，COPY --from 引用。
+
+@CARD ext1.secrets | Docker：環境變數 vs secrets
+A> 環境變數像「把密碼寫在名牌上」：方便，但任何能看你名牌的人（docker inspect、/proc/<pid>/environ、子程序、log）都看得到。Secret 像「放在只有你能開的保險箱」：以檔案形式掛在 /run/secrets/ 下的 tmpfs，只有被授權的服務拿得到。
+B> **環境變數**：-e / --env-file / compose environment:；程式讀 $VAR；簡單通用
+B> 風險：**docker inspect** 看得到、**/proc/<pid>/environ**、child process 繼承、可能被印進 log / crash dump；若寫在 Dockerfile **ENV** 會留在 image layer
+B> **Secrets**（Swarm / Compose）：以**檔案**掛在 **/run/secrets/<name>**（記憶體 tmpfs），Swarm 中加密儲存與傳輸，只給被授權的 service；不出現在 inspect / 環境中
+B> 限制：程式要支援從檔案讀（常見 *_FILE 慣例，如 POSTGRES_PASSWORD_FILE）；需要 Swarm / Compose；Swarm secret 不可變（輪替要建新的）、大小有上限（約 500KB）
+?sa 在 Docker 容器中設定機敏資料（例如資料庫密碼）時，可以使用環境變數或 secrets，請從使用方式、安全性以及限制三個方面分析兩者的不同。
+S> 2025 期末 Q23
+R> 使用方式：環境變數透過 docker run -e、--env-file 或 compose 的 environment: 設定，程式直接讀環境變數；secrets 透過 Docker Swarm 或 Compose 的 secrets: 定義並指派給 service，在容器中以檔案形式出現在 /run/secrets/<name>，程式要去讀檔（很多官方 image 支援 XXX_FILE 變數指定檔案路徑）。
+R> 安全性：環境變數是明文存在 container 設定中，docker inspect、/proc/<pid>/environ 都看得到，會被所有子程序繼承，也容易被意外印到 log 或錯誤報告；寫在 Dockerfile ENV 甚至會留在 image layer。Secrets 不會出現在 inspect 與環境變數中，以 tmpfs（記憶體）掛載、不落地，Swarm 中在 Raft log 加密、傳輸加密，只有被授權的 service 能存取。
+R> 限制：環境變數幾乎所有程式都支援、最簡單，但不適合高敏感資料；secrets 需要 Swarm 或 Compose 支援（單純 docker run 沒有）、程式必須支援從檔案讀取、Swarm secret 建立後不可修改（要輪替需建新 secret 並更新 service）、大小有上限。
+P> 使用方式：env 透過 -e/environment；secret 以檔案 /run/secrets 提供
+P> 安全性：env 可被 inspect / proc / log 洩漏；secret 不在環境中、tmpfs、加密、限定 service
+P> 限制：secret 需 Swarm/Compose、程式要讀檔、不可變等
+?fill Docker secret 在容器內預設以檔案出現在 /run/＿＿/<name>
+= secrets
+E> /run/secrets/。
+
+@CARD ext1.compose | Docker Compose 網路與服務名稱解析
+A> Compose 幫你的專案開一個「私人社區網路」（user-defined bridge），社區裡有一位內建的「管理員」（Docker embedded DNS，127.0.0.11）。你喊「db」，管理員就告訴你 db 那個 container 在社區裡的 IP。
+B> Compose 預設為專案建立一個 **user-defined bridge network**（<project>_default）
+B> user-defined network 有 **Docker 內建 DNS server（127.0.0.11）**，把 **service 名稱**（以及 container 名稱、alias）解析成 container 的 IP
+B> 拿到的是該 container 在**這個 Compose 網路上的內部 IP**（不是 host IP、不是 published port）；scale 多個副本時解析到多個 IP
+B> 預設的 docker0 bridge（沒用 Compose 的 docker run）**沒有**這種名稱解析
+?sa 在 Docker Compose 預設的 bridge network 中，不同的 service 之間為何可以使用 hostname 連線？使用 hostname 連線時他們會拿到哪個 IP？
+S> 2025 期末 Q26
+R> Compose 會為專案建立一個 user-defined bridge network，並把每個 service 的 container 接上去、以 service 名稱註冊為網路別名。Docker 在 user-defined network 上提供內建 DNS server（容器內的 127.0.0.11），容器查詢其他 service 的名稱時，由它解析，所以可以直接用 service 名稱當 hostname 連線。
+R> 解析得到的是目標 container 在這個 Compose 網路上的內部（私有）IP，例如 172.18.0.x，而不是 host 的 IP 或對外 publish 的 port；若該 service 有多個副本則會回傳多個 container IP。
+P> Compose 建立 user-defined bridge，Docker embedded DNS 解析 service 名稱
+P> 拿到目標 container 在該網路的內部 IP
+?tf 在 Compose 中，web 服務連 db:5432 時，需要先把 db 的 5432 用 -p publish 到 host。
+=F
+E> 同一個 Compose 網路內直接用內部 IP 與 container port 溝通，不需 publish。
+
+@CARD ext1.nfsiscsi | NFS vs iSCSI
+A> NFS 是「共享資料夾」：伺服器管檔案系統，大家用網路來拿「檔案」，可以多人同時存取；iSCSI 是「用網路線接一顆硬碟」：伺服器只提供「一整塊空白的區塊裝置」，client 自己格式化、自己管檔案系統，通常一次只給一台用（否則檔案系統會壞）。
+B> **NFS**：**檔案層級（file-level）**共享；檔案系統在 server 端；多個 client 可**同時掛載**存取同一批檔案；權限 / 鎖由 server 處理
+B> **iSCSI**：**區塊層級（block-level）**，把 SCSI 指令封裝在 TCP/IP 中；client（initiator）看到的是一顆 **raw 磁碟**（target 的 LUN），自己 mkfs、自己管檔案系統；一般**不可多台同時掛載**一般檔案系統（除非用 cluster FS）
+B> 適用：NFS → 多台主機共享家目錄、共用資料夾、web 叢集共用靜態檔；iSCSI → VM 磁碟映像、資料庫儲存、需要區塊裝置 / 開機磁碟、較好的效能
+?sa 請比較並說明 2 點 NFS 與 iSCSI 的差異，並分別舉例說明什麼情況適合使用它們。
+S> 2025 期末 Q9
+R> 差異 1（層級）：NFS 是檔案層級的網路檔案系統，server 管理檔案系統，client 透過網路存取「檔案」；iSCSI 是區塊層級協定，把 SCSI 指令封裝在 TCP/IP 上，client 看到的是一顆原始磁碟（block device），由 client 自己建立與管理檔案系統。
+R> 差異 2（共享性）：NFS 天生支援多個 client 同時掛載並存取同一批檔案，鎖與權限由 server 協調；iSCSI 的 LUN 通常只給一台主機使用，多台同時掛載一般檔案系統（ext4 等）會造成資料損毀，除非使用 cluster filesystem。
+R> （其他差異：iSCSI 效能較接近本機磁碟、可當開機碟；NFS 設定簡單、可直接在 server 端備份檔案。）
+R> 適用情境：NFS 適合多台機器共享家目錄、共用資料夾、web 叢集共享靜態檔案；iSCSI 適合需要專屬區塊裝置的情況，例如 VM 的虛擬磁碟、資料庫的儲存空間、無碟主機的開機磁碟。
+P> 檔案層級 vs 區塊層級
+P> 多 client 共享 vs 通常單一主機獨占（client 自己管 FS）
+P> NFS 適用情境舉例
+P> iSCSI 適用情境舉例
+?mt 配對 NFS / iSCSI：
+> client 看到一顆 raw 磁碟，自己 mkfs :: iSCSI
+> 多台主機同時掛載共享檔案 :: NFS
+> 檔案系統由 server 管理 :: NFS
+> 適合當 VM 的虛擬磁碟 :: iSCSI
+E> file-level vs block-level。
+
+@CARD ext1.acme | ACME http-01 challenge
+A> 證明「這個網址是我的」：CA 給你一個暗號（token），你把寫著暗號 + 你帳號指紋的紙條貼在自己網站的指定位置（/.well-known/acme-challenge/<token>），CA 從外面連過來看，看到了就相信網站是你在控制。
+B> ACME client（如 Certbot）向 CA（Let's Encrypt）下單，CA 給 **token**
+B> client 在網站放檔案：**http://<domain>/.well-known/acme-challenge/<token>**，內容為 **key authorization**（token + 帳號公鑰 thumbprint）
+B> CA 透過 **HTTP port 80** 對該網域發出請求；內容正確 → 證明控制該網域的 web server → 簽發憑證
+B> http-01 **不支援 wildcard（*.example.com）**：它只能驗證「某一個特定 hostname」能被連到，無法證明你控制整個網域底下所有子網域；Let's Encrypt 規定 wildcard 必須用 **dns-01**（在 _acme-challenge.<domain> 放 TXT record，證明控制 DNS zone）
+?sa 請簡單說明 ACME http-01 challenge 的核心運作原理。ACME client（例如 Certbot）該如何證明它擁有某個特定網域的控制權？
+S> 2025 期末 Q24
+R> ACME client 向 CA 申請某網域的憑證時，CA 會發出一個 http-01 challenge，內含隨機 token。Client 要在該網域的 web server 上，把內容為 key authorization（token 加上 ACME 帳號公鑰的 thumbprint）的檔案放在 http://<domain>/.well-known/acme-challenge/<token>，然後通知 CA 可以驗證。
+R> CA 從多個網路位置透過 HTTP（port 80）去存取這個 URL，若取得的內容與預期相符，就證明申請者能控制該網域所指向的 web server，因此擁有該網域的控制權，CA 便簽發憑證。
+P> CA 發 token；client 放檔案到 /.well-known/acme-challenge/<token>
+P> 內容為 key authorization（token + 帳號金鑰 thumbprint）
+P> CA 經 HTTP 80 存取驗證，成功即證明控制權
+?sa 為什麼 ACME http-01 challenge 沒辦法支援萬用字元憑證（wildcard certificate）？
+S> 2025 期末 Q25
+R> http-01 是由 CA 對「一個具體的 hostname」發出 HTTP 請求來驗證，只能證明你控制該 hostname 所指向的那台 web server。Wildcard 憑證 *.example.com 涵蓋的是無限多個（甚至尚未存在的）子網域，CA 無法對 * 發出 HTTP 請求，也無法逐一驗證所有子網域；能控制某台 web server 並不代表能控制整個網域。
+R> 要證明擁有整個網域的控制權，必須證明能修改該網域的 DNS，因此 ACME（Let's Encrypt）規定 wildcard 憑證只能使用 dns-01 challenge（在 _acme-challenge.example.com 放指定的 TXT record）。
+P> http-01 只能驗證特定 hostname 的 web server
+P> wildcard 涵蓋無限子網域，無法用 HTTP 驗證，需證明控制整個 DNS zone
+P> 必須改用 dns-01
+?mc 想申請 *.example.com 的 Let's Encrypt 憑證，必須使用哪種 challenge？
++ dns-01
+- http-01
+- tls-alpn-01
+- 任何一種都可以
+E> wildcard 需要 dns-01。
+
+@CARD ext1.oauth | OAuth2 client credentials 與 OIDC discovery
+A> Client credentials flow 是「機器對機器的員工證」：沒有使用者在場，服務直接拿自己的帳號密碼（client_id / client_secret）去櫃台（token endpoint）換一張通行證（access token）。OIDC 的 /.well-known/openid-configuration 是「這家認證中心的服務目錄」，client 讀它就知道該去哪個窗口辦事。
+B> **Client credentials flow**：**machine-to-machine**，沒有使用者參與；client 以 **client_id + client_secret**（或 private key JWT）直接向 **token endpoint** 送 grant_type=client_credentials，取得 **access token** 去呼叫 API；通常沒有 refresh token
+B> **OIDC discovery**：GET **/.well-known/openid-configuration** 回傳 JSON metadata，讓 client 自動設定
+B> 可取得：**issuer**、**authorization_endpoint**、**token_endpoint**、**userinfo_endpoint**、**jwks_uri**（驗 ID token 簽章的公鑰）、scopes_supported、response_types_supported、grant_types_supported、id_token_signing_alg_values_supported、end_session_endpoint
+?sa 請說明 OpenID Provider 的 /.well-known/openid-configuration 有何作用？並列出三種可以從該端點獲取的資訊。
+S> 2025 期末 Q27
+R> 這是 OpenID Connect 的 discovery 端點，回傳一份 JSON 格式的 provider metadata，讓 client（Relying Party）不用手動寫死各種 URL 與設定，只要知道 issuer 就能自動探索並設定與該 OpenID Provider 互動所需的資訊。
+R> 可取得的資訊例如：issuer（發行者識別）、authorization_endpoint（授權端點）、token_endpoint（換 token 的端點）、userinfo_endpoint（取得使用者資訊）、jwks_uri（驗證 ID token 簽章用的公鑰集合）、scopes_supported、response_types_supported、grant_types_supported、id_token_signing_alg_values_supported。
+P> 作用：discovery，提供 metadata 讓 client 自動設定
+P> 列出三項正確資訊（如 authorization / token endpoint、jwks_uri、issuer）
+?sa 請簡單說明 OAuth2 中的 client credentials flow。
+S> 2025 期末 Q28
+R> Client credentials flow 用於機器對機器（服務對服務）的授權，沒有終端使用者參與。Client 事先在授權伺服器註冊取得 client_id 與 client_secret；需要存取 API 時，直接向授權伺服器的 token endpoint 發送請求（grant_type=client_credentials，附上 client 認證與要求的 scope），授權伺服器驗證 client 身分後回傳 access token，client 再帶著這個 access token 去呼叫 resource server 的 API。權限代表的是 client 本身而非某位使用者，通常不發 refresh token。
+P> machine-to-machine，沒有使用者
+P> client_id / secret 直接到 token endpoint 換 access token
+P> 用 access token 存取 API
+?mt 配對 OIDC metadata 欄位：
+> token_endpoint :: 用授權碼或 client 憑證換取 token 的位置
+> jwks_uri :: 驗證簽章用的公鑰集合
+> authorization_endpoint :: 導向使用者登入 / 授權的位置
+> issuer :: Provider 的識別字串
+E> 這些都在 /.well-known/openid-configuration 中。
+
+@CARD ext1.tls | TLS 與 CA
+A> TLS 握手像「先用掛號信（非對稱加密，慢但不怕被偷看）交換一把保險箱鑰匙，之後就用這把鑰匙（對稱加密，快）傳所有東西」。向 CA 申請憑證時，你交出的是公鑰（裝在 CSR 裡）與身分證明，私鑰永遠只留在自己手上。
+B> TLS **建立連線（handshake）** 用 **非對稱加密** / 金鑰交換（RSA、(EC)DHE）與憑證驗證身分 → 協商出 **session key**
+B> 之後的資料傳輸用**對稱加密**（AES、ChaCha20），因為快
+B> 向 CA 申請憑證要提供：**公鑰**（包在 **CSR 憑證請求檔**中）、**身分證明文件**（OV/EV）；**絕不提供私鑰**
+?mc TLS/SSL「建立連線時（handshake）」使用的是哪一種加密方式？
++ 非對稱式加密
+- 對稱式加密
+- 未加密
+- 以上皆非
+S> 2023 期末 Q2
+E> 握手階段用非對稱（公鑰）機制，之後的資料傳輸才用協商出的對稱金鑰。
+?mc 下列哪一個「不是」向 CA 申請憑證所需提供的資訊？
++ 私鑰
+- 公鑰
+- 憑證請求檔（CSR）
+- 身分（公司、組織）證明文件
+S> 2023 期末 Q3
+E> 私鑰永遠不離開自己的伺服器；CSR 內含公鑰。
+
+@CARD ext1.http | HTTP/2 與 HTTP/3
+A> HTTP/1.1 像「一條單線道，前面的車卡住後面全部等」；HTTP/2 把一條 TCP 連線切成很多「虛擬車道」（multiplexing streams），還把標頭壓縮；但底下的 TCP 掉一個封包，所有車道還是一起等。HTTP/3 改走 QUIC（UDP 上），每條車道獨立，掉包只影響自己那條，而且握手更快。
+B> **HTTP/2**：**Multiplexing**（單一 TCP 連線上多個 stream 並行，解決 HTTP 層 head-of-line blocking）、**HPACK header compression**、**binary framing**、server push、stream priority
+B> **HTTP/3**：跑在 **QUIC（UDP）** 上 → 消除 **TCP 層的 head-of-line blocking**（stream 獨立）、**TLS 1.3 整合**，握手 1-RTT / **0-RTT**、**connection migration**（以 connection ID 識別，換網路不斷線）
+?sa A. 請舉出 1 個 HTTP/2 相較於 HTTP/1.1 的新特色，並說明運作機制。 B. 請舉出 1 個 HTTP/3 相較於 HTTP/2 的新特色，並說明運作機制。
+S> 2023 期末 Q15
+R> A. Multiplexing：HTTP/1.1 一條連線同時只能處理一個 request/response（後面的要排隊，或開多條連線）；HTTP/2 把訊息切成 binary frame，每個 request/response 屬於一個 stream，多個 stream 的 frame 可在同一條 TCP 連線上交錯傳送，再依 stream ID 重組，解決 HTTP 層的 head-of-line blocking。（亦可答 HPACK 標頭壓縮：用靜態 / 動態表與 Huffman 編碼壓縮重複的 header。）
+R> B. 改用 QUIC（基於 UDP）：HTTP/2 雖然多工，但底層 TCP 只要掉一個封包，所有 stream 都要等重傳（TCP head-of-line blocking）；QUIC 在 UDP 上自己實作可靠傳輸，每個 stream 獨立排序與重傳，一個 stream 掉包不影響其他 stream。另外 QUIC 整合 TLS 1.3，握手只需 1-RTT（甚至 0-RTT），並以 connection ID 支援 connection migration（換 Wi-Fi/4G 不斷線）。
+P> A. 正確舉出特色（multiplexing / header compression / binary framing / server push）並說明機制
+P> B. 正確舉出 HTTP/3 特色（QUIC/UDP、無 TCP HOL、0-RTT、connection migration）並說明機制
+?mt 配對：
+> HTTP/2 :: 單一 TCP 連線多工 + HPACK
+> HTTP/3 :: QUIC over UDP，stream 獨立
+> HTTP/1.1 :: 一條連線一次一個 request（或 pipelining 但有 HOL）
+E> HTTP/3 解決的是 TCP 層 HOL。
+
+@CARD ext1.vhost | Virtual Host
+A> 一棟大樓（一個 IP）住很多家公司（網站）：訪客在門口報上公司名稱（HTTP Host header），管理員就帶他去對的樓層 → name-based；另一種是每家公司有自己的大門（每個網站一個 IP）→ IP-based。IPv4 很貴，所以租屋業者（虛擬主機商）都用 name-based。
+B> Web server 看 **HTTP Host header**（HTTP/1.1 必備）決定要回哪個網站 → **name-based virtual host**
+B> **Name-based**：多個網域共用**同一個 IP**，以 Host header 區分；HTTPS 時靠 **SNI**（TLS ClientHello 帶 hostname）選憑證
+B> **IP-based**：每個網站綁**不同 IP**；不需 Host header，但耗用 IP
+B> 網頁代管通常用 **name-based**：IPv4 位址稀少昂貴、管理方便、可在一台機器上放大量網站
+?sa A. Web Server 是識別 HTTP header 中的哪項資訊以提供 Name-based Virtual Hosting？ B. 請說明 Name-based Virtual Host 與 IP-based Virtual Host 的差異。 C. 網頁代管服務通常會採用哪一種技術？為什麼？
+S> 2023 期末 Q17
+R> A. Host header（例如 Host: www.example.com）。
+R> B. Name-based：多個網站共用同一個 IP 與 port，web server 依 request 中的 Host header（HTTPS 則依 TLS 的 SNI）判斷要提供哪個網站。IP-based：每個網站綁定不同的 IP 位址，server 依連線進來的目的 IP 決定網站，不需依賴 Host header。
+R> C. 通常採用 name-based，因為 IPv4 位址稀少且昂貴，name-based 可以讓大量網站共用一個 IP，節省位址、設定與擴充也較方便；現代瀏覽器都支援 Host header 與 SNI，所以沒有相容性問題。
+P> A. Host header
+P> B. 共用 IP 依 Host 區分 vs 每站獨立 IP
+P> C. name-based，節省 IPv4 位址
+?mc 同一個 IP 上有多個 HTTPS 網站時，伺服器在 TLS 握手階段怎麼知道要出示哪個網站的憑證？
++ 用戶端在 ClientHello 中用 SNI 帶上主機名
+- 看 HTTP 請求中的 Host header
+- 看 HTTP 請求中的 Host header 來決定出示的憑證
+- 看用戶端在 TCP 握手時帶的目的 port 決定
+E> Host header 在加密層內，握手時還看不到，所以需要 SNI。
+?tf Name-based virtual host 讓多個網域共用同一個 IP 位址。
+=T
+E> 靠 Host header（HTTPS 另外靠 SNI）區分網站。
+
+@CH ext2 | 考古延伸②：FreeBSD、syslog、防火牆與經典題 | 🦊 | 歷屆考古題
+
+@CARD ext2.syslog | syslog：facility.level 與 selector
+A> syslog 的每則訊息貼著兩張標籤：「哪個部門」（facility：kern、auth、mail、local0-7…）和「多嚴重」（level：debug < info < notice < warning < err < crit < alert < emerg）。syslog.conf 每行是「挑選條件 → 送去哪」；facility.level 表示「這個等級以上（含）」，.none 表示「排除這個部門」。
+B> Level 由低到高：**debug < info < notice < warning < err < crit < alert < emerg**
+B> selector **facility.level** = 該 facility **level 以上（含）**的訊息；**\*** 所有 facility；**facility.none** 排除該 facility
+B> 一行用 **;** 串多個 selector，逗號 **,** 列多個 facility 共用 level；後面的 selector 可以覆寫前面（如 .none 排除）
+B> 動作：檔案路徑、**@loghost** 送到遠端 syslog 主機、**使用者名稱**（寫到該使用者的 terminal）、/dev/console
+B> **logger -p facility.level "msg"**：手動送 log 測試設定
+M> 「低 (debug) 呦 (info) 你 (notice) 我 (warning) 惹 (err) 錯 (crit) 啊 (alert) 嗯 (emerg)」由輕到重
+?ord syslog level 由「最不嚴重」到「最嚴重」排列：
+> debug
+> info
+> notice
+> warning
+> err
+> crit
+> alert
+> emerg
+E> facility.level 選取該等級以上。
+?mc 下列哪一個命令列程式可對 syslog 發送日誌訊息，以測試 syslog 設定是否正確？
++ logger
+- syslogd
+- periodic
+- newsyslog
+S> 2023 期末 Q1
+E> logger -p local1.warning "message"。
+?sa 依下列 /etc/syslog.conf 回答：A. 執行 logger -p local1.warning "log message" 時，log 會出現在何處？ B. 執行 logger -p auth.notice "log message" 時，log 會出現在何處？
+QX> *.emerg                                  /dev/console
+QX> *.err;kern,mark.debug;auth.notice        /dev/log/console.log
+QX> *.info;kern,user,mark,auth.none          @loghost
+QX> *.alert;kern.crit;local0,local1.info     tsaimh
+S> 2023 期末 Q14 A、B
+R> A. local1.warning：第 1 行 *.emerg 不符（warning < emerg）；第 2 行 *.err 不符（warning < err），kern/mark/auth 不是 local1；第 3 行 *.info 符合（warning ≥ info），且 local1 不在 .none 排除名單 → 送到遠端主機 @loghost；第 4 行 local1.info 符合（warning ≥ info）→ 寫到使用者 tsaimh 的 terminal（若已登入）。所以出現在 @loghost 與 tsaimh。
+R> B. auth.notice：第 1 行不符；第 2 行 auth.notice 符合 → 寫入 /dev/log/console.log；第 3 行 *.info 雖然符合等級，但 auth.none 把 auth 排除 → 不送 @loghost；第 4 行 *.alert 不符（notice < alert），kern.crit、local0/local1 也不符 → 不送 tsaimh。所以只出現在 /dev/log/console.log。
+P> A. @loghost 與 tsaimh
+P> B. 只有 /dev/log/console.log
+P> 正確說明 level 比較與 .none 排除
+
+@CARD ext2.newsyslog | newsyslog（FreeBSD log rotation）
+A> newsyslog 是「定期把寫滿的帳本封存、換新本子」的管家：newsyslog.conf 每行寫「哪本帳本、權限、保留幾本舊的、多大要換、什麼時候換、怎麼壓縮」。由 cron 每小時叫它檢查一次。
+B> 欄位：**logfilename [owner:group] mode count size when flags**
+B> **mode**：新檔權限；**count**：保留幾份舊檔；**size**：超過多少 KB 就輪替（* = 不看大小）；**when**：時間條件（* = 不看時間）
+B> when 格式：**$W<0-6>D<hh>** 每週第幾天（0 = 週日）幾點；**$D<hh>** 每天幾點；**$M<dd>D<hh>** 每月；或 @ ISO 格式
+B> flags：**J = bzip2**、**Z = gzip**、**X = xz**、**Y = zstd**、C 檔案不存在就建立…
+B> 由 /etc/crontab 的 **0 * * * * root newsyslog** 每小時執行
+?sa 若 /etc/newsyslog.conf 設定如下，何時會做 log rotate？會保留幾份 log？會以什麼格式壓縮？
+QX> /dev/log/console.log   600   15   *   $W3D4   J
+S> 2023 期末 Q14 C
+R> 時間：when 欄位 $W3D4 表示每週第 3 天（0 為週日，所以是星期三）的 04:00 進行 rotate；size 欄位為 *，表示不依大小輪替。
+R> 保留：count 為 15，保留 15 份舊的 log（新檔權限 600）。
+R> 壓縮：flags 為 J，使用 bzip2 壓縮（產生 .bz2）。
+P> 每週三 04:00
+P> 保留 15 份
+P> J = bzip2
+?mt 配對 newsyslog flags：
+> J :: bzip2 壓縮
+> Z :: gzip 壓縮
+> X :: xz 壓縮
+E> 投影片外的 FreeBSD 知識，考古題出現過。
+?fill newsyslog 的 when 欄位要表示「每天凌晨 0 點」可寫 $D＿＿
+= 0
+= 00
+E> $D0 每天 0 點。
+
+@CARD ext2.pf | 防火牆：PF / iptables 與 drop vs return
+A> drop 是「假裝沒聽到敲門」，對方只能一直等到逾時；return / REJECT 是「隔著門說：沒有人在」，對方立刻知道被拒絕。對 TCP 回 RST，對 UDP 回 ICMP port unreachable。
+B> **drop / DROP**：靜默丟棄，不回應；client 等到 **timeout**；不洩漏資訊但連線端等很久
+B> **return（PF）/ REJECT（iptables）**：TCP 回 **RST**；UDP 回 **ICMP port unreachable**（destination unreachable）→ client 立即得知失敗
+B> PF 與 iptables 都能過濾：ICMP、TCP flags、IPv6（ip6tables）、IP/port；**PF 不能比對 MAC address**（iptables 可用 -m mac）
+B> PF table：**{ 140.113.0.0/16, !140.113.235.0/24, 140.113.235.0/26 }** → 以**最長前綴**決定，! 表示排除
+?sa 試說明 PF 的 block policy 中 drop 與 return 的差異，請針對 TCP 與 UDP 封包的差異來說明。（iptables 中則為 DROP 和 REJECT）
+S> 2023 期末 Q9
+R> drop：直接把封包丟掉、不做任何回應。TCP 的 client 送出 SYN 後收不到任何回應，只能不斷重送直到逾時；UDP 的 client 也收不到任何訊息，只能等應用層 timeout。好處是不讓對方知道主機存在，但合法使用者會等很久。
+R> return（REJECT）：丟棄封包但主動回覆拒絕。對 TCP 封包回送 TCP RST，對方立即得到 connection refused；對 UDP 封包回送 ICMP（port / destination）unreachable，對方立即知道無法送達。好處是 client 能快速失敗，但會暴露主機存在。
+P> drop 靜默丟棄，client 逾時
+P> return：TCP 回 RST
+P> return：UDP 回 ICMP unreachable
+?mc 下列何者無法透過 PF 與 iptables 來過濾？
++ MAC Address
+- ICMP
+- TCP Flag
+- IPv6 Address
+S> 2023 期末 Part A Q4
+E> PF 無法依 MAC 過濾（以考古題答案為準）。
+?mc PF 的 table <hosts> { 140.113.0.0/16, !140.113.235.0/24, 140.113.235.0/26 }，下列哪一個「不符合」此 table？
++ 140.113.235.207
+- 140.113.17.32
+- 140.113.235.48
+- 140.113.121.112
+S> 2023 期末 Part A Q5
+E> PF table 用最長前綴比對：.235.48 落在 /26（0-63）被包含；.235.207 只落在被排除的 !/24；其他落在 /16。
+
+@CARD ext2.freebsd | FreeBSD：套件安裝與忘記 root 密碼
+A> FreeBSD 裝軟體三條路：pkg 是「買現成的冷凍食品」（預編譯、快）、ports 是「照食譜從頭煮」（從原始碼編譯、可自訂配料）、tarball 是「自己去市場買原料、沒有食譜管理」（手動 configure/make，系統不會幫你記帳）。
+B> **pkg**：二進位預編譯套件，pkg install，快速、自動處理依賴，但使用預設編譯選項
+B> **ports**：/usr/ports 原始碼建置框架（make install clean），可用 make config **自訂編譯選項**，較花時間；仍由套件資料庫管理
+B> **tarball**：手動下載原始碼壓縮檔，./configure && make && make install；**不追蹤依賴、不登記**到套件系統，難以升級與移除
+B> 忘記 root 密碼：開機選單選 **single user mode**（boot -s）→ 出現提示按 Enter 用 /bin/sh → **mount -u /**（root 改為可寫）→ **mount -a** → **passwd root** → exit / reboot
+?sa FreeBSD 系統上安裝軟體有 pkg、ports 與 tarball 三種方式，請簡述三者的差別。
+S> 2023 期中 Q2
+R> pkg：安裝官方預先編譯好的 binary package，由 pkg 工具自動下載並處理相依套件，安裝快速、易於升級與移除，但只能使用預設的編譯選項。
+R> ports：使用 Ports Collection（/usr/ports）中的 Makefile 從原始碼編譯安裝，會自動下載原始碼、套用 FreeBSD patch、處理相依，可透過 make config 自訂編譯選項，彈性高但編譯耗時；安裝結果仍登記在套件資料庫中。
+R> tarball：自行下載軟體原始碼壓縮檔，手動解壓縮、./configure、make、make install；不經過套件系統，不會自動處理相依、不會登記，之後升級或移除都要手動，容易弄亂系統。
+P> pkg：預編譯 binary，快、自動依賴、選項固定
+P> ports：從原始碼編譯，可自訂選項，慢
+P> tarball：手動編譯，不管理依賴與登記
+?sa 假設你在一台全新安裝且只有 root 使用者的 FreeBSD 中忘記了 root 密碼。在系統重開機後，請簡述該如何取回控制權並重新登入 root？
+S> 2023 期末 Q6
+R> ① 重開機，在 FreeBSD boot loader 選單選擇「Single user mode」（或在 loader 提示字元輸入 boot -s）。② 出現 Enter full pathname of shell 時直接按 Enter 使用 /bin/sh，此時不需密碼即以 root 身分進入。③ root 檔案系統預設以唯讀掛載，執行 mount -u /（必要時 fsck -p）讓它可寫，再 mount -a 掛上其他檔案系統。④ 執行 passwd root 設定新密碼。⑤ exit 或 reboot 回到多人模式，以新密碼登入 root。
+P> 進入 single user mode（boot -s）
+P> mount -u / 讓 root 可寫（mount -a）
+P> passwd root 重設後重開機
+
+@CARD ext2.man | man pages：章節與語法
+A> man 手冊分章節：1 是一般指令、2 是系統呼叫、3 是 C 函式庫、4 裝置、5 檔案格式、6 遊戲、7 雜項、8 系統管理指令。printf(1) 是 shell 指令，printf(3) 是 C 函式，同名不同章。語法裡的 [ ] 是「可以不寫」，... 是「可以寫很多個」。
+B> 章節：**1** 使用者指令、**2** system calls、**3** library functions、**4** 裝置 / 特殊檔、**5** 檔案格式（如 crontab(5)、fstab(5)）、6 遊戲、**7** 雜項（hier(7)）、**8** 系統管理指令（mount(8)）
+B> 查特定章節：**man 3 printf**（FreeBSD 也可 man -s 3 printf）；**man -k keyword** / apropos 搜尋
+B> SYNOPSIS 語法：**[ ]** 可省略的選項；**...** 可重複多個；底線 / 斜體為要替換的參數
+?sa a. man printf 時會看到 SEE ALSO printf(3)，數字 3 代表什麼？ b. 承上，如何查詢 printf(3) 的資料？ c. sort 的 man page 中 "[ ]" 與 "..." 代表什麼？
+QX> sort [-bcCdfghiRMmnrsuVz] [-k field1[,field2]] [-S memsize] [-T dir] [-t char] [-o output] [file ...]
+S> 2023 期中 Q4
+R> a. 3 代表 man page 的第 3 章節：程式庫函式（C library functions），printf(3) 是 C 語言的 printf 函式，與第 1 章的 printf 指令不同。
+R> b. man 3 printf（或 man -s 3 printf）。
+R> c. [ ] 表示其中的選項或參數是可選的（可以省略）；... 表示前面的項目可以重複出現多次，例如 [file ...] 代表可以給零個或多個檔案。
+P> a. 第 3 章 = library functions
+P> b. man 3 printf
+P> c. [ ] 可省略、... 可重複
+?mt 配對 man 章節：
+> 1 :: 使用者指令
+> 2 :: System calls
+> 3 :: Library functions
+> 5 :: 檔案格式（如 fstab）
+> 8 :: 系統管理指令
+E> crontab(1) 是指令、crontab(5) 是檔案格式。
+?cmd 查詢第 5 章的 crontab（檔案格式）：
+= man 5 crontab
+= man -s 5 crontab
+E> 不加章節會先顯示 crontab(1)。
+
+@CARD ext2.linuxbsd | Linux vs FreeBSD
+A> Linux 是「一個引擎（kernel）+ 各家車廠組裝的車（發行版）」；FreeBSD 是「同一家廠把引擎和車身一起設計製造的整車」。
+B> **開發模式**：Linux 只是 kernel，userland（GNU 等）由各發行版組合；FreeBSD 的 kernel 與 base userland 在**同一個 source tree** 一起開發發行
+B> **授權**：Linux **GPL**（衍生作品須開源）；FreeBSD **BSD license**（寬鬆，可閉源商用）
+B> **init / 服務**：Linux 多為 **systemd**（systemctl）；FreeBSD 用 **rc.d + /etc/rc.conf**（service、sysrc）
+B> **套件**：Debian apt；FreeBSD **pkg / ports**，第三方軟體放 **/usr/local**
+B> **預設 shell**：Debian 使用者 bash；FreeBSD **sh**（舊版 root 為 csh/tcsh）
+B> **防火牆**：Linux netfilter（iptables / nftables）；FreeBSD **pf / ipfw**
+B> **檔案系統**：Linux ext4/xfs/btrfs；FreeBSD **UFS / ZFS**
+B> **隔離**：Linux namespaces/cgroups containers；FreeBSD **jails**
+B> **裝置名稱**：Linux /dev/sda；FreeBSD /dev/ada0、da0
+?sa 試舉出三個 Linux 與 FreeBSD 不同之處（需明確指出 Linux 如何、FreeBSD 如何，「名字 / 核心 / 開發者不同」這類答案不計分）。
+S> 2023 期中 Q13
+R> ① 服務管理：多數 Linux 發行版（如 Debian）用 systemd，以 unit 檔與 systemctl 管理；FreeBSD 用 rc.d 腳本，在 /etc/rc.conf 設定 xxx_enable="YES"，以 service / sysrc 管理。
+R> ② 套件管理：Debian 用 apt / dpkg 安裝 .deb；FreeBSD 用 pkg（binary）或 ports（原始碼），第三方軟體安裝在 /usr/local。
+R> ③ 系統組成與授權：Linux 只有 kernel，userland 來自 GNU 等不同專案由發行版組合，採 GPL；FreeBSD 的 kernel 與 base system 在同一個 source tree 中一起開發、一起發行，採 BSD license。
+R> 其他：防火牆 Linux 用 iptables/nftables，FreeBSD 用 pf/ipfw；檔案系統 ext4 vs UFS/ZFS；container 用 namespaces vs FreeBSD jails；預設 shell bash vs sh/tcsh；磁碟名稱 /dev/sda vs /dev/ada0。
+P> 三個具體差異，且每個都明確說明 Linux 與 FreeBSD 各自的做法
+?mt 配對 FreeBSD 對應的 Linux 工具：
+> pf :: iptables / nftables
+> jails :: containers（namespaces）
+> /etc/rc.conf + service :: systemd + systemctl
+> pkg :: apt
+E> 考差異題時要說清楚兩邊各怎麼做。

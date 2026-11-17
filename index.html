@@ -1,17 +1,5 @@
 <!DOCTYPE html>
-<!--
-  SA 碎片學習 — study app for NYCU 計算機系統管理 (written exam prep)
-  ───────────────────────────────────────────────────────────────────
-  HOW TO UPDATE CONTENT (for future maintainers / Claude):
-  • All study content lives in <script type="text/plain" class="sa-src"> blocks below, one per chapter,
-    written in a small DSL (see parseDSL in the app script for the grammar).
-  • Progress is keyed by stable ids: card id (e.g. net.arp) and question id = <card id>.<index>.
-    ➜ NEVER rename card ids, never reorder/delete questions inside a card. Only APPEND questions at the
-      end of a card, append new cards, or add new chapter blocks. Then learning progress is preserved.
-  • New chapter: insert a new sa-src block right before the marker comment NEXT_CHAPTER (keep the marker).
-  • Bump CONTENT_VERSION and add a CHANGELOG entry so the app shows a "新內容" notice.
-  • Progress is stored per viewer in db at data/users/<id>/progress (+ localStorage cache).
--->
+<!-- SA 碎片學習 · generated file, do not edit. Source and update rules: AGENTS.md in github.com/gen-9ix/sa-study-app -->
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
@@ -11325,6 +11313,7 @@ const LS_KEY='sa-study-v1', DAY=864e5, MIN=6e4;
 function fresh(){ return {v:1,q:{},c:{},xp:0,days:{},bm:{},set:{size:10,newPer:3,ai:1,exam:'',t:0,goal:20,pet:'crab',snd:1,bgm:0,bgmv:2,bbgm:1},cv:0,best:{blitz:0},fz:{n:1,used:{},t:0},boss:{},exp:null,room:{hide:{},seen:{},t:0},u:0}; }
 function lsRead(k){ try{ const t=localStorage.getItem(k); return t?JSON.parse(t):null; }catch(e){ return null; } }
 function lsWrite(k,o){ try{ localStorage.setItem(k,JSON.stringify(o)); }catch(e){} }
+function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
 /* profiles: several in-app accounts, each with its own progress.
    local: sa-profiles = {list:[{id,name,em,pin?,t,del?}],cur}; progress per profile in pKey(id)
    cloud: data/users/<uid>/meta (list) and data/users/<uid>/<pDoc(id)> (progress). 'main' = the pre-profile data. */
@@ -11333,6 +11322,7 @@ let PROF=lsRead(LS_PROF)||{list:[],cur:''};
 const pKey=pid=>pid==='main'?LS_KEY:LS_KEY+':'+pid;
 const pDoc=pid=>pid==='main'?'progress':'p_'+pid;
 function lsGet(){ return PROF.cur?lsRead(pKey(PROF.cur)):null; }
+const peekProfile=pid=>lsRead(pKey(pid));
 function lsSet(o){ if(PROF.cur) lsWrite(pKey(PROF.cur),o); }
 // cloud documents arrive frozen (read-only); always work on a deep, writable copy
 function dclone(o){ return o==null?o:JSON.parse(JSON.stringify(o)); }
@@ -11382,7 +11372,13 @@ document.addEventListener('visibilitychange',()=>{ if(document.hidden){ clearTim
    reads and writes the same documents in Firestore (REST API, no SDK) at sync/<code>/d/<name>.
    This file pretends to be Claude's db/user capabilities, so the same merge logic as the Claude
    version runs unchanged: pull, merge per item (newest wins), push; poll every 30 s and on return. */
-const FBS={code:(lsRead('sa-sync')||{}).code||'',on:false};
+const LS_SYNC='sa-sync';
+const FBS={code:(lsRead(LS_SYNC)||{}).code||'',on:false};
+function syncSetCode(code,join){ lsWrite(LS_SYNC,join?{code,join:1}:{code}); }
+function syncClearCode(){ lsDel(LS_SYNC); }
+/* stop syncing one profile and delete its local + cloud copy (the caller marks it deleted in PROF) */
+function syncDropProfile(pid){ if(SYNC.unsub){ try{ SYNC.unsub(); }catch(e){} SYNC.unsub=null; }
+  clearTimeout(SYNC.timer); SYNC.dirty=false; SYNC.ref=null; lsDel(pKey(pid)); if(SYNC.db) SYNC.db.doc(SYNC.base+pDoc(pid)).delete().catch(()=>{}); }
 function fbOK(){ return !!(window.SA_STANDALONE&&window.SA_FB&&window.SA_FB.apiKey&&window.SA_FB.projectId); }
 function fbURL(path,code){ const c=code||FBS.code, pre='data/users/'+c+'/', name=path.startsWith(pre)?path.slice(pre.length):path;
   return `https://firestore.googleapis.com/v1/projects/${window.SA_FB.projectId}/databases/(default)/documents/sync/${c}/d/${encodeURIComponent(name)}?key=${encodeURIComponent(window.SA_FB.apiKey)}`; }
@@ -11436,7 +11432,7 @@ async function mergeProfileInto(fromId,toId){
   const m=normState(mergeState(to,from)); m.u=Date.now(); lsWrite(pKey(toId),m);
   if(SYNC.db){ try{ await SYNC.db.doc(SYNC.base+pDoc(toId)).set(JSON.parse(JSON.stringify(m))); }catch(e){} }
   const p=PROF.list.find(x=>x.id===fromId); if(p){ p.del=true; p.t=Date.now(); delete p.pin; }
-  try{ localStorage.removeItem(pKey(fromId)); }catch(e){}
+  lsDel(pKey(fromId));
   if(SYNC.db) SYNC.db.doc(SYNC.base+pDoc(fromId)).delete().catch(()=>{});
   return m;
 }
@@ -11451,10 +11447,10 @@ async function initSync(){
     const md=ms.exists?(dclone(ms.data())||{}):{}; const rl=md.list||[];
     for(const p of rl){ if(!p||!p.id) continue; const i=PROF.list.findIndex(x=>x.id===p.id); if(i<0) PROF.list.push(p); else if((p.t||0)>(PROF.list[i].t||0)) PROF.list[i]=p; }
     if(!PROF.list.length&&old&&old.exists) PROF.list.push({id:'main',name:'我',em:'🐧',t:Date.now()});
-    const jn=lsRead('sa-sync'); if(jn&&jn.join){ const ids=new Set(rl.map(p=>p&&p.id));
+    const jn=lsRead(LS_SYNC); if(jn&&jn.join){ const ids=new Set(rl.map(p=>p&&p.id));
       for(const lp of PROF.list.filter(p=>!p.del&&!ids.has(p.id))){ const rp=rl.find(p=>p&&!p.del&&p.id!==lp.id&&p.name===lp.name); if(!rp) continue;
         await mergeProfileInto(lp.id,rp.id); if(PROF.cur===lp.id){ PROF.cur=rp.id; S=normState(lsGet()); } SYNC.merged=(SYNC.merged||0)+1; }
-      delete jn.join; lsWrite('sa-sync',jn); }
+      delete jn.join; lsWrite(LS_SYNC,jn); }
     if(!PROF.cur&&md.cur){ const p=PROF.list.find(x=>x.id===md.cur&&!x.del); if(p&&!p.pin){ PROF.cur=p.id; S=normState(lsGet()); if(!BOOT.done) { VIEW={name:'loading'}; render(); } } }
     lsWrite(LS_PROF,PROF);
     if(JSON.stringify(PROF.list)!==JSON.stringify(rl)||(md.cur||'')!==(PROF.cur||'')) pushMeta();
@@ -11783,6 +11779,8 @@ function tipHTML(x){
 }
 /* 8-bit style sound effects, synthesised with WebAudio (no files) */
 const SFX={ctx:null,played:false,master:null,el:null,unlocked:false};
+function sfxMark(v){ SFX.played=v; }            // an action that makes its own sound sets this so the tap click is skipped
+function sfxSilence(){ if(SFX.el){ try{ SFX.el.pause(); }catch(e){} } }
 /* iPhone/iPad: Web Audio is silenced by the side Ring/Silent switch and stays suspended until it is started
    inside a real tap. On the first touch we (1) ask for a "playback" audio session (iOS 17+), (2) loop a silent
    <audio> element, which moves Safari's audio session to media playback so the silent switch no longer mutes it,
@@ -12382,7 +12380,7 @@ VIEWS.who=()=>{
   const ps=activeProfiles(); const em=VIEW.em||EMO[ps.length%6]; const nm=VIEW.nm||'';
   return (PROF.cur?topbar('切換帳號'):`<div class="center mt-lg"><div class="stage inl">${mascot('happy')}</div><h1 class="h1 big mt-sm">SA 碎片學習</h1><div class="small muted mt-2xs">選好帳號，夥伴會陪你一起冒險</div></div>`)+`
   <div class="small muted mt-md">${ps.length?'誰要來學？每個帳號有自己獨立的進度。':'先建立一個帳號，進度就會記在這個帳號底下。'}</div>
-  <div class="mt-sm">${ps.map(p=>{ const st=lsRead(pKey(p.id)); return `<button class="chrow" data-act="prof" data-p="${esc(p.id)}">${avHTML(p,'sm')}<span class="grow"><span class="t">${esc(p.name)}</span> ${p.pin?icon('lock'):''} ${p.id===PROF.cur?'<span class="chip g">目前</span>':''}<span class="d" style="display:block">${st?(st.xp||0)+' XP，已學 '+Object.keys(st.q||{}).length+' 題':'進度在雲端，選取後載入'}</span></span>${icon('right')}</button>`; }).join('')}</div>
+  <div class="mt-sm">${ps.map(p=>{ const st=peekProfile(p.id); return `<button class="chrow" data-act="prof" data-p="${esc(p.id)}">${avHTML(p,'sm')}<span class="grow"><span class="t">${esc(p.name)}</span> ${p.pin?icon('lock'):''} ${p.id===PROF.cur?'<span class="chip g">目前</span>':''}<span class="d" style="display:block">${st?(st.xp||0)+' XP，已學 '+Object.keys(st.q||{}).length+' 題':'進度在雲端，選取後載入'}</span></span>${icon('right')}</button>`; }).join('')}</div>
   <div class="card mt-md"><h2 class="h2">新增帳號</h2>
     <label class="small muted mt-sm" style="display:block" for="pname">暱稱</label>
     <input class="field mt-2xs" id="pname" maxlength="12" placeholder="例如：小明" value="${esc(nm)}" autocomplete="off">
@@ -12420,7 +12418,7 @@ VIEWS.account=()=>{
   </div>
   ${(()=>{ const others=activeProfiles().filter(x=>x.id!==p.id); if(!others.length) return '';
     return `<div class="card"><h2 class="h2">合併帳號</h2><div class="small muted mt-2xs">同一個人在不同裝置各建了一個帳號時，用這個把它們併成一個。進度會合併（每題保留較新的紀錄），不會遺失。</div>
-    ${others.map(o=>{ const st=lsRead(pKey(o.id)); return `<div class="li">${avHTML(o,'sm')}<span class="grow"><span class="t">${esc(o.name)}${o.name===p.name?' <span class="chip y">同名</span>':''}</span><span class="m">${st?(st.xp||0)+' XP，'+Object.keys(st.q||{}).length+' 題':'進度在雲端'}</span></span><button class="btn sm" data-act="mergeui" data-p="${esc(o.id)}">合併</button></div>`; }).join('')}</div>`; })()}
+    ${others.map(o=>{ const st=peekProfile(o.id); return `<div class="li">${avHTML(o,'sm')}<span class="grow"><span class="t">${esc(o.name)}${o.name===p.name?' <span class="chip y">同名</span>':''}</span><span class="m">${st?(st.xp||0)+' XP，'+Object.keys(st.q||{}).length+' 題':'進度在雲端'}</span></span><button class="btn sm" data-act="mergeui" data-p="${esc(o.id)}">合併</button></div>`; }).join('')}</div>`; })()}
   <div class="card"><h2 class="h2">其他</h2><div class="row wrap mt-sm"><button class="btn sm" data-act="who">切換 / 新增帳號</button><button class="btn sm danger" data-act="profdel">刪除此帳號</button></div></div>`;
 };
 AFTER.account=()=>{ const a=$('#anm'); if(a) a.oninput=()=>{ VIEW.anm=a.value; }; };
@@ -13071,17 +13069,17 @@ const ACT={
     if(($('#aold')?.value||'').trim()!==p.pin){ toast('先輸入目前的密碼'); return; }
     delete p.pin; p.t=Date.now(); pushMeta(); toast('已移除密碼'); render(); },
   roomform:d=>{ const i=+d.i; VIEW.form=(i===petStage())?null:i; VIEW.happy=true; sfx('pet'); render(); clearTimeout(ACT._rf); ACT._rf=setTimeout(()=>{ if(VIEW.name==='room'){ VIEW.happy=false; render(); } },1200); },
-  synccreate:()=>{ if(!fbOK()) return; const c=newSyncCode(); lsWrite('sa-sync',{code:c}); toast('建立好了，正在上傳…'); setTimeout(()=>location.reload(),500); },
+  synccreate:()=>{ if(!fbOK()) return; const c=newSyncCode(); syncSetCode(c); toast('建立好了，正在上傳…'); setTimeout(()=>location.reload(),500); },
   syncjoinui:()=>{ const b=$('#syncbox'); if(b){ b.innerHTML=syncJoinForm(); const i=$('#syncin'); if(i) i.focus(); } },
   syncjoin:async()=>{ const c=cleanCode($('#syncin')?.value); if(c.length!==20){ toast('同步碼要是 20 個字，確認有貼完整'); return; }
     toast('<span class="spin"></span> 確認中…',3000); let j=null;
     try{ j=await fbReq('GET','meta',null,c); }catch(e){ toast(e&&e.code==='unavailable'?'連不上網路，等一下再試':'這組同步碼不能用'); return; }
     if(!j){ toast('找不到這組同步碼，確認一下有沒有打錯'); return; }
-    lsWrite('sa-sync',{code:c,join:1}); toast('連上了，正在載入…'); setTimeout(()=>location.reload(),500); },
+    syncSetCode(c,1); toast('連上了，正在載入…'); setTimeout(()=>location.reload(),500); },
   synccode:()=>{ VIEW.showcode=!VIEW.showcode; render(); },
   synccopy:async()=>{ try{ await navigator.clipboard.writeText(fmtCode(FBS.code)); toast('同步碼已複製'); }catch(e){ VIEW.showcode=true; render(); toast('無法自動複製，請長按同步碼複製'); } },
   syncoff:()=>{ if(now()-leaveArmed>3000){ leaveArmed=now(); toast('這台裝置會停止同步（資料留在這台，雲端也不會刪）。3 秒內再按一次確認',3200); return; }
-    flush(); try{ localStorage.removeItem('sa-sync'); }catch(e){} toast('已停止同步'); setTimeout(()=>location.reload(),600); },
+    flush(); syncClearCode(); toast('已停止同步'); setTimeout(()=>location.reload(),600); },
   mergeui:d=>{ const a=curProf(), b=PROF.list.find(x=>x.id===d.p); if(!a||!b) return;
     sheet(`<div class="row between"><h2 class="h2">合併帳號</h2><button class="iconbtn" data-act="closesheet" aria-label="關閉">${icon('x')}</button></div>
     <div class="small mt-sm">把目前的「${esc(a.name)}」（${S.xp||0} XP）併入「${esc(b.name)}」。合併後只會留下「${esc(b.name)}」，兩邊的進度都會保留在裡面。</div>
@@ -13098,9 +13096,7 @@ const ACT={
     const pin=($('#ppin')?.value||'').trim(); const id='p'+Date.now().toString(36)+(Math.random()*1296|0).toString(36);
     const p={id,name,em:d.e,t:Date.now()}; if(pin) p.pin=pin; PROF.list.push(p); pushMeta(); selectProfile(id); toast('歡迎，'+esc(name)+'！直接開始吧'); },
   profdel:()=>{ if(now()-leaveArmed>3000){ leaveArmed=now(); toast('會刪除這個帳號的所有進度。3 秒內再按一次確認',2800); return; }
-    const pid=PROF.cur, p=PROF.list.find(x=>x.id===pid); if(!p) return; if(SYNC.unsub){ try{ SYNC.unsub(); }catch(e){} SYNC.unsub=null; }
-    clearTimeout(SYNC.timer); SYNC.dirty=false; SYNC.ref=null; p.del=true; p.t=Date.now(); delete p.pin;
-    try{ localStorage.removeItem(pKey(pid)); }catch(e){} if(SYNC.db) SYNC.db.doc(SYNC.base+pDoc(pid)).delete().catch(()=>{});
+    const pid=PROF.cur, p=PROF.list.find(x=>x.id===pid); if(!p) return; syncDropProfile(pid); p.del=true; p.t=Date.now(); delete p.pin;
     PROF.cur=''; pushMeta(); S=normState(null); RUN=null; STACK.length=0; VIEW={name:'who'}; render(); toast('已刪除'); },
   boss:d=>startBoss(d.ch),
   roomtoggle:d=>{ S.room.hide=S.room.hide||{}; if(S.room.hide[d.i]) delete S.room.hide[d.i]; else S.room.hide[d.i]=1; S.room.t=now(); save(); render(); },
@@ -13158,9 +13154,9 @@ const ACT={
   examrun:d=>{ const g=examGroups().find(x=>x[0]===d.tab); const pool=g[1].slice().sort((a,b)=>qMastery(a.id)-qMastery(b.id)+ (Math.random()-.5)*0.3); startRun(pool.slice(0,5).map(q=>({t:'q',id:q.id})),{mode:'exam'}); },
   weakrun:()=>{ const items=[]; for(const w of weakCards(10)){ for(const q of w.c.q.filter(q=>seen(q.id)).sort((a,b)=>qMastery(a.id)-qMastery(b.id)).slice(0,2)) items.push({t:'q',id:q.id}); } startRun(shuffle(items).slice(0,S.set.size),{mode:'weak'}); },
   set:d=>{ S.set[d.k]=+d.val; S.set.t=now(); save(); if(d.k==='bgmv'){ bgmVolume(); bmVolume(); } render(); },
-  togglebgm:()=>{ S.set.bgm=S.set.bgm?0:1; S.set.t=now(); save(); if(S.set.bgm){ unlockAudio(); bgmStart(); toast(icon('note')+' 背景音樂開啟，再點一次或按 Esc 可關閉',2200); } else bgmStop(); SFX.played=true; render(); },
-  togglebbgm:()=>{ S.set.bbgm=S.set.bbgm?0:1; S.set.t=now(); save(); if(S.set.bbgm){ unlockAudio(); toast(icon('sword')+' 魔王戰音樂開啟',1800); } else bossMusicStop(true); SFX.played=true; render(); },
-  togglesnd:()=>{ S.set.snd=S.set.snd?0:1; S.set.t=now(); save(); if(S.set.snd){ unlockAudio(); sfx('coin'); } else if(SFX.el){ try{ SFX.el.pause(); }catch(e){} } render(); },
+  togglebgm:()=>{ S.set.bgm=S.set.bgm?0:1; S.set.t=now(); save(); if(S.set.bgm){ unlockAudio(); bgmStart(); toast(icon('note')+' 背景音樂開啟，再點一次或按 Esc 可關閉',2200); } else bgmStop(); sfxMark(true); render(); },
+  togglebbgm:()=>{ S.set.bbgm=S.set.bbgm?0:1; S.set.t=now(); save(); if(S.set.bbgm){ unlockAudio(); toast(icon('sword')+' 魔王戰音樂開啟',1800); } else bossMusicStop(true); sfxMark(true); render(); },
+  togglesnd:()=>{ S.set.snd=S.set.snd?0:1; S.set.t=now(); save(); if(S.set.snd){ unlockAudio(); sfx('coin'); } else sfxSilence(); render(); },
   pet:d=>{ if(!PETS[d.p]) return; S.set.pet=d.p; S.set.t=now(); save(); sfx('pet'); render(); toast(PETS[d.p].name+'：請多指教！'); },
   toggleai:()=>{ S.set.ai=S.set.ai?0:1; S.set.t=now(); save(); render(); },
   export:async()=>{ const code=btoa(unescape(encodeURIComponent(JSON.stringify(S)))); let ok=false; try{ await navigator.clipboard.writeText(code); ok=true; }catch(e){}
@@ -13182,7 +13178,7 @@ document.addEventListener('click',e=>{
   const el=e.target.closest('[data-act]'); if(!el) return;
   if(Date.now()-lastTouchAct<600&&/^(submit|giveup|saai|sareveal)$/.test(el.dataset.act)) return;
   if(el.dataset.act==='closesheet'&&e.target.closest('[data-stop]')&&!e.target.closest('button[data-act="closesheet"]')) return;
-  const fn=ACT[el.dataset.act]; if(fn){ e.preventDefault(); SFX.played=false; runAct(el.dataset.act,el.dataset); if(!SFX.played) sfx('tap'); }
+  const fn=ACT[el.dataset.act]; if(fn){ e.preventDefault(); sfxMark(false); runAct(el.dataset.act,el.dataset); if(!SFX.played) sfx('tap'); }
 });
 document.addEventListener('keydown',e=>{ const rb=e.target&&e.target.closest&&e.target.closest('[role=button][data-act]'); if(rb&&(e.key==='Enter'||e.key===' ')&&e.target===rb){ e.preventDefault(); rb.click(); } });
 document.addEventListener('keydown',e=>{

@@ -1,6 +1,6 @@
-# SA 碎片學習（獨立版）
+# SA 碎片學習
 
-計算機系統管理筆試的碎片化學習 app。單一 HTML 檔，進度存在瀏覽器（localStorage），可加到手機主畫面全螢幕使用，支援離線。
+計算機系統管理筆試的碎片化學習 app。單一 HTML，可加到手機主畫面全螢幕使用，支援離線與跨裝置同步。
 
-- 換裝置 / 和 Claude 版互通：設定 → 進度與備份 → 複製備份碼 / 匯入
-- 內容更新：題庫在 `index.html` 的 `sa-src` 區塊，題目 id 穩定，更新不影響進度
+- 使用：https://gen-9ix.github.io/sa-study-app/
+- 更新內容或程式：**先讀 [AGENTS.md](AGENTS.md)**。原始碼在 `content/` 與 `src/`，`index.html` 是建置產物，不要直接改。

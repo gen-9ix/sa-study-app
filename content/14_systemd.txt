@@ -1,0 +1,1096 @@
+@CH systemd | systemd 深入：cgroups、unit、service、timer | 🧩 | systemd.pdf
+
+@CARD systemd.intro | systemd 是什麼
+A> systemd 是系統的「總管家」：開機時是 PID 1，負責把所有服務按照依賴關係排好、一起啟動；還兼管主機名、時間、語系、登入、網路、DNS 等雜事。它用 cgroups 幫每個服務「分房間」，所以永遠知道哪個 process 屬於哪個服務。
+B> **system and service manager**：Debian 8 (jessie) 起的預設 init system
+B> **Transactional、dependency-based** 的服務控制邏輯：依依賴關係決定要啟動哪些 unit
+B> 相容 **SysV / LSB init scripts**，可取代 sysvinit
+B> 用 Linux **control groups (cgroups)** 追蹤 process：服務 fork 出的子孫都在同一個 cgroup，不會「跑丟」
+B> 另附 logging daemon（journald）與工具：hostname、time/date、locale、user sessions、system accounts、runtime directories、網路設定、名稱解析、網路校時
+?mc systemd 用什麼機制追蹤「某個服務產生的所有 process」？
++ Linux control groups（cgroups）
+- PID 檔案（/var/run/*.pid）
+- 每個 process 的 PPID 父子鏈
+- /etc/inittab 中記錄的 runlevel 與 PID
+E> 投影片：Keeps track of processes using Linux control groups。process 就算 double fork 脫離父子關係，仍留在同一個 cgroup。
+?tf systemd 可以執行傳統的 SysV init script。
+=T
+E> Supports SysV and LSB init scripts and works as a replacement for sysvinit。
+?mc 下列哪一項「不是」投影片列出的 systemd 附帶功能？
++ 編譯 kernel module
+- 設定 hostname
+- 管理 user sessions
+- 網路校時（time synchronization）
+E> 列出的有 hostname、time/date、locale、user sessions、system accounts、runtime directories、網路設定、名稱解析、網路校時。
+
+@CARD systemd.cgroup | Control Groups v2
+A> cgroup 像公司的「部門樹」：process 是員工，被分到不同部門（cgroup）；資源（CPU、記憶體、I/O、PID 數）是部門預算，沿著樹往下分配。規定只有「最底層的小組」可以放員工，中層部門只管預算。
+B> 用**階層**方式組織 process，並沿階層**分配系統資源**：CPU、Memory、I/O、PID
+B> systemctl status 的 **CGroup:** 樹：init.scope（PID 1）、**system.slice**（各 .service）、**user.slice**（使用者 session）
+B> **.slice**：分組用的中間節點；**.service / .scope**：真正放 process 的葉節點
+B> **No internal process rule**：process 只能放在**葉節點** cgroup（啟用 controller 的非 root cgroup 不能同時有 process 和子 cgroup）
+B> 查看工具：**systemd-cgls**（樹狀）、**systemd-cgtop**（即時資源用量）
+X> $ systemctl status            # 最下面有整棵 CGroup 樹
+X> $ cat /proc/self/cgroup
+X> 0::/user.slice/user-1000.slice/session-3.scope
+?mt 配對 cgroup 單位類型：
+> .slice :: 分組用的中間節點，本身不放 process
+> .service :: systemd 啟動的服務，放它的 process
+> .scope :: 外部建立的一群 process（如使用者登入 session）
+> init.scope :: PID 1 所在的位置
+E> slice 分層、service/scope 放 process（no internal process rule）。
+?mc cgroups v2 的 no internal process rule 指的是？
++ process 只能放在葉節點 cgroup，中間節點只負責分配資源
+- 一個 process 不能同時屬於兩個 user 的 cgroup
+- root cgroup 底下不能放任何 process
+- 每個 cgroup 裡只能放一個 process
+E> 所以 systemd 才把 process 放在 .service/.scope，而 .slice 只做分組。
+?cmd 即時查看各 cgroup（服務）的 CPU、記憶體用量排行：
+= systemd-cgtop
+E> 類似 top，但以 cgroup 為單位。
+?tf cat /proc/self/cgroup 可以看出目前 shell 屬於哪個 cgroup。
+=T
+E> cgroup v2 只有一行 0::/路徑。
+
+@CARD systemd.cgfs | cgroups v2 檔案介面
+A> cgroup 被做成一個「檔案櫃」：/sys/fs/cgroup 底下每個資料夾就是一個 cgroup，打開檔案就能看成員名單（cgroup.procs）和預算上限（memory.max、cpu.max）。寫檔案就等於改規則。
+B> 以**檔案系統**呈現：**/sys/fs/cgroup**，**一個 cgroup 一個目錄**
+B> **cgroup.procs**：這個 cgroup 裡的 PID 清單
+B> **cgroup.events**：**populated 0/1**（底下是否還有 process）、frozen
+B> **cgroup.subtree_control**：開放給子 cgroup 使用的 controller
+B> controller 檔案：cpu.max、cpu.weight、memory.current、memory.max、pids.current、pids.max；值 **max** 代表不限制
+X> $ cd /sys/fs/cgroup/system.slice/cron.service
+X> $ cat cgroup.procs      # 1153
+X> $ cat memory.max        # max
+?mc 想知道 cron.service 目前有哪些 PID，應讀哪個檔案？
++ /sys/fs/cgroup/system.slice/cron.service/cgroup.procs
+- /sys/fs/cgroup/system.slice/cron.service/cgroup.threads.max
+- /sys/fs/cgroup/cron/tasks.list（cgroup v1 的格式）
+- /etc/systemd/system/cron.service 中的 MainPID=
+E> 每個 cgroup 一個目錄，cgroup.procs 列出 PID。
+?fill cgroup.events 中顯示底下是否還有 process 的欄位是＿＿
+= populated
+E> populated 1 表示還有 process，0 表示空了；systemd 用它判斷服務是否已完全結束。
+?tf memory.max 的內容是 max，代表該 cgroup 沒有記憶體上限。
+=T
+E> 值為 max 代表不限制；systemctl edit 設 MemoryMax= 後這裡會變成數字。
+
+@CARD systemd.resource | systemd 資源控制：Weight、Limit、Throttle
+A> 三種管法：Weight 是「塞車時才看的優先權」（不忙時大家隨便用）；Hard limit 是「預算上限，超過就處分」（記憶體超過 MemoryMax 直接被 OOM kill）；Throttle 是「接近上限就踩煞車」（超過 MemoryHigh 變慢、回收記憶體，但不會被殺）。
+B> **Weight**：只在資源**忙碌、搶用時**才按比例分配；**CPUWeight=、IOWeight=**（預設 **100**）
+B> **Hard limit**：**CPUQuota=**（cpu.max）、**MemoryMax=**（memory.max）、**TasksMax=**（pids.max）；超過 MemoryMax → **OOM kill**
+B> **Throttle**：超過 **MemoryHigh=**（memory.high）→ **變慢、回收記憶體**，不殺 process
+B> 設定方式：**systemctl edit** 寫進 [Service]，或 **systemctl set-property** 直接套用（預設會持久保存）
+X> # systemctl edit myapp.service
+X> [Service]
+X> CPUWeight=200     # cpu.weight
+X> CPUQuota=50%      # cpu.max
+X> MemoryHigh=800M   # memory.high
+X> MemoryMax=1G      # memory.max
+X> TasksMax=512      # pids.max
+X> $ systemctl set-property myapp.service MemoryMax=500M
+?mt 配對 systemd 設定與 cgroup 檔案：
+> CPUWeight= :: cpu.weight
+> CPUQuota= :: cpu.max
+> MemoryMax= :: memory.max
+> MemoryHigh= :: memory.high
+> TasksMax= :: pids.max
+E> 投影片右邊的註解就是對照表。
+?mc 服務的記憶體用量超過 MemoryHigh= 但還沒到 MemoryMax=，會發生什麼事？
++ 被 throttle：變慢並回收記憶體，但不會被殺
+- 服務會被 systemd 停止，等記憶體降下來再重啟
+- 服務會被 systemd 自動重新啟動
+- 沒有任何影響，只是記錄一筆 log
+E> MemoryHigh 是軟性煞車；MemoryMax 才是硬上限，超過會 OOM kill。
+?mc 兩個服務 CPUWeight 分別是 200 與 100。系統 CPU 很閒時，哪個說法正確？
++ 都能盡量用 CPU；weight 只在搶 CPU 時才有作用
+- 第一個服務永遠固定拿到 2/3 的 CPU 時間，不管系統忙不忙
+- 第二個服務最多只能使用 50% 的 CPU，即使系統很閒
+- weight 會依比例換算成固定的 CPUQuota 上限
+E> Share only when resource is busy。想要硬上限要用 CPUQuota=。
+?cmd 不開編輯器，直接把 myapp.service 的記憶體硬上限設為 500M：
+= systemctl set-property myapp.service MemoryMax=500M
+= systemctl set-property myapp MemoryMax=500M
+E> 加 --runtime 則只在這次開機有效。
+?sa 某 Web 服務偶爾記憶體暴衝把整台機器拖垮。請說明如何用 systemd 限制它，並比較 MemoryHigh= 與 MemoryMax= 的差異，以及何時該用 CPUWeight= 而不是 CPUQuota=。
+R> 用 systemctl edit web.service 在 [Service] 加入 MemoryHigh=（例如 800M）與 MemoryMax=（例如 1G），或用 systemctl set-property 直接設定；systemd 會寫入該服務 cgroup 的 memory.high / memory.max。
+R> MemoryHigh 是 throttle：超過時 kernel 讓 process 變慢並積極回收記憶體，但不會殺掉它；MemoryMax 是硬上限，超過時會觸發 OOM killer 殺掉該 cgroup 內的 process（可搭配 Restart= 讓服務自動重啟）。通常 High 設得比 Max 低一些，先煞車再處分。
+R> CPUWeight 是相對權重，只在 CPU 忙碌、多個服務搶用時才按比例分配，閒時不設限，適合「重要服務優先」；CPUQuota 是絕對上限（如 50% = 每週期最多半顆 CPU），即使 CPU 很閒也不能超過，適合防止單一服務吃滿。
+P> 用 systemctl edit / set-property 設定 MemoryHigh、MemoryMax
+P> MemoryHigh 超過會 throttle、不會被殺
+P> MemoryMax 超過會 OOM kill
+P> CPUWeight 只在搶資源時生效；CPUQuota 是硬上限
+
+@CARD systemd.systemctl | systemctl 指令總覽
+A> systemctl 是跟總管家溝通的遙控器：start/stop 是「現在開/關」，enable/disable 是「開機時要不要自動開」，mask 是「把插頭拔掉並封住插座」，連別人想幫你開都開不了。
+B> **status [unit]**：狀態、最近 log、cgroup；**cat unit**：印出 unit 檔與所有 drop-in
+B> **start / stop**：立即啟動 / 停止（不影響開機行為）
+B> **enable / disable**：依 [Install] 建立 / 移除 symlink（影響開機）；**enable --now** = enable + start
+B> **kill**：送訊號給服務的 process（預設 SIGTERM，可用 -s 指定）
+B> **mask / unmask**：把 unit 連到 **/dev/null**，讓它**完全無法被啟動**（手動或被依賴都不行）
+B> **list-unit-files**、**list-dependencies**；改完 unit 檔後 **daemon-reload**
+?mt 配對 systemctl 子指令：
+> enable :: 建立 symlink，開機時自動啟動
+> start :: 現在立刻啟動，不影響開機設定
+> mask :: 連到 /dev/null，任何方式都無法啟動
+> daemon-reload :: 修改 unit 檔後重新載入設定
+> cat :: 顯示 unit 檔內容與 drop-in
+E> enable 和 start 是兩件事，所以常用 enable --now。
+?mc 某服務 disable 之後，仍然因為別的服務 Wants= 它而被啟動。要徹底阻止它被啟動，應該用？
++ systemctl mask
+- systemctl stop
+- systemctl kill
+- systemctl daemon-reload
+E> disable 只移除 [Install] 建立的 symlink，被依賴時仍會啟動；mask 把它指向 /dev/null。
+?cmd 修改了 /etc/systemd/system/myapp.service 之後，讓 systemd 重新讀取 unit 檔：
+= systemctl daemon-reload
+E> 不 reload 的話 systemctl 會警告 unit file changed on disk。
+?cmd 讓 nginx 開機自動啟動，並且現在就啟動（一個指令）：
+= systemctl enable --now nginx
+= systemctl enable --now nginx.service
+= systemctl --now enable nginx
+E> --now 會同時 start（disable --now 則同時 stop）。
+?cmd 顯示 sshd.service 的 unit 檔內容（含所有 drop-in）：
+= systemctl cat sshd
+= systemctl cat sshd.service
+E> 比直接 cat 檔案好：會告訴你實際生效的是哪些檔案。
+
+@CARD systemd.unitfile | Unit 檔結構：[Unit]、[Service]、[Install]
+A> 一份 unit 檔像「員工資料卡」：[Unit] 是基本資料與人際關係（我是誰、在誰之後上班、需要誰）；[Service] 是工作內容（怎麼啟動、掛了怎麼辦）；[Install] 是「被誰錄取」（enable 時掛到哪個 target 底下）。
+B> **[Unit]**：通用資訊：Description=、Documentation=、依賴（Wants=、Requires=）、順序（After=、Before=）
+B> **[Service]**：服務專屬設定：Type=、ExecStart=、Restart=…；也可用 **systemd.exec(5)** 的選項（User=、Environment=…）
+B> **[Install]**：安裝資訊，**只給 enable / disable 用**：WantedBy=、RequiredBy=
+B> 沒有 [Install] 的 unit 不能 enable（通常是被別人依賴或由 timer / socket 觸發）
+X> [Unit]
+X> Description=OpenSSH Daemon
+X> After=network.target sshdgenkeys.service
+X> Wants=sshdgenkeys.service ssh-access.target
+X> [Service]
+X> Type=notify-reload
+X> ExecStart=/usr/bin/sshd -D
+X> KillMode=process
+X> Restart=always
+X> [Install]
+X> WantedBy=multi-user.target
+?mt 配對設定與所在區段：
+> Description= :: [Unit]
+> After= :: [Unit]
+> ExecStart= :: [Service]
+> Restart= :: [Service]
+> WantedBy= :: [Install]
+E> [Install] 只有 enable/disable 會讀。
+?mc [Install] 區段的用途是？
++ 給 enable / disable 用的資訊
+- 告訴 apt 如何安裝這個套件
+- 告訴 apt 或 dnf 如何安裝這個套件的資訊
+- 宣告這個服務要在哪些服務之後啟動
+E> 提供 systemctl enable / disable 安裝 unit 時需要的資訊。Installation information for the unit, used by enable / disable。
+?tf systemd.exec(5) 的選項（例如 User=、Environment=）可以寫在 [Service] 區段。
+=T
+E> [Service] includes options in systemd.exec。
+
+@CARD systemd.dropin | Drop-in 片段與 systemctl edit
+A> 不要直接改「出廠說明書」（/usr/lib 底下的 unit，套件更新會被蓋掉）。改用「便利貼」：systemctl edit 在 /etc/systemd/system/xxx.service.d/override.conf 貼一張，只寫要改的那幾行，其餘沿用原本設定。
+B> **systemctl edit [unit]**：建立或編輯 drop-in：**/etc/systemd/system/<unit>.d/override.conf**
+B> **--full**：改為編輯整份 unit（複製到 /etc/systemd/system/<unit>）
+B> 編輯器中只有兩行註解之間的內容會被存檔；下方會顯示原 unit 內容供參考
+B> 用預設編輯器（$SYSTEMD_EDITOR / $EDITOR）；存檔後自動 daemon-reload
+B> 清掉清單型設定要先寫空值：例如改 ExecStart 要先 **ExecStart=** 再寫新的 ExecStart=
+X> # systemctl edit sshd.service
+X> [Service]
+X> ExecStart=
+X> ExecStart=/usr/bin/sshd -D -o LogLevel=VERBOSE
+?mc 為什麼建議用 drop-in 而不是直接修改 /usr/lib/systemd/system/sshd.service？
++ /usr/lib 的檔案屬於套件、更新會被覆蓋；drop-in 放 /etc 只覆寫需要的部分
+- drop-in 會被 systemd 預先編譯成二進位，執行速度比完整的 unit 檔快很多
+- /usr/lib 底下的檔案是唯讀掛載的，連 root 也無法修改，只能改 /etc 的版本
+- systemd 不會讀取 /usr/lib 底下的 unit，只會讀 /etc 的設定
+E> /etc 的設定優先，且不會被 apt 蓋掉。
+?fill systemctl edit nginx.service 建立的 drop-in 檔路徑是 /etc/systemd/system/nginx.service.d/＿＿
+= override.conf
+E> 也可以手動在 .d/ 目錄放任意 *.conf。
+?cmd 用編輯器修改 myapp.service 的「完整」unit 檔（不是 drop-in）：
+= systemctl edit --full myapp.service
+= systemctl edit --full myapp
+= systemctl edit myapp.service --full
+E> 會在 /etc/systemd/system/ 產生完整副本。
+?tf 在 drop-in 想換掉原本的 ExecStart=，直接寫一行新的 ExecStart= 就好，不需要其他處理。
+=F
+E> 對一般服務，ExecStart= 可累加，必須先寫空的 ExecStart= 清除舊值，否則會報錯（非 oneshot 只能有一個）。
+
+@CARD systemd.path | Unit 搜尋路徑與優先順序
+A> systemd 找 unit 就像找文件：先看「你自己桌上」（/etc，管理員設定），再看「部門共用櫃」（/usr/local/lib，本機自裝），最後才看「公司出廠檔案」（/usr/lib，套件提供）。同名時越前面越優先。
+B> System unit：**/etc/systemd/system/** → **/usr/local/lib/systemd/system/** → **/usr/lib/systemd/system/**（前者優先）
+B> /etc：管理員的設定與 enable 產生的 symlink；/usr/lib：套件安裝的 unit
+B> User unit（systemctl --user）：$XDG_CONFIG_DIRS/systemd/user、/etc/systemd/user、$XDG_DATA_HOME/systemd/user（~/.local/share/systemd/user）、/usr/local/lib/systemd/user、/usr/lib/systemd/user
+B> 查詢實際使用的檔案：**systemctl cat**、systemctl show -p FragmentPath
+?ord 依優先順序（高 → 低）排列 system unit 搜尋路徑：
+> /etc/systemd/system/
+> /usr/local/lib/systemd/system/
+> /usr/lib/systemd/system/
+E> /etc 最優先，所以管理員的設定可以蓋過套件預設。
+?mc 自己寫的 myapp.service 應該放在哪裡最合適？
++ /etc/systemd/system/myapp.service
+- /usr/lib/systemd/system/myapp.service
+- /var/lib/systemd/myapp.service
+- /run/myapp.service
+E> /usr/lib 留給套件管理；管理員自訂放 /etc。
+?tf 使用者層級的 unit 可以放在 ~/.local/share/systemd/user/ 底下，用 systemctl --user 管理。
+=T
+E> 對應 $XDG_DATA_HOME/systemd/user。
+
+@CARD systemd.deps | 依賴：Requires、Wants、BindsTo、Upholds
+A> 四種「需要你」的強度：Wants 是「希望你來，不來我也照常上班」；Requires 是「你沒來我就算失敗」；BindsTo 是「你一走我也走」；Upholds 是「你倒了我就把你拉起來」。
+B> **Requires=**：列出依賴，**平行啟動**；依賴失敗 → 這個 unit 被標記為 **failed**
+B> **Wants=**：較寬鬆；依賴失敗**不會**讓這個 unit failed → **大多數情況建議用 Wants**
+B> **BindsTo=**：比 Requires 更嚴格；依賴**掛掉時這個 unit 也會停止**
+B> **Upholds=**：比 BindsTo 更積極；依賴掛掉時會**把依賴重新啟動**
+B> 依賴 ≠ 順序：只寫 Requires 沒寫 After 時兩者是**同時**啟動的
+?mt 配對依賴關係：
+> Wants= :: 依賴失敗也不影響自己（建議預設使用）
+> Requires= :: 依賴失敗，自己被標記為 failed
+> BindsTo= :: 依賴停止或崩潰，自己也跟著停止
+> Upholds= :: 依賴崩潰時，自動把依賴重新啟動
+E> 強度：Wants < Requires < BindsTo；Upholds 更積極地維持依賴存活。
+?mc A.service 寫了 Requires=B.service，但沒有 After=B.service。A 和 B 的啟動順序是？
++ 同時（平行）啟動
+- 先 B 再 A
+- 先 A 再 B
+- 只啟動 A
+E> All the dependencies will be executed in parallel；要排順序需要另外寫 After=。
+?mc 為什麼投影片建議大多數情況用 Wants= 而不是 Requires=？
++ 依賴失敗時不會連帶讓自己 failed，系統比較有韌性
+- Wants= 的依賴會平行啟動，所以比較快
+- Requires= 已經被新版 systemd 淘汰
+- Wants= 會自動加上對應的 After=
+E> Wants 是 less restrictive 的版本。
+?tf 若 A 有 BindsTo=B，當 B 崩潰時，A 也會被停止。
+=T
+E> BindsTo 比 Requires 更嚴格：依賴停止或崩潰，自己也一起停。
+
+@CARD systemd.order | 順序：Before= / After= 不是依賴
+A> After= 只是「排隊順序」，不是「邀請函」：寫了 After=network.target 不代表會把網路叫起來，只代表如果它也要啟動，就排在它後面。要「叫起來」得用 Wants/Requires，兩者通常搭配使用。
+B> **Before=**：這個 unit 要在列出的 unit **之前**啟動
+B> **After=**：這個 unit 要在列出的 unit **之後**啟動
+B> **它們不是依賴**：只指定啟動順序；要拉起依賴請用 Requires= / Wants= / BindsTo=
+B> 常見組合：**Wants=network-online.target + After=network-online.target**（真的等網路可用）
+B> 關機時順序**反過來**（先啟動的後停止）
+?mc myapp.service 只寫了 After=postgresql.service，沒有任何 Wants/Requires。啟動 myapp 時會？
++ 不會自動啟動 postgresql；若 postgresql 剛好也要啟動，myapp 會排在它之後
+- systemd 會自動先啟動 postgresql，等它 active 之後再啟動 myapp
+- 因為只寫 After= 而沒有寫 Requires=，myapp 會因缺少依賴啟動失敗
+- myapp 會一直卡在 activating，直到有人手動啟動 postgresql 為止
+E> These are not dependencies, only startup order is specified。
+?tf After= 和 Before= 會讓 systemd 自動啟動列出的 unit。
+=F
+E> 只控制順序，要搭配 Wants=/Requires=。
+?mc HAProxy 的 unit 同時寫了 Wants=network-online.target 與 After=network-online.target，目的是？
++ 拉起 network-online.target，並等網路可用後才啟動 HAProxy
+- 網路斷線時，systemd 會自動停止 HAProxy，等網路恢復之後再重新把它啟動
+- 網路斷線時，systemd 會自動停止 HAProxy，等網路恢復再啟動
+- 只是重複的寫法，Wants= 已經包含順序，再寫 After= 沒有額外效果
+E> Wants 負責拉起、After 負責排序，兩者缺一不可。
+
+@CARD systemd.defdeps | 預設依賴：DefaultDependencies
+A> 每個服務都會被自動加上「入職手續」：要等系統初始化（sysinit、basic）完成才上班，而且一宣布關機（shutdown.target）就收工。只有很早期開機要用的服務才會關掉這個預設。
+B> 除非設定 **DefaultDependencies=no**，service 會自動加上：
+B> **Requires=sysinit.target**
+B> **After=sysinit.target basic.target**
+B> **Conflicts=shutdown.target**、**Before=shutdown.target**
+B> Conflicts=：兩者不能同時存在 → 關機（啟動 shutdown.target）時會停止這個服務
+?mc 為什麼一般服務在關機時會被停止？
++ 預設依賴有 Conflicts=shutdown.target，關機啟動它時就會停掉服務
+- 因為 kernel 在關機時會直接對所有 process 送 SIGKILL 強制結束
+- 因為每個服務都必須寫 ExecStop=，systemd 關機時會依照寫入順序逐一執行它們
+- 因為 multi-user.target 在關機時會被刪除，底下所有 WantedBy 它的服務也就跟著消失
+E> 再加上 Before=shutdown.target，保證服務在 shutdown.target 之前停好。
+?mt 配對預設依賴：
+> Requires= :: sysinit.target
+> After= :: sysinit.target basic.target
+> Conflicts= :: shutdown.target
+> Before= :: shutdown.target
+E> 投影片 Systemd default dependencies。
+?fill 不想要自動加上預設依賴時，在 [Unit] 寫 DefaultDependencies=＿＿
+= no
+= false
+= 0
+E> 只有開機極早期或關機流程中的特殊 unit 才需要關掉預設依賴。
+
+@CARD systemd.install | enable 的原理：.wants/ symlink
+A> enable 不會「啟動」任何東西，它只是在 target 的「邀請名單資料夾」（xxx.target.wants/）放一張指向你的 symlink 名片。開機時 target 啟動，就會照名單把你叫起來。
+B> 用 **systemctl enable / disable** 安裝與解除安裝 unit
+B> enable 依 [Install] 的 **WantedBy=** 在 **/etc/systemd/system/<target>.wants/** 建立 symlink（RequiredBy= 則是 .requires/）
+B> WantedBy=multi-user.target → 開機到 multi-user.target 時被 Wants 拉起
+B> disable 移除這些 symlink；**unit 檔本身不會被刪**
+X> $ sudo systemctl enable sshd.service
+X> Created symlink '/etc/systemd/system/multi-user.target.wants/sshd.service'
+X>   → '/usr/lib/systemd/system/sshd.service'.
+?mc systemctl enable sshd.service 實際做了什麼？
++ 在 multi-user.target.wants/ 建立指向 unit 檔的 symlink
+- 立刻啟動 sshd，並把目前狀態記錄在 /var/lib/systemd，下次開機時恢復成同樣的狀態
+- 把 unit 檔從 /usr/lib/systemd/system 複製一份到 /etc/systemd/system/
+- 在 /etc/rc.local 加入一行 systemctl start sshd.service，讓每次開機時都會執行它
+E> 依 WantedBy=multi-user.target 建立 symlink；不會立即啟動。
+?fill 某服務 [Install] 寫 WantedBy=multi-user.target，enable 後 symlink 會放在 /etc/systemd/system/＿＿/ 目錄中
+= multi-user.target.wants
+E> RequiredBy= 會放在 <target>.requires/。
+?tf systemctl disable 會刪除 unit 檔。
+=F
+E> 只移除 symlink。
+
+@CARD systemd.target | Target 與 SysV runlevel
+A> Target 是「套餐」：multi-user.target 是「多人文字模式套餐」，graphical.target 是「再加上圖形介面」。開機時 systemd 點 default.target 這份套餐（其實是指向某個套餐的別名），套餐裡的每道菜（unit）就會被端上來。
+B> 工作以 unit 組織；**target 是一群 unit 的集合**，用來把系統組到某個狀態
+B> target 可以建立在其他 target 之上（graphical → multi-user → basic …）
+B> 開機時啟動 **default.target**（通常是 graphical 或 multi-user 的別名）：**systemctl get-default / set-default**
+B> runlevel 對照：**0 poweroff**、**1 rescue**（單人模式）、**2/3/4 multi-user**、**5 graphical**、**6 reboot**；另有 **emergency.target**、**network-online.target**
+B> 切換到某 target 並停掉不屬於它的 unit：**systemctl isolate**
+?mt 配對 SysV runlevel 與 systemd target：
+> 0 :: poweroff.target
+> 1 :: rescue.target
+> 3 :: multi-user.target
+> 5 :: graphical.target
+> 6 :: reboot.target
+E> 2、3、4 都對應 multi-user.target。
+?cmd 查詢系統預設開機的 target：
+= systemctl get-default
+E> default.target 是指向實際 target 的 symlink。
+?cmd 把預設開機 target 改成純文字的多使用者模式：
+= systemctl set-default multi-user.target
+= systemctl set-default multi-user
+E> set-default 會改 default.target 這個 symlink 指向的 target。
+?mc emergency.target 與 rescue.target 的差別？
++ emergency 啟動的東西比 rescue 更少
+- 兩者完全相同
+- rescue 比 emergency 啟動更少服務
+- emergency 會啟動網路，rescue 不會
+E> emergency 只給一個 root shell，幾乎不啟動任何服務、root 可能唯讀；rescue 會掛載本機檔案系統並啟動基本系統。emergency 是最精簡的救援環境。
+
+@CARD systemd.hier | Target 階層與 list-dependencies
+A> 開機就像蓋大樓：sysinit（打地基）→ basic（水電管線：sockets、slices、timers、paths）→ multi-user（各樓層服務）→ graphical（裝潢門面）。list-dependencies 能把整棟樓的結構圖印出來。
+B> **graphical.target** → 顯示管理器（如 sddm.service）＋ **multi-user.target**
+B> **multi-user.target** → 各服務（sshd、logind…）＋ **basic.target**、getty.target、remote-fs.target…
+B> **basic.target** → **sockets.target、slices.target、sysinit.target、timers.target**、paths.target
+B> 查看：**systemctl list-dependencies multi-user.target**（● 啟動中、○ 未啟動）
+?ord 由最底層到最上層排列：
+> sysinit.target
+> basic.target
+> multi-user.target
+> graphical.target
+E> graphical 依賴 multi-user，multi-user 依賴 basic，basic 依賴 sysinit 等。
+?cmd 列出 multi-user.target 依賴的所有 unit（樹狀）：
+= systemctl list-dependencies multi-user.target
+= systemctl list-dependencies multi-user
+E> ● 表示啟動中、○ 表示未啟動；加 --reverse 可反查誰依賴它。
+?mc timers.target 位於哪個 target 底下？
++ basic.target
+- graphical.target
+- shutdown.target
+- network-online.target
+E> multi-user.target ⇒ basic.target ⇒ timers.target。
+
+@CARD systemd.type | Service Type：什麼時候算「啟動完成」
+A> Type 決定 systemd 何時把服務標成「已啟動」，好讓排在後面的服務出發：simple 是「人一出門就算」；exec 是「確定上車了才算」；notify 是「到了公司打電話回報 READY 才算」；oneshot 是「事情做完回家才算」。
+B> **simple**：主 process **fork() 之後立刻**視為 started（就算 exec 失敗也已經算啟動）
+B> **exec**：類似 simple，但等到**執行檔真的被 exec 成功**才算 started
+B> **notify / notify-reload**：等服務透過 **sd_notify(3)** 送出 **READY=1** 才算 started；notify-reload 另外支援送 **SIGHUP** 來 reload
+B> **oneshot**：**主 process 結束之後**才算完成；常搭配 **RemainAfterExit=yes**（結束後仍顯示 active）
+B> 其他：forking（傳統 daemon 自己 fork 到背景）
+?mt 配對 Type= 與「started」的時機：
+> simple :: fork() 之後立刻
+> exec :: 執行檔被 exec 成功之後
+> notify :: 服務送出 READY=1 之後
+> oneshot :: 主 process 結束之後
+E> 投影片 Systemd service type。
+?mc 一個只需執行一次的初始化腳本（跑完就結束），Type 最適合設為？
++ oneshot
+- simple
+- notify
+- exec
+E> oneshot 要等程式結束才算完成，排在它後面的 unit 才會開始。
+?mc 用 Type=simple 時，若 ExecStart= 的執行檔路徑打錯，systemctl start 會？
++ 先回報成功，之後才 failed
+- 立刻回報失敗
+- 卡住直到逾時
+- 自動改用 Type=exec
+E> 仍回報成功（fork 後就算 started），之後服務才變成 failed。這正是 exec 比 simple 好的地方：exec 失敗時 start 會直接回報錯誤。
+?tf Type=notify 的服務必須主動送 READY=1，systemd 才會認為它啟動完成。
+=T
+E> 透過 sd_notify(3)；sshd 用的是 notify-reload。
+
+@CARD systemd.restart | Restart= 重啟策略
+A> Restart= 是「服務掛掉時要不要自動扶起來」的規則。always 是無條件扶；on-failure 是「不正常結束才扶」（最常用）；on-abnormal 不管 exit code 只看是不是被訊號殺、逾時、OOM；on-abort 只在被訊號打死時扶。
+B> **no**：都不重啟（預設）
+B> **always**：任何結束都重啟（包含正常 exit 0）
+B> **on-success**：只有 **clean exit**（exit code 0 或 SuccessExitStatus）才重啟
+B> **on-failure**：**非 0 exit code、被訊號殺、逾時、OOM** 都重啟（clean exit 不重啟）
+B> **on-abnormal**：**被訊號殺、逾時、OOM**（exit code 非 0 不算）
+B> **on-abort**：**只有被未捕捉的訊號殺掉**
+B> 相關：RestartSec=（重啟前等多久）、StartLimitBurst= / StartLimitIntervalSec=（短時間重啟太多次就放棄）
+?mc 服務以 exit 1 結束。下列哪個 Restart= 設定「不會」重啟它？
++ on-abnormal
+- always
+- on-failure
+- 以上全部都會重啟
+E> on-abnormal 只管 unclean signal、timeout、OOM；unclean exit code 不算。
+?mc 服務被 OOM killer 殺掉，下列哪個設定不會重啟它？
++ on-abort
+- on-failure
+- on-abnormal
+- always
+E> 表格中 OOM 這一列：always、on-failure、on-abnormal 是 ✅，on-abort 與 on-success 是 ❌。
+?mt 配對 Restart= 值：
+> always :: 任何情況都重啟
+> on-success :: 只有正常結束才重啟
+> on-failure :: 非 0 exit、被訊號殺、逾時、OOM 都重啟
+> on-abort :: 只有被訊號殺才重啟
+E> 投影片 Systemd service restart policy 表格。
+?fill 一般長駐服務最常用、但正常 exit 0 時不會被重啟的設定是 Restart=＿＿
+= on-failure
+E> on-failure 涵蓋非 0 exit、被訊號殺、逾時與 OOM，正常結束則不重啟。
+?sa 請說明 systemd 的 Restart=on-failure、on-abnormal 與 on-abort 三者在下列四種情況下是否會重啟服務：(1) exit code 0 (2) exit code 1 (3) 被 SIGSEGV 殺掉 (4) 啟動逾時。
+R> on-failure：(1) 不重啟 (2) 重啟 (3) 重啟 (4) 重啟。
+R> on-abnormal：(1) 不重啟 (2) 不重啟 (3) 重啟 (4) 重啟。
+R> on-abort：(1) 不重啟 (2) 不重啟 (3) 重啟（被未捕捉的訊號殺掉）(4) 不重啟。
+R> 規律：on-failure 涵蓋所有非正常結束；on-abnormal 不管 exit code，只看訊號、逾時、OOM、watchdog；on-abort 只看訊號。
+P> on-failure：exit 1、訊號、逾時都重啟，exit 0 不重啟
+P> on-abnormal：只有訊號、逾時重啟
+P> on-abort：只有被訊號殺才重啟
+
+@CARD systemd.exec | Exec*= 與逾時
+A> 服務的「上下班流程」：ExecStartPre 是上班前打卡準備，ExecStart 是主要工作，ExecStartPost 是開工後的收尾，ExecReload 是「重新讀設定」，ExecStop 是下班。前面加「-」代表「這步失敗沒關係，繼續走」。
+B> **ExecStart=**：啟動服務時執行的指令（主 process）
+B> **ExecStartPre= / ExecStartPost=**：在 ExecStart 之前 / 之後額外執行；前綴 **「-」** 代表**允許失敗、不影響後續**
+B> **ExecReload=**：觸發重新載入設定（systemctl reload）
+B> **ExecStop=**：停止服務的指令（沒寫就直接送 KillSignal=，預設 SIGTERM）
+B> **TimeoutSec= / TimeoutStartSec= / TimeoutStopSec=**：等待啟動 / 停止的時間
+B> 指令要用**絕對路徑**（或在 PATH 中）；不經過 shell，要用管線或 && 得寫 /bin/sh -c '…'
+X> ExecStartPre=-/usr/lib/apt/apt-helper wait-online
+X> ExecStart=/usr/lib/apt/apt.systemd.daily update
+X> ExecReload=/bin/kill -HUP $MAINPID
+?mc ExecStartPre=-/usr/bin/foo 中的「-」代表？
++ 這個指令失敗也不影響服務繼續啟動
+- 以非 root 身分執行
+- 在背景執行，不等它跑完就繼續
+- 只在第一次啟動時執行
+E> Can be prefixed with a “-”, allowing this command to fail and not affect the rest。
+?mt 配對 Exec 設定：
+> ExecStart= :: 主要的啟動指令
+> ExecStartPre= :: 主指令之前的準備工作
+> ExecReload= :: systemctl reload 時執行
+> ExecStop= :: 停止服務時執行
+> TimeoutStopSec= :: 停止時最多等多久
+E> ExecStartPre/Post 可加「-」允許失敗；沒寫 ExecStop 時預設送 SIGTERM。
+?tf ExecStart=echo hi > /tmp/log 會由 shell 處理重導向，把 hi 寫進 /tmp/log。
+=F
+E> ExecStart 不經過 shell，> 會被當成普通參數；要寫 /bin/sh -c 'echo hi > /tmp/log'。
+
+@CARD systemd.execenv | 執行環境：路徑、使用者、資源、目錄
+A> systemd.exec 讓你在 unit 裡「布置員工的工作環境」：在哪間辦公室（WorkingDirectory、RootDirectory）、用誰的身分（User、DynamicUser）、多少資源（Limit*、Nice、CPU 排程）、文件放哪（RuntimeDirectory 等），不用在程式裡自己處理。
+B> 路徑：**WorkingDirectory=**（工作目錄，相對於服務的 root）、**RootDirectory=**（服務的根目錄，類似 chroot，相對於 host 的 /）
+B> 使用者：**User= / Group=**（**預設 root**）；**DynamicUser=** 啟動時動態配置 UID/GID，範圍 **61184–65519**
+B> 資源：**LimitCPU=、LimitFSIZE=…**（soft / hard limit，例如 LimitCPU= 等同 **ulimit -t**）；**Nice=**；**CPUSchedulingPolicy=**（other、batch、idle、fifo、rr）；**CPUSchedulingPriority=**；**CPUAffinity=**（類似 taskset）
+B> 目錄：**RuntimeDirectory=** → /run/、**StateDirectory=** → /var/lib/、**CacheDirectory=** → /var/cache/、**LogsDirectory=** → /var/log/、**ConfigurationDirectory=** → /etc/；RuntimeDirectory 預設停止時刪除，**RuntimeDirectoryPreserve=** 可保留
+B> 這些目錄由 systemd 自動建立並設定好擁有者（配合 User=/DynamicUser= 很方便）
+?mt 配對目錄設定與實際位置：
+> RuntimeDirectory= :: /run/
+> StateDirectory= :: /var/lib/
+> CacheDirectory= :: /var/cache/
+> LogsDirectory= :: /var/log/
+> ConfigurationDirectory= :: /etc/
+E> 投影片 Systemd exec - unit directories。
+?mc 沒有設定 User= 的服務，會以哪個身分執行？
++ root
+- nobody
+- 與執行 systemctl 的使用者相同
+- 動態配置的使用者
+E> Default is root。所以服務最好明確設定 User= 或 DynamicUser=。
+?mc DynamicUser=yes 的效果是？
++ 啟動時動態配置一組 UID/GID，服務停止後釋放
+- 每次啟動都以目前登入系統的使用者身分執行，登出時服務跟著一起停止
+- 讓服務在執行中可以自由切換成任何使用者，包括 root
+- 在 /etc/passwd 永久新增一個以服務命名的使用者
+E> 不需要預先 useradd，很適合不需要固定身分的服務。
+?fill LimitCPU= 對應的 shell 指令是 ulimit ＿＿
+= -t
+E> ulimit -t 是 CPU 時間（秒）上限。
+?mt 配對資源設定與功能：
+> Nice= :: 預設的 nice 值（排程優先權）
+> CPUSchedulingPolicy= :: 排程策略 other/batch/idle/fifo/rr
+> CPUAffinity= :: 限制可以在哪些 CPU 上執行
+> LimitFSIZE= :: 可建立檔案大小的上限
+E> CPUAffinity 是 unit 版的 taskset；Nice 是 unit 版的 nice。
+
+@CARD systemd.envio | Environment 與標準輸入輸出
+A> Environment= 是在 unit 裡直接寫「便條」給程式；EnvironmentFile= 是「另外附一張設定單」，前面加「-」表示「找不到這張單也沒關係」。StandardOutput= 決定程式說的話要送到 journal、檔案還是丟掉。
+B> **Environment=**：設定環境變數；值含空白要加引號：Environment="VAR1=word1 word2" "VAR2=word3"
+B> **EnvironmentFile=**：從文字檔讀環境變數；前綴 **「-」** 代表**檔案不存在也可以**
+B> **StandardInput=**：fd 0 接到 null、tty、file:path、socket、fd:name…
+B> **StandardOutput= / StandardError=**：fd 1、2 接到 **inherit、null、journal、kmsg、file:path、append:path、truncate:path、socket、fd:name**
+B> 預設 stdout/stderr 送到 **journal** → 用 journalctl -u 查看
+X> EnvironmentFile=-/etc/default/haproxy
+X> Environment="CONFIG=/etc/haproxy/haproxy.cfg" "PIDFILE=/run/haproxy.pid"
+X> ExecStart=/usr/bin/haproxy -Ws -f $CONFIG -p $PIDFILE
+X> StandardOutput=append:/var/log/myapp.log
+?mc EnvironmentFile=-/etc/default/haproxy 的「-」代表？
++ 這個檔案不存在時不視為錯誤
+- 從環境變數中移除這些設定
+- 以唯讀方式讀取
+- 只在 reload 時讀取
+E> Optionally prefixed with “-”, allowing the file to be absent。
+?fill 讓服務的 stdout 以「附加」方式寫到 /var/log/app.log：StandardOutput=＿＿
+= append:/var/log/app.log
+E> file: 會從頭覆寫，truncate: 每次啟動清空，append: 附加在後面。
+?tf 服務的 stdout 預設會被丟棄，所以 journalctl 看不到程式印出的訊息。
+=F
+E> 預設送進 journal（StandardOutput=journal），用 journalctl -u <unit> 就看得到。
+
+@CARD systemd.journald | systemd-journald
+A> journald 是系統的「中央檔案室」：收集 kernel（kmsg）、syslog、各服務的輸出，存成有索引的結構化日誌，可以依服務、開機次數、優先等級快速查。存在 /var/log/journal 才會「永久保存」，存在 /run 的話重開機就沒了。
+B> 收集 log 的系統服務：存成**結構化、有索引的 journal**
+B> 來源：**kmsg**、**syslog**、**service unit** 的輸出…
+B> **持久保存**：**/var/log/journal**；**揮發性**：**/run/log/journal**（**重開機就消失**）
+B> Storage=auto（預設）：/var/log/journal 存在才持久保存 → mkdir 後即可持久化（設定在 /etc/systemd/journald.conf）
+B> 常用查詢：journalctl **-u** unit、**-b**（本次開機）、**-f**（持續追蹤）、**-p err**、**--since "1 hour ago"**、**-k**（kernel）
+?mc journal 存在 /run/log/journal 時有什麼特性？
++ 屬於揮發性儲存，重開機就消失
+- 會自動上傳到遠端 syslog
+- 只有 root 能寫入，所以永久保存
+- 是二進位以外的純文字格式
+E> Volatile in /run/log/journal, lost at reboot。
+?fill journald 的持久保存位置是＿＿
+= /var/log/journal
+= /var/log/journal/
+E> /run/log/journal 是揮發性的，重開機就消失。
+?cmd 持續追蹤 nginx.service 的最新 log：
+= journalctl -u nginx -f
+= journalctl -fu nginx
+= journalctl -u nginx.service -f
+= journalctl -f -u nginx
+E> -u 指定 unit、-f 持續追蹤（類似 tail -f）。
+?cmd 只看「這次開機」中等級為 err 以上的訊息：
+= journalctl -b -p err
+= journalctl -p err -b
+= journalctl -b -p 3
+= journalctl -p 3 -b
+E> -b 本次開機、-p err（= 3）表示 err 以上的優先等級。
+
+@CARD systemd.timer | systemd.timer：用 systemd 跑週期性工作
+A> timer 是「鬧鐘」，service 是「鬧鐘響了要做的事」。X.timer 預設會叫醒同名的 X.service；鬧鐘本身要掛在 timers.target 底下，開機時才會被設定好。比 cron 多了 log、依賴、補跑、隨機延遲等好處。
+B> 用 systemd 控制**週期性工作**的方式（cron 的替代品）
+B> **X.timer 會觸發 X.service**（可用 Unit= 指定其他 service）
+B> 通常裝在 **timers.target** 底下：WantedBy=timers.target；multi-user.target ⇒ basic.target ⇒ timers.target
+B> [Timer] 常用：**OnCalendar=**（日曆時間）、**RandomizedDelaySec=**（隨機延遲）、**Persistent=true**（關機錯過的下次開機補跑）；另有 OnBootSec=、OnUnitActiveSec=（相對時間）
+B> 要 enable / start 的是 **.timer**，不是 .service；**systemctl list-timers** 看下次執行時間
+X> # /lib/systemd/system/apt-daily.timer
+X> [Timer]
+X> OnCalendar=*-*-* 6,18:00
+X> RandomizedDelaySec=12h
+X> Persistent=true
+X> [Install]
+X> WantedBy=timers.target
+?mc backup.timer 預設會啟動哪個 unit？
++ backup.service
+- backup.target
+- timers.service
+- 必須在 [Timer] 用 Unit= 指定，否則不會啟動任何東西
+E> A timer named X.timer will trigger X.service。
+?mc 要讓 backup.timer 生效，正確作法是？
++ systemctl enable --now backup.timer
+- systemctl enable --now backup.service
+- 把 backup.service 加進 crontab
+- systemctl daemon-reload 就會自動生效
+E> 啟用的是 timer；service 通常沒有 [Install]，由 timer 觸發。
+?mc Persistent=true 的作用是？
++ 機器關機期間錯過的執行時間，開機後會補跑一次
+- timer 永遠不會被 disable
+- 每次執行後保留 log 不刪
+- service 執行完不會結束
+E> 類似 anacron 的補跑機制。
+?cmd 列出所有 timer 與下次觸發時間：
+= systemctl list-timers
+= systemctl list-timers --all
+E> 會列出 NEXT、LEFT、LAST、PASSED 與對應的 unit；--all 也顯示未啟用的。
+?sa 比較 cron 與 systemd timer：請列出 systemd timer 相對 cron 的三個優點，並寫出一個每天 03:00 執行 /usr/local/bin/backup.sh 的 timer 與 service unit。
+R> 優點：(1) 執行輸出自動進 journal，可用 journalctl -u backup 查；(2) 可以用 systemd 的依賴與順序（After=network-online.target 等）及資源限制、User= 等執行環境設定；(3) Persistent=true 可補跑關機期間錯過的工作；(4) RandomizedDelaySec 可避免多台機器同時執行；(5) systemctl list-timers 可看下次執行時間，systemd-analyze calendar 可驗證時間格式。
+R> backup.service：[Unit] Description=Daily backup；[Service] Type=oneshot、ExecStart=/usr/local/bin/backup.sh
+R> backup.timer：[Unit] Description=Run backup daily；[Timer] OnCalendar=*-*-* 03:00:00、Persistent=true；[Install] WantedBy=timers.target
+R> 啟用：systemctl daemon-reload；systemctl enable --now backup.timer
+P> 至少三個正確優點（journal、依賴、補跑、隨機延遲、list-timers）
+P> service 用 Type=oneshot 與 ExecStart
+P> timer 用 OnCalendar=*-*-* 03:00 且 WantedBy=timers.target
+P> enable 的是 .timer
+
+@CARD systemd.calendar | OnCalendar 時間格式與 systemd-analyze
+A> OnCalendar 的格式就是「星期 年-月-日 時:分:秒」，* 是「每一個」，逗號列出多個值。不確定寫得對不對？用 systemd-analyze calendar 讓它幫你算下一次觸發時間。
+B> 格式：**weekday year-month-date hour:minute:second**，類似 cron 但順序是由大到小
+B> `*-*-* 6:00`：每天 06:00；`*-*-* 6,18:00`：每天 06:00 與 18:00；`Mon *-*-* 00:00:00`：每週一午夜
+B> 簡寫：**daily**（= `*-*-* 00:00:00`）、weekly、monthly、hourly
+B> **RandomizedDelaySec=**：在觸發時間後隨機延遲，避免多台機器同時執行（例如同時打 apt 鏡像站）
+B> **systemd-analyze calendar '…'**：檢查語法並顯示 Normalized form 與 **Next elapse**
+X> $ systemd-analyze calendar '*-*-* 00:00:00'
+X> Normalized form: *-*-* 00:00:00
+X>     Next elapse: Mon 2025-10-27 00:00:00 CST
+?mc OnCalendar=*-*-* 6,18:00 代表？
++ 每天 06:00 與 18:00
+- 每月 6 日與 18 日
+- 每 6 到 18 分鐘
+- 每天 6:18，以及 18:06
+E> 時:分 位置寫 6,18:00。
+?cmd 檢查 OnCalendar 字串 'Mon *-*-* 03:00' 的語法並顯示下次觸發時間：
+= systemd-analyze calendar 'Mon *-*-* 03:00'
+= systemd-analyze calendar "Mon *-*-* 03:00"
+E> 輸出 Normalized form 與 Next elapse，可以確認寫法是否如預期。
+?mc 公司 500 台機器都用 OnCalendar=daily 跑更新，造成鏡像站每天午夜被打爆。最直接的解法是？
++ 加上 RandomizedDelaySec=，把執行時間隨機分散
+- 改成 Persistent=true，讓沒跑到的機器之後再補跑
+- 把 service 的 Type 改為 oneshot，執行完就結束
+- 改用 OnBootSec=，從各自開機時間開始計算
+E> RandomizedDelaySec can prevent timers on multiple machines from executing at the same time。
+?fill OnCalendar 寫「每天 03:30」：OnCalendar=*-*-* ＿＿
+= 03:30
+= 3:30
+= 03:30:00
+= 3:30:00
+E> 格式是「年-月-日 時:分:秒」，秒數可省略。
+
+@CARD systemd.template | Unit template：name@.service 與 %i
+A> template 是「範本申請表」：wg-quick@.service 只寫一份，wg-quick@wg0、wg-quick@wg1 就能各自啟動一個實例，@ 後面的字（instance name）會被填進 %i。
+B> unit 名稱可以帶**一個參數**，稱為 **instance name**
+B> 檔名在前綴結尾要有**單一個「@」**：例如 **btrfs-scrub@.service**、**wg-quick@.service**
+B> 使用時把參數放在 @ 後面：**systemctl start wg-quick@wg0**
+B> unit 檔中用 **%i**（escaped）或 **%I**（unescaped）取得 instance name
+B> 常見例子：getty@tty1.service、user@1000.service
+X> # wg-quick@.service
+X> [Service]
+X> Type=oneshot
+X> RemainAfterExit=yes
+X> ExecStart=/usr/bin/wg-quick up %i
+X> ExecStop=/usr/bin/wg-quick down %i
+?mc 執行 systemctl start wg-quick@wg0 時，unit 檔中的 %i 會被替換成？
++ wg0
+- wg-quick
+- wg-quick@wg0.service
+- 目前使用者名稱
+E> @ 後面的字就是 instance name。
+?cmd 讓 WireGuard 介面 wg0 開機自動啟動並立刻啟動（使用 wg-quick 的 template unit）：
+= systemctl enable --now wg-quick@wg0
+= systemctl enable --now wg-quick@wg0.service
+E> HW0 的 WireGuard 就是這樣設定開機自動連線。
+?tf template unit 的檔名必須包含一個 @，例如 foo@.service。
+=T
+E> 例如 wg-quick@.service、getty@.service；使用時寫 wg-quick@wg0。
+?mc wg-quick@.service 使用 Type=oneshot 與 RemainAfterExit=yes 的原因是？
++ 讓執行完的 unit 仍維持 active
+- 讓 wg-quick 在背景長駐
+- 讓失敗時自動重試
+- 讓多個實例共用同一個 process
+E> wg-quick up 執行完就結束，但希望介面建立後 unit 仍顯示 active，stop 時才執行 down。沒有 RemainAfterExit 的話，oneshot 跑完就變 inactive，stop 時不會執行 ExecStop。
+
+@CARD systemd.examples | 讀懂真實 unit：sshd、haproxy、apt-daily
+A> 讀別人的 unit 就像讀履歷：sshd 的 KillMode=process 讓「停 sshd 時不要把正在連線的 SSH session 一起殺掉」；haproxy 用 SuccessExitStatus=143 告訴 systemd「被 SIGTERM 正常關掉不算失敗」；apt-daily 用 ConditionACPower 讓筆電沒插電時不更新。
+B> **sshd**：Type=notify-reload、Restart=always、**KillMode=process**（停止時只殺主 process，已建立的 SSH 連線保留）
+B> **haproxy**：EnvironmentFile=-…、多行 ExecReload=、**KillMode=mixed**（SIGTERM 給主 process，最後 SIGKILL 給全部）、**SuccessExitStatus=143**（128+15，被 SIGTERM 結束視為成功）、Type=notify
+B> **apt-daily.service**：Type=oneshot、**ConditionACPower=true**（有接電源才執行）、ExecStartPre=-…wait-online
+B> **apt-daily.timer**：OnCalendar=*-*-* 6,18:00、RandomizedDelaySec=12h、Persistent=true
+B> **$MAINPID**：unit 檔中代表主 process 的 PID（ExecReload=/bin/kill -USR2 $MAINPID）
+?mc sshd.service 設定 KillMode=process 的目的？
++ 重啟或停止 sshd 時只殺主 process，不會切斷使用者已經建立的 SSH 連線
+- 讓 sshd 同一時間只能有一個 process，避免多個 SSH 連線之間互相干擾衝突
+- 讓 sshd 被 kill 時自動重啟，不需要另外設定 Restart=
+- 讓每個 SSH 連線都成為獨立的 service unit，方便個別停止
+E> 預設 KillMode=control-group 會殺掉整個 cgroup，包括你的登入 session。
+?fill haproxy 設定 SuccessExitStatus=143，因為被 SIGTERM（編號 15）結束時 exit status 是 128 + 15 = ＿＿
+= 143
+E> 被訊號 N 結束的 shell exit status 慣例是 128+N。
+?mc ConditionACPower=true 的效果是？
++ 沒接電源時跳過這個 unit
+- 斷電時自動關機
+- 啟動時需要使用者確認
+- 偵測到 UPS 才執行
+E> 只有在接上外部電源時才啟動這個 unit，否則跳過（不算失敗）Condition*= 不成立時 unit 會被略過，不會標記為 failed。
+
+@CARD systemd.tools | systemd 家族的其他工具
+A> systemd 把很多零散的系統設定變成「XXXd 服務 + XXXctl 遙控器」的組合：要改主機名就找 hostnamectl，時間找 timedatectl，DNS 找 resolvectl，使用者登入找 loginctl。
+B> **hostnamectl**（systemd-hostnamed）：主機名稱
+B> **timedatectl**（systemd-timedated、systemd-timesyncd）：時間、時區、NTP 校時
+B> **localectl**（systemd-localed）：語系與鍵盤配置
+B> **loginctl**（systemd-logind）：使用者 session、seat
+B> **networkctl**（systemd-networkd）、**resolvectl**（systemd-resolved）：網路與 DNS 名稱解析
+B> 其他：**systemd-sysusers**（建立系統帳號）、**bootctl**（systemd-boot）、**machinectl / systemd-nspawn**（輕量容器）
+?mt 配對要做的事與工具：
+> 修改主機名稱 :: hostnamectl
+> 設定時區與 NTP :: timedatectl
+> 查詢某網卡用的 DNS 伺服器 :: resolvectl
+> 列出登入中的 session :: loginctl
+> 設定語系 :: localectl
+E> systemd 的工具大多是「XXXd 服務 + XXXctl 指令」的組合。
+?cmd 把系統時區設為 Asia/Taipei：
+= timedatectl set-timezone Asia/Taipei
+E> timedatectl 也能用 set-ntp true 開啟網路校時。
+?cmd 把主機名稱改成 sa-vm：
+= hostnamectl set-hostname sa-vm
+= hostnamectl hostname sa-vm
+E> 會寫入 /etc/hostname，不必手動編輯檔案。
+
+@CARD systemd.p_debug | 實作：自己寫的服務起不來怎麼查
+A> 服務起不來時按這個順序問：systemd 有讀到最新的檔嗎（daemon-reload）？它說了什麼（status、journalctl）？指令本身能不能跑（手動用同一個使用者執行）？是不是權限、路徑、環境變數不同？
+B> 改完檔 → **systemctl daemon-reload** → **systemctl restart x** → **systemctl status x**（看 Active、Main PID、最後幾行 log）
+B> 詳細 log：**journalctl -u x -b -e**；看依賴：**systemctl list-dependencies x**
+B> 驗證語法：**systemd-analyze verify /etc/systemd/system/x.service**
+B> 常見原因：ExecStart 不是**絕對路徑**、用了 shell 語法（| > &&）卻沒包 sh -c、**User=** 沒權限讀檔、環境變數（PATH、HOME）跟互動式 shell 不同、Type 選錯（forking 的程式配 simple 會立刻「結束」）
+B> 一直重啟後停住：**start-limit-hit** → 修好後 **systemctl reset-failed x**
+X> $ systemd-analyze verify /etc/systemd/system/myapp.service
+X> $ sudo -u myapp /opt/myapp/bin/server   # 用服務的身分手動跑跑看
+X> $ systemctl reset-failed myapp
+?ord 服務改完設定後的檢查順序：
+> systemctl daemon-reload
+> systemctl restart myapp
+> systemctl status myapp
+> journalctl -u myapp -b -e
+E> 先讓 systemd 讀到新設定，再重啟、看狀態、看詳細 log。
+?cmd 檢查 /etc/systemd/system/myapp.service 有沒有語法或設定錯誤：
+= systemd-analyze verify /etc/systemd/system/myapp.service
+E> 能抓出未知的設定鍵、找不到的執行檔等錯誤。
+?mc 服務在短時間內一直崩潰，status 顯示 start request repeated too quickly，修好程式之後還要做什麼才能再啟動？
++ systemctl reset-failed myapp 清除失敗計數，再 start
+- 重新開機，因為失敗計數只有在下次開機時才會歸零
+- systemctl mask myapp 再 unmask，讓 systemd 重新載入這個 unit
+- 刪掉 unit 檔再重新建立一份，systemd 才會忘記之前的失敗
+E> 觸發 StartLimitBurst 後會進入 start-limit-hit 狀態。
+?mc 手動在 shell 執行 ExecStart 的指令都正常，用 systemd 啟動卻說找不到某個指令。最可能的原因？
++ systemd 服務的環境變數（如 PATH）和互動式 shell 不同，不會讀 ~/.bashrc
+- systemd 不支援直接執行 shell script，ExecStart 一定要是 ELF 執行檔
+- 服務必須先 systemctl enable 才能讀取系統的 PATH 與其他環境變數
+- 服務要改用 Type=forking，systemd 才會用 shell 解析 ExecStart
+E> 服務環境很乾淨：用絕對路徑或在 Environment= 設 PATH。
+
+@CARD systemd.p_query | 實作：給腳本用的 systemctl 查詢
+A> 寫腳本或檢查作業時，不要用眼睛讀 systemctl status 的彩色輸出，而是問「是或不是」的問題：is-active、is-enabled、is-failed，它們用 exit code 回答，最適合放進 if。
+B> **systemctl is-active x**：active 回 0；**is-enabled x**：enabled 回 0；**is-failed x**：failed 回 0；加 **-q** 不印字
+B> **systemctl --failed**（= list-units --state=failed）：一眼看出哪些 unit 壞掉
+B> **systemctl list-unit-files --state=enabled**：哪些會開機自動啟動
+B> **systemctl show x -p ActiveState,SubState,MainPID,ExecMainStatus**：取單一屬性（-p 指定、--value 只印值）
+B> **systemctl list-units --type=service**：目前載入的服務；**--all** 連 inactive 也列
+X> if systemctl is-active -q nginx; then echo up; fi
+X> systemctl show sftp_watchd -p MainPID --value
+X> systemctl --failed
+?cmd 安靜地（不印出文字）檢查 nginx 是否正在執行，只用 exit code 表示結果：
+= systemctl is-active -q nginx
+= systemctl is-active --quiet nginx
+= systemctl -q is-active nginx
+= systemctl --quiet is-active nginx
+E> 0 代表 active，適合寫在 if 或 && 後面。
+?cmd 列出所有處於 failed 狀態的 unit：
+= systemctl --failed
+= systemctl list-units --failed
+= systemctl list-units --state=failed
+E> 開機後第一個該跑的檢查指令。
+?mc 想在腳本裡取得 myapp.service 的主 process PID（只要數字），最合適的是？
++ systemctl show myapp -p MainPID --value
+- systemctl status myapp | grep PID
+- pidof systemctl 找出 myapp 相關的 PID
+- cat /run/myapp.pid，讀取服務啟動時自己寫出的 PID 檔內容
+E> show 輸出 key=value，--value 只留下值；status 的格式是給人看的，不適合解析。
+
+@CARD systemd.p_analyze | 實作：systemd-analyze 開機與安全分析
+A> systemd-analyze 是 systemd 的「健檢報告」：開機哪一段最慢（blame、critical-chain）、時間格式寫對沒（calendar）、unit 寫對沒（verify）、服務有多少攻擊面（security）。
+B> **systemd-analyze**：總開機時間（firmware、loader、kernel、userspace）
+B> **systemd-analyze blame**：各 unit 啟動花多久（由慢到快）
+B> **systemd-analyze critical-chain [unit]**：卡住開機的那條關鍵路徑
+B> **systemd-analyze verify 檔案**、**calendar '…'**、**timespan '1h30m'**
+B> **systemd-analyze security [unit]**：依沙箱設定給服務打「暴露分數」
+?mt 配對 systemd-analyze 子指令：
+> blame :: 列出每個 unit 啟動花費的時間
+> critical-chain :: 顯示決定開機時間的關鍵依賴鏈
+> verify :: 檢查 unit 檔錯誤
+> calendar :: 驗證 OnCalendar 時間格式
+> security :: 評估服務的沙箱與暴露程度
+E> blame 只看單一 unit 的耗時；真正拖慢開機的要看 critical-chain（平行啟動時慢的不一定擋路）。
+?mc 開機變慢時，為什麼 critical-chain 比 blame 更能找出真正的瓶頸？
++ 只顯示真正擋住開機的 unit
+- blame 只顯示 kernel 的時間
+- critical-chain 會自動修正問題
+- blame 不包含 service
+E> unit 大多平行啟動，耗時長的 unit 不一定擋住其他人；critical-chain 只顯示真正位在等待路徑上的 unit。例如 apt-daily 花 30 秒但沒人等它，就不影響登入時間。
+?cmd 列出各 unit 開機時啟動花費的時間：
+= systemd-analyze blame
+E> 由耗時最長的排到最短。
+
+@CARD systemd.p_socket | 實作：Socket 與 Path activation
+A> socket activation 是「先派總機接電話，有人打來才叫醒員工」：systemd 先替服務佔住 port，有連線時才啟動服務。所以 port 是寫在 .socket 裡，而不是服務自己的設定檔，這點在改 SSH port 時特別容易踩雷。
+B> **foo.socket** 監聽（ListenStream=22），有連線時啟動 **foo.service**；開機快、服務可以晚點起來
+B> **ssh.socket**：有些發行版（如 Ubuntu 新版）用它啟動 sshd，此時**監聽的 port 由 ssh.socket 的 ListenStream 決定**，sshd_config 的 Port 可能不是唯一依據
+B> 檢查：**systemctl status ssh.socket ssh.service**、**ss -tlnp** 看是誰在聽（systemd 或 sshd）
+B> **foo.path**：監看檔案或目錄（PathChanged=、PathExists=、DirectoryNotEmpty=），條件成立就啟動 foo.service
+B> 投影片的 list-dependencies 也看得到 **.path**（systemd-ask-password-wall.path）、**.mount**（tmp.mount）、**.slice** 等其他 unit 類型
+X> # 監看 /srv/inbox，有新檔就跑處理程式
+X> # inbox.path
+X> [Path]
+X> PathChanged=/srv/inbox
+X> [Install]
+X> WantedBy=multi-user.target
+?mc 把 sshd_config 改成 Port 22 並 reload，但 ss -tlnp 顯示 2222 仍被 systemd 監聽。最可能的原因？
++ port 由 ssh.socket 決定
+- sshd_config 語法錯誤
+- 需要重開機
+- 2222 是 Docker 佔用的
+E> 系統使用 ssh.socket 做 socket activation，監聽的 port 寫在 ssh.socket 的 ListenStream=。HW2 要求只聽 22：除了 sshd_config，也要檢查 ssh.socket 與 sshd_config.d/。
+?mt 配對 unit 類型：
+> .socket :: 有連線時才啟動對應的 service
+> .path :: 監看的檔案或目錄變動時啟動 service
+> .mount :: 由 systemd 管理的掛載點
+> .timer :: 定時啟動 service
+E> Linux 上每種 unit 類型都由副檔名區分，常見的還有 .slice、.scope、.target、.device。
+?tf ss -tlnp 顯示某個 port 的 process 是 systemd，代表那個 port 可能是 socket activation 由 systemd 代為監聽。
+=T
+E> 有連線進來時 systemd 才把 socket 交給真正的服務。
+
+@CARD systemd.p_mount | 實作：fstab 也是 systemd unit
+A> 開機時 systemd 會把 /etc/fstab 每一行「翻譯」成一個 .mount unit（由 fstab generator 產生）。所以改完 fstab 要 daemon-reload，否則 systemd 還拿著舊版翻譯；而 fstab 某行壞掉，開機就可能卡進 emergency mode。
+B> **systemd-fstab-generator** 把 fstab 轉成 .mount unit：/mnt/hw2/sftp → **mnt-hw2-sftp.mount**（路徑的 / 變成 -）
+B> 改 fstab 後：**systemctl daemon-reload**，再 **mount -a** 測試；**findmnt --verify** 檢查語法
+B> 掛載失敗（裝置不存在）預設會讓開機進 **emergency mode**；非必要的磁碟加 **nofail**
+B> 服務需要某個掛載點存在：**RequiresMountsFor=/mnt/hw2/sftp**（自動加上 Requires + After 對應的 .mount）
+B> 其他選項：**x-systemd.automount**（第一次存取才掛）、x-systemd.device-timeout=
+X> systemctl status mnt-hw2-sftp.mount
+X> findmnt --verify
+X> # sftp_watchd.service
+X> [Unit]
+X> RequiresMountsFor=/mnt/hw2/sftp
+?fill /mnt/hw2/pool1 對應的 systemd mount unit 名稱是 ＿＿.mount
+= mnt-hw2-pool1
+E> 開頭的 / 省略，其餘的 / 換成 -（含特殊字元時用 systemd-escape -p 轉換）。
+?mc 監看 /mnt/hw2/sftp 的 sftp_watchd 在開機時比掛載更早啟動、結果監看到空目錄。最正確的修法？
++ 在 [Unit] 加 RequiresMountsFor=/mnt/hw2/sftp
+- 在 ExecStartPre= 加 sleep 30，等掛載完成再啟動
+- 在 [Service] 加 ExecStartPre=/bin/mount -a
+- 改在 crontab 用 @reboot 啟動，開機完成後才會執行
+E> RequiresMountsFor 會自動加上對應 .mount 的依賴與順序。
+?mc 在 fstab 加了一個 USB 硬碟的掛載，但開機時沒插 USB，系統直接進 emergency mode。應該怎麼調整？
++ 在該行選項加 nofail
+- 把 pass 欄位改成 2
+- 改成 x-systemd.automount 以外的任何選項都沒用，只能刪掉
+- 把它移到 /etc/rc.local
+E> nofail：掛不上也不影響開機；常與 x-systemd.device-timeout= 搭配。
+?cmd 檢查 /etc/fstab 的語法與設定是否有問題：
+= findmnt --verify
+= sudo findmnt --verify
+E> 加 --verbose 會顯示每一行的檢查結果。
+
+@CARD systemd.p_kill | 實作：停止服務時發生什麼事（KillMode）
+A> systemctl stop 的流程像「下班廣播」：先執行 ExecStop（如果有），再對 process 送 KillSignal（預設 SIGTERM）請它收拾；等 TimeoutStopSec（預設 90 秒）還沒走，就送 SIGKILL 強制清場。KillMode 決定廣播給「誰」。
+B> 停止流程：**ExecStop=** → 送 **KillSignal=**（預設 **SIGTERM**）→ 等 **TimeoutStopSec=**（預設 90s）→ 仍在就送 **SIGKILL**（SendSIGKILL=yes）
+B> **KillMode=control-group**（預設）：cgroup 裡**所有** process 都收到訊號
+B> **KillMode=mixed**：SIGTERM 只給主 process，最後的 SIGKILL 給整個 cgroup
+B> **KillMode=process**：只殺主 process（sshd 用它保留既有連線）；**none**：不建議
+B> 手動送訊號：**systemctl kill -s HUP x**（也可 --kill-whom=main）
+X> systemctl kill -s SIGHUP nginx
+X> systemctl show nginx -p KillMode,KillSignal,TimeoutStopUSec
+?ord 預設情況下 systemctl stop 的順序：
+> 執行 ExecStop=（若有設定）
+> 對 cgroup 內 process 送 SIGTERM
+> 等待 TimeoutStopSec
+> 仍未結束則送 SIGKILL
+E> 這也是 trap TERM 能做清理的原因：先收到的是 SIGTERM。
+?mt 配對 KillMode：
+> control-group :: 預設，cgroup 內所有 process 都收到訊號
+> mixed :: SIGTERM 給主 process，SIGKILL 給全部
+> process :: 只對主 process 送訊號
+E> none 不會殺任何 process，留下的 process 容易失控，不建議使用。
+?cmd 對 nginx.service 的 process 送 SIGHUP（讓它重新讀設定）：
+= systemctl kill -s HUP nginx
+= systemctl kill -s SIGHUP nginx
+= systemctl kill --signal=HUP nginx
+= systemctl kill --signal=SIGHUP nginx
+= systemctl kill -s HUP nginx.service
+E> 一般重新讀設定用 systemctl reload 更好（會執行 ExecReload）。
+
+@CARD systemd.p_foreground | 實作：daemon 要跑在前景（-D、-f、-n）
+A> 傳統 daemon 會「自己 fork 到背景再讓爸爸離開」，systemd 要猜哪個才是主 process，很麻煩。現代作法是叫 daemon「別躲到背景」（前景模式），讓 systemd 直接當它的爸爸，最乾淨。投影片 cgroup 樹裡的 sshd -D、cron -f、rsyslogd -n 都是前景模式。
+B> 前景旗標：**sshd -D**、**cron -f**、**rsyslogd -n**、nginx 的 daemon off;、dbus-daemon --nofork
+B> 前景執行 + **Type=simple / exec / notify**：主 process 就是 ExecStart 啟動的那一個，最好管理
+B> 傳統背景 daemon：**Type=forking** + **PIDFile=**（systemd 讀 PID 檔判斷主 process）
+B> 自己寫的服務（例如 sftp_watchd）**不要自己 daemonize**（不要 &、nohup、setsid），直接在前景跑，輸出到 stdout/stderr 就會進 journal
+B> 輸出被 buffer：Python 用 **python3 -u** 或 PYTHONUNBUFFERED=1，否則 journalctl 可能很久才看到 log
+?mc 自己寫的 bash daemon 在腳本最後用 while 迴圈 & 丟到背景，搭配 Type=simple。會發生什麼？
++ 腳本的主 process 立刻結束，systemd 認為服務已停止並清掉整個 cgroup（迴圈也被殺）
+- 一切正常，因為 Type=simple 只要求 ExecStart 有被執行過就好
+- systemd 偵測到 process 進入背景，會自動把服務改成 Type=forking
+- 背景迴圈會被 PID 1 收養成為它的子行程，繼續在 cgroup 之外執行，不受 systemd 管理
+E> 在 systemd 底下不要自己 daemonize，直接前景執行。
+?mc Python 寫的服務用 print() 輸出 log，但 journalctl -u 很久都看不到。最可能的原因？
++ stdout 被 Python 緩衝了
+- journald 只收 stderr
+- 要先 systemctl enable 才有 log
+- print 不會寫到 stdout
+E> stdout 不是 tty 時 Python 會 buffer 輸出，要用 python3 -u、flush=True 或 PYTHONUNBUFFERED=1。同理，C 程式可能要 setvbuf 或 fflush。
+?mt 配對前景執行的旗標：
+> sshd :: -D
+> cron :: -f
+> rsyslogd :: -n
+E> 投影片 CGroup 樹中可以看到這些參數。
+
+@CARD systemd.p_user | 實作：User units 與 linger
+A> 每個登入的使用者也有一個自己的小 systemd（user@UID.service），可以用 systemctl --user 管自己的服務，不需要 root。但使用者登出後它會跟著關掉，除非開啟 linger（「人走了也幫他留燈」）。
+B> 使用者自己的服務：**systemctl --user start/enable x**，unit 放 **~/.config/systemd/user/**
+B> 每位登入使用者有 **user@UID.service**，cgroup 在 user.slice/user-UID.slice
+B> 登出後 user manager 會停止 → 要開機就跑、登出也不停：**loginctl enable-linger 使用者**
+B> 查看 log：**journalctl --user -u x**
+?cmd 讓使用者 alice 的 user units 在她沒有登入時也能執行（開機即啟動）：
+= loginctl enable-linger alice
+= sudo loginctl enable-linger alice
+E> linger 狀態存在 /var/lib/systemd/linger/。
+?mc 一般使用者想讓自己的服務開機自動啟動、不需要 root，該怎麼做？
++ 用 user unit 並開啟 linger
+- 寫進 /etc/systemd/system 再 enable
+- 放進 /etc/rc.local
+- 一般使用者無法做到
+E> 寫在 ~/.config/systemd/user/ 並 systemctl --user enable，再由管理員開啟 loginctl enable-linger。User unit 的搜尋路徑包含 ~/.config/systemd/user（$XDG_CONFIG_HOME）。
+
+@CARD systemd.p_run | 實作：systemd-run 與暫時性 unit
+A> systemd-run 是「臨時工」：不用寫 unit 檔，直接把一個指令包成暫時的 service 或 scope，順便套上資源限制。很適合拿來實驗 cgroups：例如讓一個吃記憶體的程式在 100M 的籠子裡跑，看它被 OOM kill。
+B> **systemd-run 指令**：建立暫時的 .service 在背景執行（名稱如 run-u123.service）
+B> **--scope**：在目前終端機前景執行，但放進新的 .scope cgroup
+B> **-p 屬性=值**：套用資源限制，例如 **-p MemoryMax=100M**、**-p CPUQuota=20%**
+B> **--on-calendar=… / --on-active=5m**：建立暫時 timer（一次性排程，類似 at）
+B> **--user**：以使用者的 manager 執行
+X> sudo systemd-run --scope -p MemoryMax=100M -p CPUQuota=20% stress --vm 1 --vm-bytes 200M
+X> sudo systemd-run --on-active=10m /usr/local/bin/backup.sh
+?cmd 在新的 scope 中以最多 100M 記憶體的限制執行 ./memhog：
+= systemd-run --scope -p MemoryMax=100M ./memhog
+= sudo systemd-run --scope -p MemoryMax=100M ./memhog
+= systemd-run -p MemoryMax=100M --scope ./memhog
+E> 超過 100M 就會在該 scope 內觸發 OOM kill，不影響其他程式。
+?mc systemd-run --on-active=10m backup.sh 的效果最接近哪個傳統工具？
++ at（一次性延後執行）
+- cron（週期性排程）
+- nice（調整優先權）
+- nohup（登出後繼續執行）
+E> 它建立一個暫時的 timer，10 分鐘後觸發一次。
+
+@CARD systemd.p_harden | 實作：服務沙箱化（Hardening）
+A> 給服務「最小的房間」：只能寫它需要的資料夾、看不到別人的 /home、/tmp 是自己獨立的、不能透過 setuid 偷升權限。就算服務被攻破，攻擊者能碰到的東西也很少。systemd-analyze security 會幫你打分數。
+B> **NoNewPrivileges=yes**：不能透過 setuid / file capabilities 提升權限
+B> **PrivateTmp=yes**：服務有自己獨立的 /tmp、/var/tmp
+B> **ProtectSystem=strict**：整個檔案系統唯讀，只開放 **ReadWritePaths=** 列出的路徑；full 只保護 /usr、/boot、/etc
+B> **ProtectHome=yes**：看不到 /home、/root、/run/user
+B> **CapabilityBoundingSet=**、**AmbientCapabilities=CAP_NET_BIND_SERVICE**（非 root 綁 80 port）、**User=** / **DynamicUser=**
+B> 評分：**systemd-analyze security 服務**（數字越低越安全）
+X> [Service]
+X> User=app
+X> NoNewPrivileges=yes
+X> PrivateTmp=yes
+X> ProtectSystem=strict
+X> ReadWritePaths=/var/lib/app
+X> ProtectHome=yes
+?mt 配對 hardening 選項：
+> NoNewPrivileges=yes :: 禁止透過 setuid 提升權限
+> PrivateTmp=yes :: 服務擁有獨立的 /tmp
+> ProtectSystem=strict :: 整個檔案系統唯讀（除了 ReadWritePaths）
+> ProtectHome=yes :: 看不到使用者家目錄
+> AmbientCapabilities=CAP_NET_BIND_SERVICE :: 非 root 也能綁定 1024 以下的 port
+E> 這些選項由 systemd 透過 namespace、mount 與 capability 實作，不需要改程式碼。
+?mc 服務設定了 PrivateTmp=yes。另一個程式在 /tmp/foo 放了檔案，服務讀得到嗎？
++ 讀不到，服務看到的是自己專屬的 /tmp
+- 讀得到，PrivateTmp 只影響寫入
+- 只有 root 讀得到
+- 要看檔案權限
+E> 這也是「服務寫到 /tmp 的檔案，自己在 shell 找不到」的常見原因。
+?tf ProtectSystem=strict 時，服務若要寫入 /var/lib/app，必須用 ReadWritePaths= 或 StateDirectory= 開放。
+=T
+E> StateDirectory=app 會自動建立並開放 /var/lib/app。
+
+@CARD systemd.p_journal2 | 實作：journal 的空間、格式與欄位過濾
+A> journal 會越長越大，要會「量體重、減肥」：--disk-usage 看用量、--vacuum 刪舊的。它是結構化的，每筆都有欄位（_PID、_SYSTEMD_UNIT、SYSLOG_IDENTIFIER），可以用欄位精準過濾，輸出也能變成 JSON。
+B> 用量：**journalctl --disk-usage**；清理：**--vacuum-size=200M**、**--vacuum-time=2weeks**；上限設定：journald.conf 的 **SystemMaxUse=**
+B> 持久化：**Storage=persistent**（或建立 /var/log/journal）後 **systemctl restart systemd-journald**
+B> 欄位過濾：**journalctl _PID=1234**、**_SYSTEMD_UNIT=ssh.service**、**SYSLOG_IDENTIFIER=internal-sftp**（= **-t internal-sftp**）、**_UID=1000**
+B> 時間：**--since "2026-11-16 10:00" --until "1 hour ago"**；看上次開機：**-b -1**；列出開機紀錄：**--list-boots**
+B> 輸出格式：**-o json-pretty**、**-o cat**（只印訊息）、**-o verbose**（看全部欄位）；**-n 50**、**--no-pager**
+B> journald 也可轉給 rsyslog（**ForwardToSyslog=** 或 rsyslog 的 imjournal）
+X> journalctl --disk-usage
+X> sudo journalctl --vacuum-time=7d
+X> journalctl -t internal-sftp -o verbose -n 1
+X> journalctl -b -1 -p warning
+?cmd 把 journal 刪到只剩最近兩週的紀錄：
+= journalctl --vacuum-time=2weeks
+= sudo journalctl --vacuum-time=2weeks
+= journalctl --vacuum-time=14d
+= sudo journalctl --vacuum-time=14d
+= journalctl --vacuum-time=2w
+E> 也可以用 --vacuum-size= 依大小清理。
+?mc journalctl -t internal-sftp 是依哪個欄位過濾？
++ SYSLOG_IDENTIFIER
+- _SYSTEMD_UNIT
+- _COMM（執行檔名稱）
+- _SYSTEMD_UNIT（unit 名稱）
+E> SYSLOG_IDENTIFIER（程式送 syslog 時的識別字）HW2 的 sftp log 就是靠這個欄位分出 internal-sftp 與 sftp-server。
+?cmd 查看「上一次」開機的 journal 紀錄：
+= journalctl -b -1
+= journalctl --boot=-1
+= journalctl --boot -1
+E> 先用 --list-boots 看有幾次開機紀錄（需持久化才會跨開機保存）。
+?cmd 查看目前 journal 佔用的磁碟空間：
+= journalctl --disk-usage
+= sudo journalctl --disk-usage
+E> --vacuum-* 只會刪已封存的 journal 檔，正在寫入的不會被刪。
+
+@CARD systemd.p_cgdebug | 實作：用 cgroup 檔案查資源問題
+A> 服務被殺了卻不知道為什麼？去 cgroup 的「事件簿」翻：memory.events 記錄撞到上限幾次、被 OOM kill 幾次。cgroup.controllers 告訴你這層有哪些控制器可用，subtree_control 決定子層能不能用。
+B> **cgroup.controllers**：這個 cgroup **可用**的 controller（cpu io memory pids…）
+B> **cgroup.subtree_control**：開放給**子 cgroup**的 controller（寫 +memory 啟用）
+B> **memory.current**：目前用量；**memory.events**：**high**（超過 MemoryHigh 次數）、**max**、**oom**、**oom_kill** 計數
+B> **memory.stat**、**cpu.stat**（usage_usec、**nr_throttled**、throttled_usec → CPUQuota 造成的節流）、**pids.current / pids.max**
+B> 被 OOM kill 的證據也會出現在 **journalctl -k**（kernel log：Out of memory: Killed process …）與 systemctl status（Result: oom-kill）
+X> cat /sys/fs/cgroup/system.slice/myapp.service/memory.events
+X> cat /sys/fs/cgroup/system.slice/myapp.service/cpu.stat
+X> journalctl -k | grep -i 'out of memory'
+?mc 懷疑 myapp.service 被 MemoryMax 限制而遭 OOM kill，該看 cgroup 的哪個檔案？
++ memory.events 的 oom_kill 計數
+- cgroup.procs 中 process 的數量變化
+- cpu.max 的 throttled 計數
+- cgroup.subtree_control
+E> oom_kill 大於 0 表示該 cgroup 內有 process 被 OOM killer 殺過。
+?mc 服務設定 CPUQuota=20% 後變很慢，想確認是不是被節流，可以看？
++ cpu.stat 中的 nr_throttled 與 throttled_usec
+- memory.current 是否持續接近 MemoryMax 的上限
+- cgroup.events 的 populated 是否為 0
+- pids.max 與 pids.current 的值是否已經相同（代表達到上限）
+E> 次數持續增加就代表一直撞到 CPU 配額。
+?mt 配對 cgroup 檔案：
+> cgroup.controllers :: 這層可用的 controller
+> cgroup.subtree_control :: 開放給子 cgroup 的 controller
+> memory.events :: 撞上限與 OOM kill 的次數
+> pids.current :: 目前的 process 數
+E> 投影片 cgroups v2 interface 的延伸。
+
+@CARD systemd.p_timer2 | 實作：timer 的各種時間與測試方法
+A> 除了「日曆鬧鐘」（OnCalendar），timer 還有「計時器」：開機後幾分鐘（OnBootSec）、上次跑完後隔多久（OnUnitActiveSec）。測試時別傻等，直接 systemctl start 對應的 service 看會不會成功，再看 list-timers 確認下次時間。
+B> 單調時間（相對）：**OnBootSec=5min**、**OnStartupSec=**、**OnActiveSec=**、**OnUnitActiveSec=1h**（上次啟動後隔多久）、**OnUnitInactiveSec=**
+B> **AccuracySec=**：觸發時間的誤差容許（預設 1 分鐘，為了合併喚醒省電）；需要精準時設 1s
+B> 測試：**systemctl start x.service** 先確認工作本身正確 → **systemctl list-timers x.timer** 看 NEXT
+B> timer 觸發的 service 一般**沒有 [Install]**，不需要 enable service
+B> 與 cron 對照：cron 的 log 在 syslog；timer 的 log 在 **journalctl -u x.service**
+X> [Timer]
+X> OnBootSec=5min
+X> OnUnitActiveSec=1h
+X> AccuracySec=1s
+?mt 配對 timer 設定：
+> OnCalendar= :: 依日曆時間觸發
+> OnBootSec= :: 開機後經過多久觸發
+> OnUnitActiveSec= :: 該 service 上次啟動後經過多久再觸發
+> AccuracySec= :: 觸發時間允許的誤差
+E> OnCalendar 是「牆上的時鐘」，On*Sec 是「碼錶」，兩者可以同時寫在一個 timer 裡。
+?mc 每小時要執行一次清理，但不在乎是整點，只要「開機 5 分鐘後開始、之後每隔一小時」。最適合的設定是？
++ OnBootSec=5min 搭配 OnUnitActiveSec=1h
+- OnCalendar=hourly 搭配 Persistent=true
+- OnCalendar=*-*-* 05:00
+- RandomizedDelaySec=1h
+E> 單調時間計時器不受時鐘調整影響。
+?mc timer 設定 OnCalendar=*-*-* 10:00:00，log 卻顯示 10:00:42 才執行。原因？
++ AccuracySec 預設 1 分鐘，systemd 會在容許範圍內合併喚醒
+- 系統時間錯誤，timedatectl 還沒同步到 NTP
+- service 啟動很慢，花了 42 秒才寫出第一行 log
+- RandomizedDelaySec 預設是 1 分鐘，所以延後了 42 秒
+E> 需要精準到秒就設 AccuracySec=1s。

@@ -1,0 +1,211 @@
+@CH docker | Docker 基礎 | 🐳 | Docker_Basic.pdf
+
+@CARD docker.container | Container 是什麼
+A> Container 像「同一棟大樓裡用隔板隔出來的獨立套房」：大家共用同一套地基與水電（同一個 kernel），但每間有自己的門牌、網路、家具（用 namespace 隔離）。Container image 是「裝修好的樣品屋藍圖」，裡面已經放好軟體需要的一切。
+B> **Container**：擁有隔離資源的子系統
+B> **Container image**：輕量、獨立的套件，包含執行軟體所需的一切
+B> 在 Linux 上以 **namespaces** 實作：隔離 **process、network stack、file system** 等
+B> **Docker**：把應用與相依套件打包成可攜容器的平台；最普及的 container engine
+B> 其他 runtime：**Podman、Singularity** 等
+?mc Linux container 主要靠哪個 kernel 機制隔離 process、網路與檔案系統？
++ namespaces
+- 虛擬化 hypervisor
+- chroot only
+- SELinux
+E> 投影片：this technology is implemented through the use of Linux namespaces（資源限制則另靠 cgroups）。
+?mt 配對名詞：
+> Container image :: 包含執行軟體所需一切的唯讀套件
+> Container :: image 執行起來的隔離環境
+> Docker :: 打包與執行容器的平台
+> Podman :: 另一種 container runtime
+E> image 是模板，container 是它的執行實例。
+?sa 請說明 container 與 virtual machine 的差異，並解釋為什麼 container 比較輕量。
+R> VM 透過 hypervisor 模擬整套硬體，每台 VM 都有自己完整的 guest OS 與 kernel；container 則直接共用 host 的 kernel，只用 namespaces 隔離 process、網路、檔案系統等資源，並用 cgroups 限制資源用量。
+R> 因為不需要啟動另一個作業系統，container 啟動只需要幾秒甚至更短，image 也只包含應用程式與相依套件，佔用的磁碟與記憶體都小得多。
+R> 代價是隔離程度較低：所有 container 共用同一個 kernel，kernel 的漏洞會影響全部，也無法執行需要不同 kernel 的系統。
+P> VM 有自己的 guest OS 與 kernel，經由 hypervisor
+P> container 共用 host kernel，用 namespaces 隔離
+P> container 啟動快、佔用資源少
+P> container 的隔離較弱（共用 kernel）
+
+@CARD docker.vsvm | Container vs VM
+A> VM 是「蓋一棟獨立的房子」（自己的地基 = 自己的 OS kernel），最安全但又重又慢；container 是「大樓裡的套房」，共用地基所以輕又快、方便複製，但隔離沒有獨棟那麼徹底。
+B> **VM**：完全獨立的環境，**包含 OS（自己的 kernel）**
+B> **Container**：**共用 host kernel** → 更快、更輕量
+B> **VM 比較安全**（隔離較強）
+B> **Container 比較好重複使用**
+?mt 比較 Container 與 VM：
+> 共用 host 的 kernel :: Container
+> 有自己完整的 OS :: VM
+> 隔離較強、較安全 :: VM
+> 啟動快、輕量 :: Container
+E> 共用 kernel 是 container 輕量的原因，也是隔離較弱的原因。
+?tf 在 Linux host 上執行的 container，擁有自己獨立的 kernel。
+=F
+E> container 共用 host kernel；VM 才有自己的 kernel。
+
+@CARD docker.runtime | Docker、containerd 與 runc
+A> 一層層的外包：docker（CLI，你下指令的櫃台）→ containerd（管理 container 生命週期的經理，用 shim 追蹤狀態）→ runc（真正動手的低階工人，照 OCI 規格直接呼叫 kernel）。
+B> **docker** 本身其實是 CLI，使用名為 **containerd** 的 container runtime
+B> **containerd** 管理 container 生命週期，透過 **OCI** 用 **runc** 操作 container；用 **shim** 追蹤 runc container 狀態
+B> **OCI**（Open Container Initiative）：container 規格
+B> **runc**：低階 runtime，直接利用 kernel
+?ord 由上層到下層排列：
+> docker CLI
+> containerd
+> runc
+> Linux kernel（namespaces）
+E> containerd 透過 shim 追蹤 runc 啟動的 container。
+?mt 配對元件：
+> containerd :: 管理 container 生命週期的 runtime
+> runc :: 依 OCI 規格直接建立 container 的低階 runtime
+> OCI :: container 的開放規格
+> shim :: 讓 containerd 追蹤 runc container 狀態
+E> 投影片 Docker, Containerd & Runc。
+
+@CARD docker.install | 安裝 Docker 與 docker 群組
+A> 加入 docker 群組等於「拿到 Docker 的萬能鑰匙」，不用 sudo 就能操作 container；但能控制 Docker daemon 實質上接近 root 權限，要謹慎給。
+B> 安裝腳本：curl -fsSL https://get.docker.com -o get-docker.sh；sudo sh ./get-docker.sh
+B> 啟用並啟動：**sudo systemctl enable docker**、**sudo systemctl start docker**
+B> 免 sudo 使用：sudo groupadd docker；**sudo usermod -aG docker $USER**（重新登入後生效）
+B> docker -v 確認版本
+?cmd 把目前使用者加入 docker 群組（保留原本群組）：
+= usermod -aG docker $USER
+= usermod -aG docker "$USER"
+= usermod -a -G docker $USER
+E> 記得 -a；重新登入才生效。
+?mc 把使用者加進 docker 群組後，為什麼要重新登入才生效？
++ 既有的 process 保留舊的 credentials，新的登入 session 才會帶上新群組
+- 因為 docker 群組的變更要等 dockerd 下次重開機時，才會寫進 /etc/group
+- 因為 /etc/group 的變更要經過 nscd 快取，大約要一段時間才會同步
+- 因為需要重新載入 overlay 等 kernel module，登入時才會載入
+E> 也可以用 newgrp docker 開一個帶新群組的 shell。
+?cmd 讓 Docker daemon 開機自動啟動並立刻啟動（一個指令）：
+= systemctl enable --now docker
+= sudo systemctl enable --now docker
+= systemctl enable --now docker.service
+E> 等同於 enable 再 start。
+
+@CARD docker.pull | docker pull、image 與 tag
+A> Image 像「樂高套組」：由很多層（layer）疊成；tag 是套組的「版本與口味」，trixie 是標準版、trixie-slim 是輕量版、alpine 是迷你版。
+B> 啟動 container 前先要有 image：**docker pull <image>:[<tag>]**
+B> 來源：**Docker Hub**；其他 registry（如 AWS ECR）在名稱前加 <registry_address>/<repository_name>
+B> tag 表示版本與屬性：debian **trixie** / **trixie-slim**（較輕量）；python **3.13-bookworm**（基於 Debian Bookworm）、**3.13.5-alpine3.22**（基於 Alpine）
+B> image 由**多個 layer** 組成
+?cmd 下載 Debian Trixie 的 image：
+= docker pull debian:trixie
+= docker image pull debian:trixie
+E> 格式 image:tag。
+?mc python:3.13-bookworm 這個 tag 表示？
++ Python 3.13，以 Debian Bookworm 為基底
+- Python 3.13 的 bookworm 開發者版本
+- Debian 3.13 再加上 Python
+- Python 3.13，只能在 Debian Bookworm 主機上跑
+E> tag 描述版本與基底。
+?tf Container image 是由多個 layer 組成的。
+=T
+E> 每個 Dockerfile 指令通常產生一層。
+
+@CARD docker.run | docker run 常用選項
+A> docker run 是「照藍圖蓋一間套房並入住」。-it 是「我要進去跟它互動」、-d 是「蓋好讓它自己運作」、--name 是「掛門牌」、--rm 是「退房自動拆除」、-v 是「接一條外部的儲物管線」、-p 是「在大樓外牆開一扇對應到套房的門」。
+B> **docker run <image>**
+B> **-it**：interactive + 開 tty（常一起用）
+B> **-d**：detach 到背景
+B> **--name <name>**：container 名稱
+B> **--rm**：container 停止後自動刪除
+B> **-v <host path / volume>:<container path>**：volume 掛載
+B> **-p <host port>:<container port>**：port forwarding
+?cmd 在背景執行 nginx image，命名為 web，並把 host 的 8080 對應到 container 的 80：
+= docker run -d --name web -p 8080:80 nginx
+= docker run -d -p 8080:80 --name web nginx
+= docker run --name web -d -p 8080:80 nginx
+= docker run --name web -p 8080:80 -d nginx
+= docker run -p 8080:80 -d --name web nginx
+= docker run -p 8080:80 --name web -d nginx
+E> -p host:container。
+?cmd 互動式啟動一個 debian:trixie 的 bash，離開後自動刪除 container：
+= docker run -it --rm debian:trixie bash
+= docker run --rm -it debian:trixie bash
+= docker run -it --rm debian:trixie /bin/bash
+= docker run --rm -it debian:trixie /bin/bash
+E> -it 互動、--rm 停止即刪。
+?mc -p 8080:80 中，8080 是？
++ host 的 port
+- container 內的 port
+- container ID
+- volume 大小
+E> host:container。
+
+@CARD docker.volume | Volumes：Named volume 與 Bind mount
+A> Container 是「旅館房間」，退房（刪除）東西就清空；volume 是「旅館外的私人倉庫」，資料不跟著房間消失。Named volume 是旅館幫你管的倉庫（放在 /var/lib/docker/volumes）；bind mount 是直接把你家的某個資料夾接進房間。
+B> **Volume**：持久儲存機制，資料獨立於 container 生命週期，container 刪除後資料仍在
+B> **Named volume**：給名字，放在 **/var/lib/docker/volumes**；docker run -v my_vol:/data debian:trixie
+B> **Bind mount**：把 host 上的**特定路徑**綁進 container；docker run -v ./data:/data debian:trixie
+?mt 配對：
+> -v my_vol:/data :: Named volume（Docker 管理，位於 /var/lib/docker/volumes）
+> -v ./data:/data :: Bind mount（host 的特定路徑）
+E> 寫路徑（含 / 或 ./）就是 bind mount。
+?tf container 被刪除後，存在 named volume 中的資料也會一起消失。
+=F
+E> volume 的資料獨立於 container 生命週期。
+?sa 請比較 Docker 的 named volume 與 bind mount，並說明為什麼資料庫容器一定要使用其中一種來存放資料。
+R> named volume 由 Docker 建立與管理（存放在 /var/lib/docker/volumes/），用名稱引用，權限由 Docker 處理，適合資料庫這類只需要「持久保存」的資料；bind mount 則是把 host 上指定的目錄或檔案直接掛進容器，host 與容器看到同一份內容，適合設定檔或開發時的原始碼，但要自己注意路徑與 UID 權限。
+R> 容器本身的可寫層會隨著容器被刪除而消失（docker rm、compose down、重建容器換版本）。資料庫的資料若只寫在可寫層，容器一重建資料就全部遺失；放在 volume 或 bind mount，資料的生命週期就和容器分開，新容器掛上同一個 volume 就能繼續使用。
+P> named volume 由 Docker 管理，以名稱引用
+P> bind mount 直接掛載 host 的路徑
+P> 容器可寫層會隨容器刪除而消失
+P> 資料放 volume / bind mount 才能在容器重建後保留
+
+@CARD docker.exec | docker exec、logs、ps 與其他
+A> 管理套房的日常：exec 是「敲門進去做事」、logs 是「看監視器紀錄」（-f 持續看）、ps 是「看哪些房間有人住」（-a 包含已退房的）、stop / restart / rm 是「關燈 / 重開 / 拆掉」。
+B> **docker exec <container> <command>**，常用 -it 開 shell（bash 或 sh）
+B> **docker logs <container>**；**-f** 持續追蹤
+B> **docker ps**：列出執行中 container；**-a** 包含已停止的
+B> **docker stop / restart / rm <name>**
+?cmd 進入正在執行、名為 web 的 container 開一個互動式 sh：
+= docker exec -it web sh
+= docker exec -it web /bin/sh
+E> exec 在已存在的 container 裡執行指令。
+?cmd 持續追蹤 container web 的 log：
+= docker logs -f web
+= docker logs web -f
+E> -f follow。
+?cmd 列出所有 container，包含已停止的：
+= docker ps -a
+= docker container ls -a
+E> 沒加 -a 只顯示執行中的。
+?mt 配對 Docker 指令：
+> docker run :: 從 image 建立並啟動 container
+> docker exec :: 在執行中的 container 裡執行指令
+> docker rm :: 刪除 container
+> docker pull :: 下載 image
+E> docker rmi 才是刪除 image。
+
+@CARD docker.p_debug | 實作：container 出問題怎麼查
+A> container 是「封在玻璃箱裡的小系統」，出問題時要學會四種觀察方式：從外面看它的狀態（ps）、聽它說話（logs）、讀它的規格表（inspect）、伸手進去看（exec）。
+B> **docker ps -a**：包含已停止的；STATUS 的 `Exited (1)`、`Restarting` 都是線索
+B> **docker logs -f --tail 50 容器**：container 主程序的 stdout / stderr
+B> **docker inspect 容器**：完整設定（掛載、網路、環境變數、重啟次數）；取單一欄位：`docker inspect -f '{{.State.ExitCode}}' 容器`
+B> **docker exec -it 容器 sh**：進去看檔案、測網路（很多 image 沒有 bash，用 sh）
+B> port 對外不通：檢查 `-p 主機port:容器port` 有沒有寫反；服務在容器內若只聽 **127.0.0.1**，從外面一定連不到，要聽 **0.0.0.0**
+B> 空間：**docker system df** 看用量、**docker system prune** 清掉沒在用的資源
+X> docker ps -a
+X> docker logs -f --tail 50 web
+X> docker inspect -f '{{.State.ExitCode}} {{.RestartCount}}' web
+X> docker exec -it web sh
+?cmd 持續追蹤容器 web 的 log，並且只從最後 50 行開始：
+= docker logs -f --tail 50 web
+= docker logs --tail 50 -f web
+= docker logs -f -n 50 web
+E> 和 tail -f 很像。
+?mc `docker run -p 8080:80 myapp` 啟動後，主機 curl localhost:8080 一直被拒絕；容器內 curl localhost:80 正常。最可能的原因？
++ 容器內的服務只聽 127.0.0.1，要改成聽 0.0.0.0
+- -p 的參數順序寫反了，應該寫成 -p 80:8080
+- 需要加上 --privileged 才能使用 port mapping
+- 主機沒有安裝 curl，或 curl 不支援 localhost
+E> 容器內的 127.0.0.1 是容器自己的 loopback，外部轉進來的連線到不了。
+?cmd 進入正在執行的容器 web，開一個互動式的 sh：
+= docker exec -it web sh
+= docker exec -it web /bin/sh
+= docker exec -ti web sh
+E> -i 保持 stdin、-t 配置終端機。

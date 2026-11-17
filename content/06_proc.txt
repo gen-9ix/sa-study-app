@@ -1,0 +1,465 @@
+@CH proc | Process 控制 | ⚙️ | 08_Controlling_Process.pdf
+
+@CARD proc.basic | Program、Process、PID、Thread
+A> Program 是「食譜」（存在硬碟的檔案）；process 是「正在照食譜做菜的廚師」（有自己的工作台與狀態）；同一本食譜可以有好幾位廚師同時做（啟動兩次 = 兩個 process）；thread 是同一位廚師的好幾隻手。
+B> **Program**：存成檔案的可執行碼（/usr/bin/sleep）
+B> **Process**：正在執行的程式，有自己的 context（sleep 300）
+B> **PID**：PID namespace 中的識別碼（$$ 是目前 shell、$! 是最近背景 job）
+B> **Thread**：process 內的執行路徑（Linux 上叫 TID / LWP）
+B> 同一個執行檔啟動兩次 → 兩個不同的 process
+?mt 配對：
+> /usr/bin/sleep :: Program
+> 正在執行的 sleep 300 :: Process
+> $$ 的值 :: 目前 shell 的 PID
+> LWP / TID :: Thread
+E> 程式是靜態檔案，process 是動態執行實體。
+?mc 在兩個 terminal 各執行一次 sleep 300，系統中有幾個 program、幾個 process？
++ 1 個 program（/usr/bin/sleep），2 個 process
+- 2 個 program（各自載入一份），2 個 process
+- 1 個 program，1 個 process（第二次會共用第一個）
+- 2 個 program，1 個 process（兩個 terminal 共用）
+E> program 是檔案；每次執行都產生一個新的 process。
+?fill 在 shell 中，代表「目前這個 shell 的 PID」的特殊變數是＿＿
+= $$
+E> $! 則是最近一個背景 job 的 PID。
+
+@CARD proc.context | Process 執行環境
+A> 每位廚師的工作台上有：自己的記憶體空間（code、data、heap、stack）、身分證（credentials）、排班表（scheduling）、接好的水管（open file descriptors：檔案、socket、pipe）、所在位置（working directory）、交代事項（environment）、對各種暗號的反應（signal settings）。
+B> **虛擬位址空間**：code、data、heap、stack mappings
+B> kernel 紀錄：credentials、scheduling 狀態、資源使用
+B> **open file descriptors**：連到檔案、socket、pipe
+B> 工作目錄、環境變數、signal 設定會影響執行
+B> 觀察只是**快照**，值可能在你看的同時改變
+?tf process 的工作目錄與環境變數也屬於它的執行 context。
+=T
+E> 這也是為什麼 child 會繼承這些設定的副本。
+?mc 下列哪一項「不」屬於 process 的執行 context？
++ 磁碟上執行檔的檔名長度
+- 虛擬位址空間
+- 開啟中的 file descriptors
+- credentials 與排程狀態
+E> context 是執行所需的狀態：記憶體、fd、credentials、工作目錄、環境變數、signal 設定等。
+
+@CARD proc.cred | PID、PPID 與 Credentials
+A> Real UID 是「你本人是誰」，Effective UID 是「你現在拿著誰的通行證辦事」。平常兩者相同；執行 setuid 程式時，effective 會暫時變成檔案擁有者。
+B> **PID / PPID**：process ID / 目前 parent 的 ID
+B> **RUID / EUID**：real / effective user ID
+B> **RGID / EGID**：real / effective group ID
+B> supplementary groups 也用於存取檢查
+B> **NI**：nice 值
+B> PID 會循環、會被重複使用 → 送 signal 前再確認一次目標
+?mc 存取檢查（能不能開某個檔案）主要依據 process 的哪個 UID？
++ Effective UID (EUID)
+- Real UID (RUID)
+- Real UID（啟動 process 的使用者）
+- Saved TTY
+E> 這就是 setuid 程式能做事的原因。
+?mt 配對縮寫：
+> PPID :: 父 process 的 ID
+> RUID :: real user ID（實際是誰啟動的）
+> EUID :: effective user ID（存取檢查用）
+> NI :: nice 值
+E> 一般情況 RUID = EUID；執行 set-user-ID 程式時 EUID 會不同。
+?tf 一般使用者執行 passwd（set-user-ID root）時，process 的 EUID 是 0，RUID 仍是該使用者。
+=T
+E> 所以它能寫 /etc/shadow，同時知道是誰在改密碼。
+
+@CARD proc.fork | fork、exec、exit、wait
+A> fork 是「影分身之術」，多一個新 PID 的複製人；exec 是「變身」，PID 不變但整個人換成另一個程式；exit 是「交出成績單後離場」；wait 是「爸媽領回成績單（收屍）」。
+B> **fork()**：建立 child，**新 PID**，複製 process context
+B> **execve()**：**替換**程式 image，**保留 PID**
+B> **exit() / _exit()**：結束並讓 exit status 可被取得
+B> **wait() / waitpid()**：收集 child 狀態，**reap** 已結束的 child
+B> fork 後 parent 與 child 並行，輸出順序不固定（交錯）
+?mt 配對系統呼叫：
+> fork() :: 建立新 process（新 PID）
+> execve() :: 替換程式內容，保留 PID
+> wait() :: 回收 child 的結束狀態
+> exit() :: 結束並留下 exit status
+E> shell 執行外部指令 = fork + exec + wait。
+?mc fork() 成功後，在 child process 中 fork() 的回傳值是？
++ 0
+- child 的 PID
+- parent 的 PID
+- -1
+E> parent 拿到 child 的 PID，child 拿到 0，失敗為 -1（課程範例程式的 if 分支）。
+
+@CARD proc.zombie | Zombie、Orphan、Stopped
+A> Zombie 是「已經下班但打卡單還沒被主管收走的員工」，人早就走了，只剩一張紙，所以你對他喊 KILL 也沒用，要去處理那個不收打卡單的主管（parent）。Orphan 是「主管先離職的員工」，會被大老闆（PID 1 / subreaper）接收。
+B> **Zombie (Z)**：child 已結束、parent 還沒 reap → 調查 parent 與它的 wait 邏輯
+B> **Orphan**：parent 先結束 → Linux 交給 **subreaper** 或 namespace 的 init（PID 1）
+B> **Stopped (T)**：被 stop signal 暫停 → continue signal（SIGCONT）可恢復
+B> **對 zombie 送 KILL 沒用**：它已經結束了
+?mc 系統上有一堆 Z 狀態的 process，最正確的處理方向是？
++ 檢查 parent 為何沒有 wait()
+- 對每個 zombie 送 SIGKILL
+- 重新開機是唯一方法
+- 對它們送 SIGCONT
+E> 檢查它們的 parent process 為何沒有 wait() 回收（必要時處理 parent）zombie 已死，KILL 無效；parent 結束後 zombie 會被 PID 1 收養並回收。
+?tf parent 先結束的 process 會被 PID 1（或 subreaper）收養。
+=T
+E> 這就是 orphan 的處理方式。
+
+@CARD proc.suid | Effective ID 與 set-user-ID
+A> passwd 程式是 root 擁有、而且有 setuid（rws 的 s）：一般人執行時，暫時拿到 root 的通行證（EUID=0），所以能改只有 root 能寫的 /etc/shadow，但 passwd 程式本身會限制你只能改自己的密碼。
+B> 存取檢查依 **effective credentials**
+B> **set-user-ID 執行檔**在 exec 時把 EUID 改成**檔案擁有者**
+B> 例：-rwsr-xr-x root /usr/bin/passwd → 能更新 /etc/shadow（-rw-r----- root shadow）
+B> **nosuid** 掛載選項、**no_new_privs**、tracing 會抑制這個轉換
+?mc 一般使用者能用 passwd 改自己的密碼（寫入只有 root 能寫的 /etc/shadow），是因為？
++ passwd 有 setuid bit 且屬於 root
+- /etc/shadow 其實所有人都能寫
+- passwd 會要求輸入 root 的密碼
+- passwd 由 root 的 cron 每分鐘代為寫入
+E> /usr/bin/passwd 有 setuid bit 且屬於 root，執行時 EUID 變成 root。-rwsr-xr-x 中的 s 就是 setuid。
+?tf 檔案系統以 nosuid 選項掛載時，上面的 setuid 程式不會提升 EUID。
+=T
+E> nosuid 會抑制 set-user-ID 轉換。
+
+@CARD proc.states | Linux Process 狀態
+A> R 在跑（或排隊等跑）、S 在睡覺（叫得醒）、D 在深度睡眠（通常在等 I/O，叫不醒）、T 被定格、Z 殭屍、I 閒置的 kernel thread。
+B> **R**：running 或 runnable
+B> **S**：可中斷睡眠（interruptible sleep）
+B> **D**：不可中斷睡眠，常在**等 I/O**
+B> **T / t**：被 job control 停止 / 被 debugger 停止
+B> **Z**：已結束等待 reap
+B> **I**：idle kernel thread
+B> D 狀態**不證明**磁碟壞了 → 看 wait channel、kernel 訊息、儲存路徑
+?mt 配對狀態碼：
+> R :: Running / runnable
+> S :: 可中斷睡眠
+> D :: 不可中斷睡眠（常等 I/O）
+> T :: 被停止
+> Z :: Zombie
+E> ps 的 STAT 欄第一個字元就是狀態。
+?mc ps 顯示某個 process 狀態為 D，而且 kill -9 也殺不掉。最可能的情況是？
++ 卡在不可中斷的 I/O 等待
+- 它是 zombie
+- 它被 Ctrl-Z 暫停
+- 它正在使用 CPU
+E> 它在不可中斷睡眠，通常卡在等 I/O（例如壞掉的磁碟或斷線的 NFS）D 狀態不處理訊號，要等 I/O 完成或排除底層問題。
+?fill 已經結束、但父 process 還沒 wait 回收的 process，ps 狀態顯示為＿＿
+= Z
+E> Z = zombie。
+
+@CARD proc.ps | ps 與欄位解讀
+A> ps 是「拍一張 process 的合照」。ps aux 是 BSD 風格（沒有 dash）；ps -eo 是自己挑要哪些欄位。STAT 後面的小字是附註：s 是 session leader、+ 是前景、l 是多執行緒。
+B> **ps auxww**：BSD 風格（不加 dash），全部 process、寬輸出
+B> **ps -eo user,pid,ppid,stat,ni,pcpu,pmem,args --sort=-pcpu**：自選欄位、依 CPU 排序
+B> **ps -o pid,ppid,stat,etime,time,args -p $$**
+B> **%CPU**：CPU 時間 ÷ 存活時間；**TIME** 累積 CPU 時間；**ELAPSED** 經過的實際時間
+B> **VSZ** 虛擬大小、**RSS** 常駐記憶體（KiB）；共享頁面可能被算進多個 RSS
+B> **STAT** 狀態加旗標（s、+、l）；**ARGS** 可能含敏感資料
+B> **PSS**（Proportional Set Size）：共享頁面依共用的 process 數**平均分攤**後的記憶體，加總起來比 RSS 更接近真實用量：**ps -o vsz,rss,pss,cmd**
+?cmd 列出所有 process 的 pid、ppid、stat、ni 與完整指令（ps -eo 寫法）：
+= ps -eo pid,ppid,stat,ni,args
+= ps -eo pid,ppid,stat,ni,cmd
+= ps -eo pid,ppid,stat,ni,command
+E> -e 全部，-o 自選欄位。
+?mc ps aux 中沒有 dash 是因為？
++ 它使用 BSD 風格的選項
+- 打錯字，正確是 ps -aux
+- 只有 FreeBSD 能用
+- 它代表 GNU 長選項
+E> Debian procps-ng 同時支援 BSD 與 UNIX 風格。
+?mt 配對 ps 欄位：
+> RSS :: 實際常駐在記憶體的大小
+> VSZ :: 虛擬位址空間大小
+> TIME :: 累積使用的 CPU 時間
+> ELAPSED :: 啟動至今經過的時間
+E> VSZ 包含 mappings 與保留空間，通常比 RSS 大。
+?mc 10 個 process 共用同一個 4 MiB 的函式庫。為什麼把它們的 RSS 加起來會高估總記憶體用量，PSS 又如何改善？
++ RSS 重複計算共享頁面
+- RSS 不含共享函式庫，PSS 才含
+- PSS 只計算 swap 中的頁面
+- 兩者一樣，只是單位不同
+E> RSS 讓每個 process 都算一次完整的 4 MiB；PSS 把共享頁面平均分攤，每個只算 0.4 MiB。投影片：Shared pages can appear in several RSS totals。
+
+@CARD proc.top | top、htop、load average
+A> load average 不是 CPU 百分比，而是「排隊的人數平均」，包含正在用 CPU 的、等 CPU 的、以及卡在 I/O（D 狀態）的人。4 核心機器 load 4 代表剛好滿。
+B> top 按鍵：**P** CPU 排序、**M** 記憶體、**T** CPU 時間、**1** 每顆 CPU、**H** 執行緒、**u** 篩選使用者、**c** 完整指令、**h** 說明、**q** 離開
+B> **top -p PID** 監看指定 process；**top -b -n 1** 印一次批次快照
+B> 多執行緒 process 可以**超過 100% CPU**
+B> **load average**：runnable + uninterruptible sleep 任務數的平均（1、5、15 分鐘），要和 CPU 數比較
+B> **htop**：互動式篩選、排序、樹狀；**free -h** 記憶體摘要、**vmstat 1** 每秒取樣
+?mt 配對 top 按鍵：
+> P :: 依 CPU 使用率排序
+> M :: 依記憶體排序
+> 1 :: 顯示每顆 CPU
+> q :: 離開
+E> h 可看本機版本的說明。
+?tf load average 3.0 代表 CPU 使用率是 300%。
+=F
+E> load 是任務數平均，不是百分比；要與 CPU 核心數比較。
+?cmd 用 top 印出「一次」批次模式的快照（適合存成檔案）：
+= top -b -n 1
+= top -bn1
+= top -n 1 -b
+E> -b batch、-n 次數。
+
+@CARD proc.sigsrc | Signal 來源與處置方式
+A> Signal 是「敲門暗號」，可能來自 terminal（Ctrl-C）、shell（Ctrl-Z）、別的 process（kill）、或 kernel（程式做了非法記憶體存取 → SEGV）。收到後 process 可以：照預設動作、自訂處理、或假裝沒聽到（ignore）。
+B> Terminal driver：**Ctrl-C** 對前景 process group 送 **INT**
+B> Shell job control：**Ctrl-Z** 送 **TSTP**
+B> 其他 process：**kill**（受權限檢查）
+B> Kernel：同步錯誤產生 **SEGV**、**FPE**
+B> Disposition：**handler**（自訂處理）、**ignore**、**default action**
+?mt 配對來源與訊號：
+> Ctrl-C :: SIGINT
+> Ctrl-Z :: SIGTSTP
+> 非法記憶體存取 :: SIGSEGV
+> 除以零 :: SIGFPE
+E> SEGV 與 FPE 由 kernel 產生。
+?mt 配對 signal 的三種處置方式：
+> handler :: 執行程式自訂的處理函式
+> ignore :: 收到後不做任何事
+> default action :: 由 kernel 執行預設動作（多半是終止）
+E> KILL 與 STOP 不能被攔截或忽略。
+?fill 在 terminal 按 Ctrl-Z，會對前景 process group 送出的訊號是 SIG＿＿
+= TSTP
+E> Ctrl-C 送 INT；Ctrl-Z 送 TSTP（可以用 fg / bg 繼續）。
+
+@CARD proc.sigtable | Signal 編號表與 block / ignore
+A> Ignore 是「直接丟掉這封信」；block 是「先放信箱、等我解除封鎖再讀」（pending）。同一種標準訊號不會排隊，連按門鈴十下，門內只會知道「有人按過」。KILL 和 STOP 是警察破門，不能擋。
+B> 1 **HUP**、2 **INT**、3 **QUIT**、9 **KILL**、10 BUS、11 **SEGV**、15 **TERM**、17/18 **CONT**、19 **STOP**、20 **TSTP**（Linux x86）
+B> **Ignore**：丟棄；**Block**：延後送達直到 mask 允許（pending）
+B> 標準訊號**不會排隊**累積
+B> **KILL 與 STOP 不能被 catch、block、ignore**
+B> 編號可能因平台/架構不同 → 用 **kill -l** 與**名稱**
+?fill SIGKILL 的編號是＿＿
+= 9
+E> kill -9 = kill -KILL。
+?fill SIGTERM 的編號是＿＿
+= 15
+E> kill 不指定訊號時預設送 TERM (15)。
+?mc 對於 blocked 的訊號，下列何者正確？
++ 保持 pending 直到解除
+- 它會被永久丟棄
+- 它會被轉成 SIGKILL
+- 它會立刻終止 process
+E> 它會保持 pending，直到 signal mask 解除後才送達。ignore 才是丟棄。
+
+@CARD proc.termkill | SIGTERM vs SIGKILL
+A> SIGTERM 是「主管說：請你收拾好東西下班」，員工可以存檔、關檔、刪暫存再走，甚至可以假裝沒聽到；SIGKILL 是「直接斷電把人拖走」，由 kernel 強制執行，沒機會收拾，可能留下壞掉的檔案、殘留的 lock、子程序。
+B> **SIGTERM (15)**：禮貌的終止請求；程式**可以 catch**，執行清理（存資料、關連線、刪暫存檔）後結束，也可以忽略
+B> **SIGKILL (9)**：kernel 直接終止；**不能 catch / block / ignore**；沒有清理機會 → 資料可能不一致、殘留暫存檔 / lock
+B> 正確順序：先 TERM，等一下，不行才 KILL
+?sa 請簡述 SIGTERM 及 SIGKILL 的差別。
+S> 2025 期末 Q3
+R> SIGTERM（15）是「請求」程式終止的訊號，可以被程式 catch 並自訂處理，程式有機會做清理（儲存資料、關閉檔案與連線、刪除暫存檔）後優雅結束，也可以選擇忽略。kill 預設送的就是 SIGTERM。
+R> SIGKILL（9）由 kernel 直接強制終止 process，不能被 catch、block 或 ignore，程式沒有任何清理的機會，可能留下不一致的資料或殘留檔案。應先用 SIGTERM，無效時才用 SIGKILL。
+P> SIGTERM 可被 catch / ignore，程式可清理後結束
+P> SIGKILL 無法 catch / block / ignore，kernel 立即終止，無法清理
+?tf kill PID 不指定訊號時，預設送出的是 SIGKILL。
+=F
+E> 預設是 SIGTERM。
+
+@CARD proc.htopcase | 情境：CPU 被某 process 吃滿
+A> 處理「吵鬧的室友」：先請他小聲一點（renice），不影響他做事；不行再請他離開（SIGTERM），讓他收拾行李；真的不走才強制驅離（SIGKILL）。由溫和到強硬。
+B> 選項：① kill 送 SIGKILL ② nice/renice 調高 niceness ③ kill 送 SIGTERM
+B> 合理順序：**② → ③ → ①**（由破壞性最小到最大）
+B> renice：process 仍在執行，只是讓出 CPU；TERM：讓它清理後結束；KILL：最後手段
+?sa 你是系上工作站的管理員，用 htop 發現一個 process 異常占用超過 90% 的 CPU。你有三種方法：❶ kill 送 SIGKILL ❷ nice / renice 調整 niceness ❸ kill 送 SIGTERM。A. 說明 SIGKILL 與 SIGTERM 的差異與對程式的影響。B. 三種方法合理的使用順序為何？為什麼？
+S> 2023 期末 Q16
+R> A. SIGTERM 可被程式攔截，程式能執行清理後正常結束，也可選擇忽略；SIGKILL 由 kernel 強制終止，無法攔截或忽略，程式沒機會清理，可能造成資料損毀或留下暫存檔 / lock。
+R> B. 順序 ❷ → ❸ → ❶。先 renice 提高 niceness，讓它不再搶占其他使用者的 CPU，但程式仍能繼續完成工作（也許它是合法的長時間運算），影響最小；若確定要停止它，先送 SIGTERM 讓它有機會優雅結束與清理；若 SIGTERM 無效（被忽略或卡住），最後才用 SIGKILL 強制終止。
+P> A. TERM 可攔截可清理；KILL 不可攔截、無法清理
+P> B. 順序 2 → 3 → 1
+P> B. 理由：由破壞性小到大，先降低影響、再優雅結束、最後強制
+?ord 依「破壞性由小到大」排列處理方式：
+> renice 提高 niceness
+> kill -TERM PID
+> kill -KILL PID
+E> 先不中斷工作，再優雅停止，最後強制。
+
+@CARD proc.jobs | Job Control 與 kill
+A> 先記下號碼（$!）、確認是本人（ps）、再敲門（kill -TERM）、最後確認他真的走了（wait / ps）。PID 會被重複使用，所以送訊號前要再確認一次。
+B> **jobs -l**、**bg %1**、**fg %1**；一個 job 可以包含一條 pipeline 的多個 process
+B> 啟動後**立刻**用 **pid=$!** 記下 PID
+B> 送訊號前用 **ps -o pid,ppid,stat,args -p "$pid"** 確認
+B> **kill -TERM "$pid"** 讓程式有機會執行 handler
+B> **wait "$pid"** 等待並取得狀態，確認結束
+X> $ sleep 300 &
+X> $ pid=$!
+X> $ ps -o pid,ppid,stat,args -p "$pid"
+X> $ kill -TERM "$pid"
+X> $ wait "$pid"
+?cmd 對 PID 存在變數 pid 的 process 送出 SIGTERM（用名稱）：
+= kill -TERM "$pid"
+= kill -TERM $pid
+= kill -s TERM "$pid"
+= kill -s TERM $pid
+= kill -SIGTERM "$pid"
+= kill -SIGTERM $pid
+E> 用名稱比數字可攜。
+?cmd 列出所有訊號名稱：
+= kill -l
+E> 不同平台編號可能不同。
+
+@CARD proc.nice | Niceness（nice 值）
+A> nice 值是「謙讓度」：越 nice（數字越大）越願意把 CPU 讓給別人，所以優先權越低。範圍 -20（最不謙讓、最優先）到 19（最謙讓）。一般人只能變得更謙讓（調高），想插隊（調低）要 root。
+B> 範圍 **-20 到 19**；**NI 越高 → 排程權重越低**（優先權越低）
+B> child 在 fork 時**繼承** nice 值
+B> 一般使用者通常可以**提高** NI（對自己的 process）
+B> **降低** NI（提高優先權）通常需要**特權**（root 或資源額度）
+B> niceness 只改變**競爭 CPU 的權重**，**不是**固定的 CPU 百分比上限
+M> 越 nice 越讓人 → 數字大 = 優先低
+?mc 哪個 nice 值的優先權最高？
++ -20
+- 0
+- 19
+- 20
+E> 數字越小越「不 nice」，越優先。
+?tf 一般使用者可以把自己 process 的 nice 值從 10 調回 0。
+=F
+E> 降低 nice（提高優先權）通常需要 root 權限，即使是自己的 process。
+?tf 把 process 的 nice 設成 19，就能保證它最多只用 5% 的 CPU。
+=F
+E> niceness 只影響權重，沒有其他人競爭時仍可用滿 CPU。
+
+@CARD proc.renice | nice 與 renice 指令
+A> nice 是「出生時就設定謙讓度」（啟動新程式時，以相對值調整）；renice 是「對已經在跑的人重新設定」（Debian 範例用 --priority 設絕對值）。超出範圍會被夾到 19。
+B> **nice -n 10 COMMAND**：以 +10（相對於繼承值）啟動
+B> **renice --priority 15 --pid PID**：設成**絕對值** 15（傳統寫法 renice -n 15 -p PID）
+B> 超過 19 會被限制在 19
+B> 每次修改後用 **ps -o pid,ni,pri,comm -p PID** 確認
+?cmd 以 nice 值 +10 啟動 ./backup.sh：
+= nice -n 10 ./backup.sh
+= nice -10 ./backup.sh
+E> -n 指定調整量。
+?cmd 把 PID 1234 的 nice 值設為 15（使用課程的 renice 長選項寫法）：
+= renice --priority 15 --pid 1234
+= renice -n 15 -p 1234
+= renice 15 -p 1234
+= renice --priority 15 -p 1234
+E> renice 可以作用在已執行的 process。
+?sa 由於運算資源分配的需求，你要調整三個 process 的優先度：proc1 最高、proc2 其次、proc3 最低。請描述具體操作步驟，包括使用的指令和可能需要的權限。
+S> 2023 期末 Q10
+R> ① 先找出 PID：ps -eo pid,ni,comm | grep proc 或 pgrep proc1 等。
+R> ② 用 renice 調整 nice 值（數字越小優先權越高）：sudo renice -n -10 -p <PID_proc1>（設為負值，需要 root 權限）；proc2 維持 0 或 renice -n 0 -p <PID_proc2>；renice -n 19 -p <PID_proc3>（提高 nice 值，一般使用者對自己的 process 就可以做）。若是還沒啟動，可直接用 nice -n 19 ./proc3 啟動。
+R> ③ 用 ps -o pid,ni,comm -p <PID> 或 top 確認 NI 欄位。
+R> 權限：降低 nice 值（提高優先權，尤其設為負數）需要 root / sudo；提高 nice 值一般使用者可對自己的 process 執行；調整他人的 process 需要 root。
+P> 用 ps / pgrep 找 PID
+P> 用 renice（或 nice）設定，proc1 < proc2 < proc3 的 nice 值
+P> 降低 nice（負值）需要 root；提高可由擁有者執行
+P> 用 ps / top 確認結果
+
+@CARD proc.taskset | CPU Affinity：taskset
+A> CPU affinity 是「指定座位」：規定這個人只能坐在 3 號、7-11 號座位上。它只是限制能坐哪裡，不會幫你保留座位，也不會讓一個人變成兩個人（不會產生平行化）。
+B> 限制 task **可以在哪些 CPU 上執行**；**不保留** CPU，也**不產生平行**
+B> **taskset -pc $$**：查詢目前 shell 允許的 CPU
+B> **taskset -c 5 sleep 300**：以指定 CPU 啟動
+B> **taskset -pc LIST PID**：改變現有 task；**taskset -apc LIST PID** 套用到所有 threads
+X> $ taskset -c "3,7-11" sleep 300 &
+X> $ taskset -pc "$!"
+X> pid 1598321's current affinity list: 3,7-11
+?cmd 讓已在執行的 PID 4321 只能在 CPU 0 和 1 上執行：
+= taskset -pc 0,1 4321
+= taskset -pc 0-1 4321
+= taskset -cp 0,1 4321
+= taskset -cp 0-1 4321
+E> -p 作用在現有 PID，-c 用 CPU 清單格式。
+?tf 用 taskset 把程式綁到 CPU 3，就保證其他程式不會使用 CPU 3。
+=F
+E> affinity 只限制此 task 能跑哪，不會保留 CPU。
+
+@CARD proc.forkbomb | Fork Bomb 與 TasksMax
+A> Fork bomb 像「每個人都會立刻分裂成兩個」的細胞，瞬間塞滿整棟樓（task 數上限），連你要叫警衛（開一個新 shell 執行 killall）都擠不進來。解法：讓自己的 shell 直接「變身」成 killall（exec），不用多生一個人；事先用 cgroup 的 TasksMax 限制人數。
+B> 無限制的 child 建立會**耗盡 task slots** 等資源，連救援指令都可能無法建立 process
+B> 經典 bash fork bomb：**:(){ :|:& };:**（定義名為 : 的函式，呼叫自己兩次並放到背景）
+B> 處理：**killall -KILL bombName**；沒有資源 fork 時：**exec killall -KILL bombName**（shell 變成 killall，不需新 process）
+B> killall **不是 atomic**，殺的同時可能又產生新的 → 執行多次
+B> 預防：**cgroup task limit**；systemd **TasksMax=**（計算 tasks，包含 threads，限制整個 unit 的 cgroup 與子孫）
+X> systemd-run --user --unit=process-lab -p TasksMax=32 /usr/bin/sleep 300
+X> systemctl --user show process-lab.service -p TasksCurrent -p TasksMax
+?mc 系統被 fork bomb 塞滿、無法再 fork 新 process 時，為什麼要用 exec killall -KILL bomb？
++ exec 讓目前的 shell 直接被替換成 killall，不需要建立新的 process
+- exec 會讓 killall 自動以 root 身分執行，才有權限殺掉 fork bomb
+- exec 讓 killall 成為 atomic 操作，不會被 fork bomb 打斷
+- exec 會在執行 killall 之後，自動重新開啟一個新的 shell
+E> exec 保留 PID 替換程式；代價是 shell 不會回來。
+?mc systemd 中用來限制一個 unit（含其子孫）最多能有多少 tasks 的屬性是？
++ TasksMax=
+- LimitNOFILE=
+- Nice=
+- CPUAffinity=
+E> TasksMax 計算的是 tasks（包含 threads）。
+?tf killall 是 atomic 操作，一次就能保證殺光所有 fork bomb 的 process。
+=F
+E> 不是 atomic，殺的同時可能又有新的產生，要重複執行。
+
+@CARD proc.p_find | 實作：找出 process 與它在做什麼
+A> 找 process 像「點名」：pgrep 用名字點、ps 列出整班、pstree 看家族關係、/proc/PID/ 是每個人的檔案夾，裡面有他的指令列、工作目錄和開著的檔案。
+B> **pgrep -a 名稱**：列出 PID 與完整指令列；**pgrep -f 字串**：比對整個指令列（腳本被 bash 執行時，名字是 bash，要用 -f）
+B> **ps -ef --forest** 或 **pstree -p**：看 parent / child 關係（找出誰生出了那個 process）
+B> **ps -o pid,ppid,user,stat,etime,cmd -p PID**：自訂欄位，etime 是已執行多久
+B> **/proc/PID/cmdline**、**/proc/PID/cwd**（目前工作目錄）、**/proc/PID/fd/**（開著哪些檔案）
+B> **pkill -f 字串**：依指令列送訊號；先用 pgrep 確認比對到誰，再 pkill，避免誤殺
+X> pgrep -af sftp_watchd
+X> pstree -p $(pgrep -o sshd)
+X> ls -l /proc/$(pgrep -o -f sftp_watchd)/fd
+?mc sftp_watchd 是 bash 腳本，`pgrep sftp_watchd` 卻什麼都找不到。應該改用？
++ pgrep -f sftp_watchd，比對完整的指令列
+- pgrep -u sftp_watchd
+- ps aux | grep -v sftp_watchd
+- kill -0 sftp_watchd
+E> 腳本的 process 名稱常是 bash，腳本路徑只出現在參數中。
+?cmd 以樹狀方式顯示所有 process，並附上 PID：
+= pstree -p
+= ps -ef --forest
+= ps axf
+E> 追查「誰生出了這個 process」時很好用。
+?mc 想知道某個 process 目前開啟了哪些檔案，可以查看？
++ /proc/PID/fd/ 目錄（或 lsof -p PID）
+- /proc/PID/status 中的 FDSize 與 Files 欄位
+- /etc/PID/files，每個 process 一個檔案
+- /var/run/PID.pid 中記錄的檔案清單
+E> fd 底下每個 symlink 都指向一個開著的檔案、socket 或 pipe。
+
+@CARD proc.p_busy | 實作：target is busy 與誰占著檔案
+A> 想卸下一個掛載點，系統卻說 target is busy，代表還有人「站在房間裡」：可能是某個 shell 的工作目錄在裡面、某個程式開著裡面的檔案，最常見的是你自己的 shell 就 cd 在裡面。
+B> **fuser -vm /mnt/點**：列出使用這個掛載點的 process（-v 詳細、-m 整個檔案系統）
+B> **lsof +f -- /mnt/點**，或 `lsof | grep /mnt/點`；**lsof -i :22** 查誰在用 22 port
+B> 處理順序：自己先 `cd /` 離開、停掉相關服務（例如 sftp_watchd 的 inotify 監看）、確認沒人了再 umount
+B> 不得已時：**umount -l**（lazy，先從目錄樹拆掉，等沒人使用才真正釋放）；**fuser -km** 會直接殺掉使用者，小心
+X> sudo fuser -vm /mnt/hw2
+X> sudo lsof +f -- /mnt/hw2
+X> sudo systemctl stop sftp_watchd && sudo umount /mnt/hw2/sftp
+?cmd 列出所有正在使用 /mnt/hw2 這個檔案系統的 process，並顯示詳細資訊：
+= fuser -vm /mnt/hw2
+= fuser -mv /mnt/hw2
+= sudo fuser -vm /mnt/hw2
+E> 輸出會標示使用方式，例如 c 代表那是它的工作目錄。
+?mc `umount /mnt/data` 顯示 target is busy，fuser 看到的唯一使用者是你目前的 bash。最簡單的解法？
++ 先 cd 到掛載點外面（例如 cd /），再 umount
+- 重新開機，因為 shell 佔用的掛載點無法卸載
+- 用 umount -f 強制卸載，shell 不受影響
+- 先刪掉 /mnt/data 目錄，再重新 umount
+E> shell 的工作目錄在裡面，就算是在「使用」那個檔案系統。
+
+@CARD proc.p_daemon | 實作：daemon 的正確寫法
+A> daemon 是「沒有人看著也要一直值班的工人」。在 systemd 的時代，你不用自己做傳統的 double fork 背景化，只要寫好三件事：一個不會自己結束的主迴圈、收到 SIGTERM 時好好收工、把訊息印到 stdout / stderr 給 journal。
+B> 主迴圈留在前景：inotifywait -m 的 pipe 迴圈、或 `while true; do ...; sleep 1; done`
+B> 優雅結束：`trap 'echo stopping; exit 0' TERM INT`；systemctl stop 預設送 **SIGTERM**，等一段時間（預設 90 秒）沒結束才送 SIGKILL
+B> 腳本的子程序（例如 inotifywait）也要一起收：systemd 預設 **KillMode=control-group** 會對整個 cgroup 送訊號，所以交給 systemd 管就不怕殘留
+B> 訊息直接 echo，journal 會自動加上時間與服務名稱；不需要自己寫 log 檔（除非規格要求）
+B> 測試：`systemctl start` → `status` → 製造事件 → `journalctl -u` 看輸出 → `stop` 後確認 `pgrep -f` 沒有殘留
+X> #!/bin/bash
+X> trap 'echo "sftp_watchd stopping"; exit 0' TERM INT
+X> echo "sftp_watchd started"
+X> inotifywait -m -r -e close_write -e moved_to --format '%w%f' "$ROOT" |
+X> while read -r f; do check "$f"; done
+?mc `systemctl stop myd` 預設會對服務送出什麼訊號？
++ SIGTERM
+- 直接 SIGKILL
+- SIGHUP
+- SIGINT
+E> SIGTERM，逾時仍未結束才送 SIGKILL。可以用 KillSignal= 與 TimeoutStopSec= 調整。
+?tf 交給 systemd 管理的 daemon，仍然必須自己 fork 到背景並寫 PID 檔，否則 systemctl start 會卡住。
+=F
+E> Type=simple 的服務就是要留在前景；自己背景化反而會讓 systemd 以為服務已結束。
+?fill 讓 bash 腳本收到 SIGTERM 時印出訊息並以 0 結束：trap 'echo bye; exit 0' ＿＿
+= TERM
+= SIGTERM
+= 15
+E> trap 可以接多個訊號名稱，例如 TERM INT。

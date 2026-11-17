@@ -1,0 +1,529 @@
+@CH fs | 檔案系統與權限 | 📁 | 10_FileSystem.pdf
+
+@CARD fs.lsl | 讀懂 ls -l
+A> ls -l 的一行就是檔案的「身分證」：類型 + 權限、連結數、擁有者、群組、大小、修改時間、名字。
+B> drwx--x--x 7 tsaimh dcs 1024 Sep 22 17:25 public_html
+B> **d**：檔案類型；**rwx--x--x**：存取權限（user / group / other）
+B> **7**：連結數（link count）
+B> **tsaimh**：擁有者；**dcs**：群組
+B> **1024**：大小；**Sep 22 17:25**：最後修改時間；最後是檔名
+?mc 在 -rw-r--r-- 2 amy staff 512 Oct 1 a.txt 中，2 代表？
++ hard link 數
+- 檔案版本
+- 擁有者的 UID
+- 區塊數
+E> hard link 數（指向同一個 inode 的名稱數）兩個檔名共用一個 inode。
+?mt 配對 ls -l 輸出「drwx--x--x 7 tsaimh dcs 1024 Sep 22 17:25 public_html」的各欄位：
+> d :: 檔案類型（目錄）
+> 7 :: 連結數
+> tsaimh :: 擁有者
+> dcs :: 群組
+> 1024 :: 大小
+E> 權限字串之後依序是：連結數、擁有者、群組、大小、修改時間、檔名。
+?mc 權限 rwx--x--x 的目錄，「其他人」可以做什麼？
++ 能進入，但不能列出內容
+- 可以列出內容但不能進入
+- 什麼都不能做
+- 可以在裡面建立檔案
+E> 可以 cd 進去並存取已知名稱的檔案，但不能 ls 列出內容。只有 x 沒有 r：能進入、不能列出。
+
+@CARD fs.arch | 檔案系統架構與四大元件
+A> 應用程式不直接碰硬碟，而是透過 system call 請 kernel 幫忙；kernel 再透過 VFS（統一的櫃台）轉給各種檔案系統（ext4、msdos、proc…）和驅動程式。
+B> Application ↔（system call）↔ Kernel ↔（driver）↔ Hardware
+B> Kernel 中：**Virtual File System (VFS)** → 各檔案系統（ext2、msdos、proc…）→ buffer cache → device drivers
+B> 檔案系統四大元件：**Namespace**（命名與階層，如目錄）、**API**（操作的 system calls）、**Security model**（權限）、**Implementation**（對應到實體磁碟的程式碼）
+B> cp file1 file2 的 system call 序列：open 輸入 → create 輸出 → 迴圈 read / write 直到 EOF → close
+B> 檔案系統裡不只有檔案：目錄、裝置檔、process 資訊（/proc）、IPC、shared memory → 統一用 open、read、write、close、seek、ioctl、fcntl 存取
+?mt 配對檔案系統四大元件：
+> Namespace :: 命名與階層結構（目錄）
+> API :: 操作節點的 system calls
+> Security model :: 保護、隱藏與分享（權限）
+> Implementation :: 把邏輯模型對應到磁碟的程式碼
+E> 這四個是 filesystem 的基本目的。
+?ord cp file1 file2 的 system call 順序：
+> open 輸入檔
+> create 輸出檔
+> 迴圈 read / write 直到 EOF
+> close
+E> 投影片的 cp 範例。
+?mc Kernel 中讓不同檔案系統（ext4、proc、msdos…）都能用同一組 system call 存取的那一層叫做？
++ Virtual File System（VFS）
+- buffer cache（區塊快取）
+- device driver（裝置驅動程式）
+- shell 的檔案操作抽象層
+E> VFS 提供統一介面，底下再接各檔案系統的實作。
+
+@CARD fs.path | Pathname
+A> 絕對路徑是「從國家開始寫的完整地址」（從 / 開始）；相對路徑是「從你現在站的地方開始指路」。
+B> **絕對路徑**：從 / 開始，例 /net/dcs/93/9317807/test/haha.c
+B> **相對路徑**：從目前目錄開始，例 test/haha.c
+B> 限制（投影片）：單一元件 ≤ **255** 字元；單一絕對路徑 ≤ **1023** 字元
+?fill 單一路徑元件（一個檔名）最長＿＿個字元
+= 255
+E> 絕對路徑上限為 1023（FreeBSD）。
+?mc 目前目錄是 /home/amy，相對路徑 ../bob/a.txt 指的是？
++ /home/bob/a.txt
+- /home/amy/bob/a.txt
+- /bob/a.txt
+- /home/amy/../a.txt
+E> .. 是上一層目錄；相對路徑從目前目錄開始解析。
+?tf 以 / 開頭的路徑是絕對路徑，不受目前工作目錄影響。
+=T
+E> 相對路徑才會隨目前工作目錄改變解析結果。
+
+@CARD fs.hier | 目錄階層 hier(7)
+A> 檔案樹像一棟大樓的樓層配置：/bin /sbin 是「必備工具間」、/etc 是「設定與管理辦公室」、/var 是「會一直變動的倉庫」（log、mail、spool）、/tmp 是「臨時置物區」、/usr/local 是「自己加裝的設備」、/dev 是「設備的門牌」、/proc 是「process 的即時看板」。
+B> **/bin & /sbin**：單人/多人模式都必需的使用者工具與系統程式
+B> **/usr**：使用者工具與應用；/usr/bin、/usr/sbin；**/usr/lib** 函式庫；**/usr/include** 標頭檔；/usr/libexec 被其他程式執行的 daemon 與工具
+B> **/usr/local**：本地安裝的執行檔、函式庫等；**/usr/local/etc** 模仿 /etc
+B> **/etc**：系統設定檔與腳本
+B> **/dev**：裝置檔；**/proc**：執行中 process 的映像
+B> **/var**：log、暫存、spool 等變動資料；/var/log、/var/mail、/var/spool、/var/db
+B> **/tmp**：重開機後不保證保留；另有 /var/tmp
+B> **/mnt**：暫時掛載點；/lib 共享函式庫；/libexec 關鍵系統工具
+?mt 配對目錄與內容：
+> /etc :: 系統設定檔
+> /var/log :: 系統 log 檔
+> /usr/local :: 本地另外安裝的軟體
+> /dev :: 裝置檔
+> /tmp :: 不保證跨重開機保留的暫存檔
+E> hier(7) 有完整說明。
+?mc FreeBSD 上用 pkg 安裝的第三方軟體，設定檔通常放在？
++ /usr/local/etc
+- /etc（和系統設定放在一起）
+- /var/etc（可變動的設定）
+- /opt/etc（第三方軟體專用）
+E> /usr/local/etc 是 /usr/local 版的 /etc。
+
+@CARD fs.mount | mount 與 umount
+A> mount 是「把一個新的儲物櫃接到大樓的某個門口」：之後走進那個門（mount point）看到的就是新櫃子的內容，原本門後的東西暫時被擋住看不到（但沒消失）。有人正在櫃子裡（cd 在裡面或開著檔案）時，你沒辦法把櫃子拆走（busy）。
+B> **mount**：把新檔案系統的 root 對應到現有檔案樹的掛載點；例 mount /dev/ad2s1e /home2
+B> 掛載點**原本的內容會暫時看不到**
+B> 可掛載：磁碟分割、網路檔案伺服器、記憶體磁碟、kernel 元件（/proc）
+B> **umount { node | device }**；busy 時（有人 cwd 在裡面或有開啟的檔案）會失敗
+B> **umount -f** 強制；用 **lsof**（Linux / FreeBSD）或 **fstat**（FreeBSD）找出誰在用
+?mc umount /home 失敗並顯示 target is busy，最可能原因是？
++ 有 process 的工作目錄在 /home 裡，或開著 /home 下的檔案
+- /home 沒有寫入權限，所以無法把 dirty page 寫回後卸載
+- /etc/fstab 中沒有 /home 這一行，所以 umount 找不到它
+- 磁碟已滿，journal 無法寫入卸載前的最後一筆紀錄
+E> 用 lsof / fuser / fstat 找出是誰。
+?tf 把新的檔案系統 mount 到一個非空目錄上，原本目錄內的檔案會被刪除。
+=F
+E> 只是暫時被遮住，umount 之後就會再出現。
+?cmd 列出開啟中的檔案以找出是誰讓 /home 忙碌（Linux）：
+= lsof /home
+= lsof +D /home
+= fuser -m /home
+= fuser -vm /home
+E> lsof = list open files。
+
+@CARD fs.fstab | /etc/fstab 與 UUID
+A> /etc/fstab 是「開機時的自動掛載清單」。用 /dev/sdb 指定磁碟像用「排隊號碼」叫人，今天第二個到的人明天可能變第三個；用 UUID 像用「身分證號」叫人，不管排第幾都找得到同一個。
+B> 開機時自動檢查並掛載：**Device  Mountpoint  FStype  Options  Dump  Pass#**
+B> Pass：fsck 順序（root 為 1、其他 2、不檢查 0）；Dump：是否給 dump 備份
+B> 建議用 **UUID=…**（或 LABEL=）指定裝置，查詢用 **blkid** / lsblk -f
+X> # Device      Mountpoint FStype Options Dump Pass#
+X> /dev/ad0s1a  /          ufs    rw      1    1
+X> /dev/ad0s1b  none       swap   sw      0    0
+X> UUID=0ed6…   /home/ray  btrfs  subvol=/home/@ray 0 0
+?sa 在 /etc/fstab 中，我們偏向使用 UUID 來指定硬碟，而非使用 /dev/sdX，請解釋原因。
+S> 2025 期末 Q4
+R> /dev/sdX 是 kernel 依「偵測到的順序」動態分配的名稱，並不固定：新增或移除硬碟、插入 USB 碟、更換插槽 / 控制器、驅動載入順序不同、甚至每次開機的偵測時序差異，都可能讓原本的 /dev/sdb 變成 /dev/sdc。若 fstab 寫 /dev/sdX，就可能掛錯磁碟（資料寫到錯的地方）或找不到裝置導致開機失敗（進入 emergency mode）。
+R> UUID 是建立檔案系統（mkfs）時產生、寫在檔案系統 metadata 中的唯一識別碼，不隨裝置名稱或順序改變，所以能穩定地找到同一個檔案系統。可用 blkid 或 lsblk -f 查詢。
+P> /dev/sdX 依偵測順序分配，會因增減磁碟等原因改變
+P> 可能掛錯或找不到而開機失敗
+P> UUID 是檔案系統唯一且固定的識別碼
+?cmd 查詢各個區塊裝置的檔案系統 UUID：
+= blkid
+= lsblk -f
+= lsblk -o NAME,UUID
+E> blkid 或 lsblk -f。
+?mc fstab 第 6 欄（pass）為 0 代表？
++ 開機時不執行 fsck 檢查
+- 開機時第一個執行 fsck 檢查
+- 開機時不掛載這個裝置
+- 以唯讀方式掛載這個裝置
+E> root 通常 1，其他 2，不檢查 0。
+
+@CARD fs.types | 檔案類型
+A> ls -l 第一個字元是「物種」：- 一般檔案、d 目錄、l 捷徑（symlink）、b 區塊裝置（磁碟，一次一大塊）、c 字元裝置（終端，一個一個字）、s socket（本機的電話）、p 具名管線（排隊的輸送帶）。
+B> **-** regular file、**d** directory、**l** symbolic link
+B> **b** block device、**c** character device
+B> **s** UNIX domain socket、**p** named pipe (FIFO)
+B> **file** 指令判斷檔案內容類型（ASCII text、directory、ELF executable…）
+?mt 配對 ls -l 首字元：
+> b :: Block device file
+> c :: Character device file
+> s :: UNIX domain socket
+> p :: Named pipe
+> l :: Symbolic link
+E> - 一般檔案、d 目錄。
+?cmd 判斷 /bin/sh 是什麼類型的檔案：
+= file /bin/sh
+E> file 依內容判斷。
+
+@CARD fs.ipc | Socket、Pipe 與 Named Pipe
+A> pipe 是只有親戚（parent/child）才拿得到的輸送帶；named pipe（FIFO）把輸送帶掛上門牌，誰都能從門牌找到它；UNIX domain socket 是本機內的電話專線，用檔案路徑而不是 port 號碼來撥號。
+B> **UNIX domain socket**：socket() 建立，只在本機，透過**檔案系統物件**而非網路 port 存取
+B> **Pipe**：兩個 process 間 FIFO 溝通（通常 parent fork 前建立，fd[0] 讀、fd[1] 寫）
+B> **Named pipe**：**mkfifo [-m mode] name**；不相關的 process 也能用
+X> $ mkfifo pipe
+X> $ du >> pipe        # 一個 process 寫
+X> $ sort -n pipe      # 另一個 process 讀
+?cmd 建立一個名為 mypipe 的 named pipe：
+= mkfifo mypipe
+E> ls -l 會看到類型 p。
+?mc UNIX domain socket 和 TCP socket 的主要差異？
++ UNIX socket 只在本機，以檔案系統路徑定址，而非 IP:port
+- UNIX socket 只能單向傳輸，要雙向通訊必須開兩個 socket
+- UNIX socket 需要網路卡，只是封包不會離開這台機器
+- UNIX socket 比 TCP 慢，因為每次傳輸都要寫入磁碟
+E> 例：/run/docker.sock。
+
+@CARD fs.inode | inode 與分割區結構
+A> inode 是檔案的「戶口名簿」：記錄擁有者、權限、時間戳記、大小、資料放在哪些區塊（直接、單/雙/三層間接指標），但**沒有檔名**。檔名寫在目錄裡：目錄只是一張「檔名 → inode 號碼」的對照表。
+B> **inode** 記錄：mode、owners、timestamps、size、link count、資料區塊指標（**direct、single / double / triple indirect**）
+B> **ls -i** 看 inode 號碼
+B> 分割區四部分：**boot block**（開機程式）、**super block**（檔案系統狀態：大小、block size、root 目錄 inode…）、**inode list**、**data blocks**
+B> 使用者用檔名思考；**Unix 用 inode 思考**
+B> **目錄**的內容 = 一筆筆 (inode 號碼, 檔名)；包含 . 與 ..
+?tf 檔案的名稱存在它的 inode 裡。
+=F
+E> 檔名存在目錄的資料區塊（檔名 → inode 號碼）；inode 不含檔名，所以才能有多個 hard link。
+?mt 配對分割區元件：
+> Boot block :: 載入作業系統的開機程式
+> Super block :: 檔案系統整體狀態（大小、block size…）
+> Inode list :: 所有 inode 的陣列
+> Data blocks :: 檔案的實際內容
+E> UFS 經典結構。
+?cmd 列出目前目錄檔案及其 inode 號碼：
+= ls -i
+= ls -li
+= ls -il
+E> -i 顯示 inode。
+
+@CARD fs.link | Hard link vs Symbolic link
+A> Hard link 是「同一個人多一個名字」：兩個名字指向同一份戶口（inode），刪掉一個名字，人還在，直到所有名字都刪光。Symbolic link 是「寫著地址的便條紙」：它記的是路徑，原本的人搬走（刪除）就變成死連結；如果有新的人搬進同一個地址，便條紙就指向新人。
+B> **Hard link**：多個檔名指向**同一個 inode**；**必須在同一個檔案系統（partition）**；ln ori hard
+B> **Symbolic link**：一個檔案，內容是**另一個路徑名**；ln -s ori soft；像 Windows 捷徑
+B> 刪除原檔：hard link 仍可讀（inode link count 還 > 0）；symlink 變成 dangling（壞掉）
+B> 再建立同名新檔：symlink **指向新檔**（因為它記的是路徑）；hard link 仍是**舊內容**
+B> symlink 可跨檔案系統、可指向目錄；hard link 一般不能指向目錄
+?sa 請問下列兩個 cat 指令的輸出為何？
+QX> $ echo "start" > myfile
+QX> $ ln -s myfile link1
+QX> $ ln myfile link2
+QX> $ rm myfile
+QX> $ echo "end" > myfile
+QX> $ cat link2
+QX> $ cat link1
+S> 2025 期末 Q19
+R> cat link2 輸出 start；cat link1 輸出 end。
+R> link2 是 hard link，和原本的 myfile 指向同一個 inode；rm myfile 只刪除了一個名稱，inode 仍被 link2 引用，所以內容 start 還在。之後 echo "end" > myfile 建立的是全新的 inode。
+R> link1 是 symbolic link，只記錄路徑 "myfile"；cat 時會去解析這個路徑，找到的是新建的 myfile，所以輸出 end。
+P> link2 → start（hard link 指向舊 inode）
+P> link1 → end（symlink 依路徑找到新檔）
+?sa 試說明 symbolic link 和 hard link 的差異。
+S> 2023 期末 Q8
+R> Hard link：在目錄中新增一個名稱指向「同一個 inode」，與原檔完全平等，inode 的 link count 加一；必須在同一個檔案系統內，通常不能對目錄建立；刪除其中一個名稱，資料仍在，直到 link count 歸零才真正釋放。
+R> Symbolic link：是一個獨立的特殊檔案（有自己的 inode），內容存的是目標的路徑名稱；可以跨檔案系統、可以指向目錄；原檔刪除或搬移後就會失效（dangling），若同路徑出現新檔則會指向新檔。ls -l 中類型為 l。
+P> hard link 共用同一個 inode；symlink 存路徑
+P> hard link 不能跨檔案系統 / 目錄；symlink 可以
+P> 原檔刪除：hard link 仍可用，symlink 失效
+?mc 建立 hard link 時，下列哪個限制正確？
++ 原檔和連結必須在同一個檔案系統
+- 原檔必須屬於建立連結的使用者
+- 原檔必須是可執行檔
+- 只有 root 能建立
+E> 因為 inode 號碼只在同一個檔案系統內有意義。
+?cmd 為 /etc/nginx/sites-available/site 建立名為 /etc/nginx/sites-enabled/site 的 symbolic link：
+= ln -s /etc/nginx/sites-available/site /etc/nginx/sites-enabled/site
+= ln -s /etc/nginx/sites-available/site /etc/nginx/sites-enabled/
+= ln -s /etc/nginx/sites-available/site /etc/nginx/sites-enabled
+E> ln -s 目標 連結名。
+
+@CARD fs.mode | 權限 rwx 與 chmod
+A> 九個權限位元分三組：擁有者（u）、群組（g）、其他人（o）；r=4、w=2、x=1 加起來就是一位數字。chmod 有兩種語法：符號法（u+x、go-w）像「微調」，數字法（755）像「整組重設」。
+B> **rwx r-x r-x**：user / group / other
+B> 數字：**r=4、w=2、x=1** → 755 = rwxr-xr-x、644 = rw-r--r--、600 = rw-------
+B> 符號：chmod **u+x** test.sh、chmod **go-w** .tcshrc、chmod u+w,g-w hehe haha
+B> 遞迴：chmod **-R** 755 public_html/
+?fill rwxr-x--- 的數字表示是＿＿
+= 750
+E> rwx=7、r-x=5、---=0。
+?fill 640 的權限字串是＿＿
+= rw-r-----
+E> 6=rw-、4=r--、0=---。
+?cmd 移除 group 和 other 對 secret.txt 的所有權限（符號寫法）：
+= chmod go-rwx secret.txt
+= chmod go= secret.txt
+= chmod g-rwx,o-rwx secret.txt
+E> 或用數字 chmod 600（若 user 本來就是 rw）。
+
+@CARD fs.dirperm | 目錄權限與「刪除檔案」
+A> 目錄是一本「名冊」：r 是能讀名冊（ls 列出檔名）、w 是能在名冊上新增 / 劃掉名字（建立、刪除、改名）、x 是能「進入並通過」這個目錄（cd、存取裡面的檔案）。所以**能不能刪一個檔案，看的是目錄的 w+x，不是檔案本身的權限**。
+B> 目錄 **r**：列出內容（ls）；**x**：進入 / 通過（cd、存取其中檔案）；**w**（需搭配 x）：建立、刪除、改名
+B> 最小權限表：cd → 目錄 x；ls → 目錄 r；ls -s *.c → 目錄 rx；cat file → 檔案 r + 目錄 x；cat >> file → 檔案 w + 目錄 x；執行 binary → 檔案 x + 目錄 x；執行 script → 檔案 **rx** + 目錄 x；**rm file → 目錄 wx**（檔案本身不需要權限）
+B> 只有 x 沒有 r：可以 cd 進去、可以存取「知道名字」的檔案，但無法 ls（HW2 的 private/hidden 就是這樣設計）
+?mt 配對動作與「最少」需要的權限：
+> cd /home/test :: 目錄 x
+> ls /home/test :: 目錄 r
+> rm /home/test/f :: 目錄 w 與 x
+> 執行 shell script :: 檔案 r 與 x，目錄 x
+> cat /home/test/f :: 檔案 r，目錄 x
+E> script 要讀才能被直譯器執行，所以要 rx；binary 只要 x。
+?tf 要刪除一個檔案，必須對該檔案本身有 w 權限。
+=F
+E> 刪除是修改「目錄」的內容，需要目錄的 w+x（加上 sticky 的額外限制）。
+?mc 目錄權限為 --x（只有 x），使用者可以做什麼？
++ cd 進去並存取已知名稱的檔案，但無法 ls 列出內容
+- 可以 ls 列出內容與檔案屬性，但無法 cd 進去或讀取
+- 可以 ls 列出檔名，但無法讀取任何檔案的內容
+- 什麼都不能做，對目錄來說 x 沒有任何意義
+E> HW2 private/ 的「能 cd、不能 ls、能 get 知道名字的 treasure」就是這個原理。
+
+@CARD fs.special | setuid、setgid、sticky bit
+A> 三個特殊位元：setuid 是「借擁有者的身分做事」（passwd）；setgid 在目錄上是「在這裡出生的檔案，自動入籍這個群組」；sticky 在目錄上是「公共置物區，只准動自己的東西」（/tmp），只有檔案擁有者、目錄擁有者、root 能刪/改名。
+B> **setuid（4000）**：在**檔案**上，執行時 EUID = 檔案擁有者；例 passwd、chsh、crontab；顯示為 user 的 **s**
+B> **setgid（2000）**：在檔案上 EGID = 檔案群組；在**目錄**上，**新建的檔案繼承目錄的群組**；顯示為 group 的 **s**
+B> **sticky（1000）**：在**目錄**上，除非你是**檔案擁有者、目錄擁有者或 root**，否則不能刪除或改名其中的檔案；顯示為 other 的 **t**（/tmp = 1777 drwxrwxrwt）
+B> 大寫 S / T：對應的 x 位元沒開
+X> 4755 -rwsr-xr-x    2755 -rwxr-sr-x
+X> 2775 drwxrwsr-x    1777 drwxrwxrwt
+?sa 請說明下列 /tmp 資料夾權限中的 t 所代表的意義與作用。
+QX> drwxrwxrwt  38 root  wheel  42 Nov  4 22:20 /tmp
+S> 2023 期末 Q11
+R> t 是 sticky bit（數字 1000，/tmp 為 1777）。設在目錄上時，雖然所有人都有 rwx、都能在 /tmp 建立檔案，但只有「該檔案的擁有者」、「目錄的擁有者」或 root 才能刪除或重新命名其中的檔案。作用是讓 /tmp 這種公共可寫目錄中，使用者不能刪除或改名別人的檔案。t 為小寫代表 other 的 x 也有開。
+P> t = sticky bit
+P> 只有檔案擁有者 / 目錄擁有者 / root 可刪除或改名
+P> 防止公共目錄中互刪檔案
+?fill 想讓一個目錄成為 rwxrwsr-x（新檔案自動繼承群組），數字權限為＿＿
+= 2775
+E> setgid 2000 + 775。
+?mt 配對數字與權限字串：
+> 4755 :: -rwsr-xr-x
+> 1777 :: drwxrwxrwt
+> 2755 :: -rwxr-sr-x
+> 711 :: rwx--x--x
+E> 4 setuid、2 setgid、1 sticky。
+
+@CARD fs.sftpcase | 情境：sticky + setgid 目錄的刪除題
+A> 判斷能不能刪，照順序問三個問題：① 對「所在目錄」有沒有 w+x？② 那個目錄有沒有 sticky？有的話我是不是檔案或目錄的擁有者？③ 是 rmdir 的話，目錄是不是空的？，檔案自己的 400、000 權限完全不重要。
+B> /sftp 為 **drwxrwsr-t sysadm sftp**：setgid（新檔群組 = sftp）+ sticky
+B> sysadm 是 /sftp 的**擁有者**，在 sticky 目錄下仍可刪除他人檔案
+B> **rmdir** 只能刪除**空目錄**
+B> 子目錄 chmod 770 → 沒有 sticky；群組成員有 w+x 就能刪除其中檔案
+?sa 參考下列資訊回答：a. Q1 的刪除會成功嗎？為什麼？ b. Q2 會成功嗎？為什麼？ c. Q3 會成功嗎？為什麼？
+QX> $ groups sysadm    → sysadm : sysadm sftp
+QX> $ groups sftp-user → sftp-user : sftp-user sftp
+QX> $ ls -ld /sftp/    → drwxrwsr-t sysadm sftp /sftp/
+QX> $ sftp sftp-user@myws   (工作目錄 /sftp)
+QX> sftp> put file_1 .
+QX> sftp> mkdir dir_2
+QX> sftp> put file_2 dir_2/
+QX> sftp> chmod 400 file_1
+QX> sftp> chmod 770 dir_2
+QX> sftp> chmod 400 dir_2/file_2
+QX> $ sftp sysadm@myws      (工作目錄 /sftp)
+QX> sftp> rm file_1          # (Q1)
+QX> sftp> rmdir dir_2        # (Q2)
+QX> sftp> rm dir_2/file_2    # (Q3)
+S> 2025 期末 Q18
+R> a. Q1 成功。刪除檔案看的是所在目錄 /sftp 的權限：sysadm 是 /sftp 的擁有者，有 rwx；/sftp 雖有 sticky bit（只有檔案擁有者、目錄擁有者或 root 能刪），但 sysadm 正是目錄擁有者，所以可以刪除 sftp-user 的 file_1。file_1 本身的 400 權限不影響刪除。
+R> b. Q2 失敗。rmdir 只能刪除空目錄，而 dir_2 裡面還有 file_2（權限上 sysadm 是 /sftp 擁有者，sticky 不會擋他，但目錄非空）。
+R> c. Q3 成功。刪除 dir_2/file_2 需要 dir_2 的 w+x：/sftp 有 setgid，所以 dir_2 的群組是 sftp，chmod 770 後群組有 rwx；sysadm 屬於 sftp 群組，因此有 w+x，且 dir_2 沒有 sticky bit，所以能刪除。file_2 的 400 權限不影響。
+P> Q1 成功：目錄擁有者 + sticky 規則允許
+P> Q2 失敗：目錄不是空的
+P> Q3 成功：setgid 使群組為 sftp，770 給群組 wx，無 sticky
+P> 理解刪除取決於目錄權限而非檔案權限
+?mc 目錄設了 setgid（drwxrwsr-x），在裡面新建的檔案群組會是？
++ 該目錄的群組
+- 建立者的 primary group
+- root
+- nobody
+E> 目錄的 setgid 讓新檔案繼承目錄的群組，方便共用。
+?tf 在設了 sticky bit 的目錄中，目錄擁有者可以刪除別人的檔案。
+=T
+E> sticky 限制「只有檔案擁有者、目錄擁有者或 root」能刪除或改名。
+
+@CARD fs.umask | umask
+A> umask 是「預設會被拿掉的權限」：檔案從 666、目錄從 777 出發，把 umask 有的位元「遮掉」。注意不是減法，是遮罩（AND NOT）：umask 033 時檔案是 644，不是 633。
+B> shell built-in；決定**新建**檔案/目錄的預設權限
+B> 新權限 = **full & ~umask**；**檔案 full = 666**、**目錄 full = 777**
+B> 022 → 檔案 rw-r--r--、目錄 rwxr-xr-x
+B> 033 → 檔案 rw-r--r--、目錄 rwxr--r--
+B> 066 → 檔案 rw-------、目錄 rwx--x--x
+B> 277 → 檔案 r--------、目錄 r-x------
+B> 反推：umask = 想移除的位元（目錄可直接 777 − 目標）
+?sa A. 若希望建立的目錄其屬性為 d --- r-- r-x，umask 需設定為何？ B. 若希望建立的檔案其屬性為 - r-- --- rw-，且目錄的 user/group/other 都具有 x 權限，umask 需設定為何？
+S> 2023 期末 Q13
+R> A. 目標目錄權限 --- r-- r-x = 045。目錄從 777 出發，需要遮掉的位元 = 777 − 045 = 732，所以 umask 732。
+R> B. 目標檔案權限 r-- --- rw- = 406。檔案從 666 出發：user 要拿掉 w（2）、group 要拿掉 rw（6）、other 不拿（0），所以 umask 的 rw 部分為 260；又要求目錄的 u/g/o 都有 x，因此 umask 不能含任何 x（1）位元。umask = 260。驗證：檔案 666 & ~260 = 406（r-----rw-）；目錄 777 & ~260 = 517（r-x--xrwx），三者都有 x。
+P> A. 732
+P> B. 260
+P> 說明以 666 / 777 為基準並遮罩
+?fill umask 為 027 時，新建「檔案」的權限數字是＿＿
+= 640
+E> 666 & ~027 → rw- r-- --- = 640。
+?fill umask 為 027 時，新建「目錄」的權限數字是＿＿
+= 750
+E> 777 & ~027 = 750。
+?fill umask 為 033 時，新建檔案的權限數字是＿＿（注意不是減法）
+= 644
+E> 666 的 other=6（rw-）遮掉 3（-wx）只剩 r-- = 4，不是 6−3=3。
+
+@CARD fs.chown | chown 與 chgrp
+A> chown 是「過戶」（換擁有者，通常要 root），user:group 一次換兩個，:group 只換群組（等同 chgrp）。
+B> **chown**(8)：改擁有者；**chgrp**(1)：改群組
+B> chown -R tsaimh /home/tsaimh；chown -R **tsaimh:dcs** …；chown -R **:dcs** …；chgrp -R dcs …
+B> 把檔案送給別人（改擁有者）一般需要 root
+?cmd 遞迴把 /srv/web 的擁有者設為 www、群組設為 www-data：
+= chown -R www:www-data /srv/web
+= chown -R www:www-data /srv/web/
+= chown --recursive www:www-data /srv/web
+E> user:group。
+?cmd 只把 report.txt 的群組改成 staff（用 chgrp）：
+= chgrp staff report.txt
+E> 也可以 chown :staff report.txt。
+
+@CARD fs.chflags | FreeBSD chflags（附錄）
+A> chflags 是 FreeBSD 的「封條」：schg（系統不可變）連 root 都不能改（在高 securelevel 下連拆封條都不行）；uappnd 是「只能在後面加字的日記本」。
+B> **schg** system immutable（root only）；**sunlnk** system undeletable；**sappnd** system append-only
+B> **uappnd** user append-only；**uunlnk** user undeletable（root 與 user 都可設）
+B> **ls -ol** 顯示 flags
+B> 例：設 uappend 後 ls > file 失敗（Operation not permitted），ls >> file 可以
+?mc 對檔案設了 uappnd flag 後，下列哪個操作會成功？
++ ls -al >> file
+- ls -al > file
+- rm file
+- 用編輯器修改中間內容
+E> append-only 只能附加。
+?mt 配對 FreeBSD file flags：
+> schg :: system immutable，只有 root 能設
+> sappnd :: system append-only
+> uappnd :: user append-only
+> uunlnk :: user undeletable
+E> s 開頭是 system 等級，u 開頭是 user 等級。
+
+@CARD fs.journal | Journaling、CoW 與 Extended Attributes
+A> Journaling 像「先記帳再搬貨」：當機後看帳本就知道哪些做完、哪些要回滾，不用盤點整個倉庫（fsck 很快）。CoW 像「改作業時不在原稿上塗改，而是寫在新紙上再換掉」，沒改的部分共用同一張紙 → 快照幾乎不花空間。
+B> **Journaling**：先把操作寫入 journal，再非同步 commit；當機後：完整 commit → 略過；部分 → rollback 或 commit；未 commit → 忽略或 commit
+B> 好處：縮短 **fsck** 時間、減少不一致；例：**ext3、ext4、xfs、btrfs**
+B> **CoW (Copy on Write)**：複製但未修改的資料指向同一個實體位址
+B> CoW 優點：省空間、**低成本 snapshot**；缺點：可能不一致（reference count）、檔案「實際」使用空間不直觀；例：ZFS deduplication
+B> **Extended attributes**：key-value 的 metadata，存在 inode，不由檔案系統解讀（mime_type、checksum、security attributes）
+?mc Journaling filesystem 的主要好處？
++ 當機後復原快且較一致
+- 讓檔案永遠不會損壞
+- 自動備份所有檔案
+- 讓讀取速度加倍
+E> 當機後只需檢查 journal，大幅縮短 fsck 時間並降低不一致。它是一致性的保證機制，不是備份。
+?mt 配對：
+> Journaling :: 先寫 log 再 commit，當機後依 log 修復
+> Copy on Write :: 未修改的資料共用同一份實體區塊
+> Extended attributes :: 存在 inode 的 key-value metadata
+E> btrfs 同時是 CoW 也有 journal 特性（log tree）。
+
+@CARD fs.p_namei | 實作：一路檢查路徑上每一層的權限
+A> 存取一個檔案像「穿過一串房門」：要到 /mnt/hw2/sftp/public/a.txt，每一層目錄都要讓你通過（x），最後那扇門才看檔案本身的權限。Permission denied 常常不是檔案的問題，而是路上某一扇門沒開。namei -l 會把整條走廊每扇門的鎖都列給你看。
+B> **namei -l /完整/路徑**：逐層列出擁有者、群組與權限
+B> 目錄的權限意義：**r** 列出內容、**w** 新增 / 刪除 / 改名其中的項目（還需要 x）、**x** 進入與通過
+B> **stat 檔案**：完整的權限（八進位）、擁有者、inode、三種時間；`stat -c '%a %U:%G %n' 檔案` 精簡版
+B> 判斷權限的順序：是擁有者就**只看** user 位元；否則屬於該群組就**只看** group 位元；都不是才看 other。所以擁有者權限比 other 小時，擁有者反而做不到
+B> 驗證用 `sudo -u 某人 指令` 實測，比腦內推演可靠
+X> namei -l /mnt/hw2/sftp/private/hidden/treasure
+X> stat -c '%a %U:%G %n' /mnt/hw2/sftp /mnt/hw2/sftp/*
+?cmd 逐層列出 /mnt/hw2/sftp/public 這條路徑上每個元件的擁有者與權限：
+= namei -l /mnt/hw2/sftp/public
+= namei -om /mnt/hw2/sftp/public
+E> chroot、SFTP、web server 的權限問題都用它查。
+?mc 檔案權限是 `---r--r--`、擁有者是 alice，alice 能不能讀這個檔？
++ 不能，擁有者只看 user 位元
+- 能，因為 other 有 r
+- 能，因為擁有者永遠可以讀
+- 要看 alice 有沒有在群組裡
+E> 不能；alice 是擁有者，只看 user 位元（---），不會再往下看 group / other。符合哪一類就只用那一類的位元。（擁有者可以 chmod 改回來）
+?cmd 用 stat 只印出 /mnt/hw2/sftp 的八進位權限：
+= stat -c %a /mnt/hw2/sftp
+= stat -c '%a' /mnt/hw2/sftp
+= stat --format=%a /mnt/hw2/sftp
+E> %a 八進位權限、%A 是 rwx 字串。
+
+@CARD fs.p_acl | 實作：ACL：權限位元不夠用的時候
+A> 傳統權限只有「擁有者、一個群組、其他人」三格，現實需求常常塞不下：例如「這個人只能讀、那群人可以寫、其他人什麼都不行」。ACL 是在三格之外「額外貼的個人通行證」。ls -l 權限尾巴出現 + 號，就代表這個檔案有 ACL。
+B> 查看：**getfacl 檔案**；設定：**setfacl -m u:anonymous:rx 目錄**、**setfacl -m g:sftpusers:rwx 目錄**；移除：**setfacl -x u:anonymous**、全部清除 **setfacl -b**
+B> **預設 ACL**（只能設在目錄上）：`setfacl -d -m u:anonymous:rx 目錄`，之後在裡面**新建**的檔案與目錄會自動繼承
+B> **mask** 是 ACL 的上限：具名使用者、具名群組與擁有群組的權限都會被 mask 截斷；`chmod g=...` 在有 ACL 的檔案上改的其實是 mask
+B> **-R** 遞迴套用到既有的檔案；預設 ACL 只影響之後新建的
+B> 有預設 ACL 的目錄裡，新檔權限由預設 ACL 決定，不再套用一般的 umask
+X> setfacl -m u:anonymous:rx /mnt/hw2/sftp/public
+X> setfacl -d -m u:anonymous:rx /mnt/hw2/sftp/public
+X> getfacl /mnt/hw2/sftp/public
+?cmd 讓使用者 anonymous 對目錄 public 擁有 r-x 權限（使用 ACL，不改原本的擁有者與群組）：
+= setfacl -m u:anonymous:rx public
+= setfacl -m user:anonymous:rx public
+= setfacl -m u:anonymous:r-x public
+E> -m = modify。
+?mc 對目錄設定 `setfacl -d -m g:team:rwx dir` 之後，下列何者正確？
++ 之後新建的檔案與目錄自動帶 team 的 ACL；既有的不受影響
+- dir 裡現有與之後新建的檔案都會立刻套用 team:rwx，包含所有子目錄
+- 只有 dir 這個目錄本身得到 team 的權限，裡面新建的檔案則完全不受影響
+- 會取代 dir 原本的擁有群組，之後 ls -l 顯示的群組變成 team
+E> -d 是 default ACL；要處理既有檔案得再加 -R 套用一般 ACL。
+?mc `ls -l` 顯示 `drwxrwx---+`，最後那個 + 代表？
++ 這個檔案或目錄有額外的 ACL
+- 有 sticky bit
+- 有 setgid
+- 檔案正在被使用
+E> 用 getfacl 看詳細內容。
+
+@CARD fs.p_fstab | 實作：fstab 改完先驗證再重開機
+A> fstab 寫錯，下次開機就掉進 emergency mode。所以改完之後要「先在不重開機的情況下演習一次」：讓 systemd 重新讀取、用 mount -a 實際掛一遍、用 findmnt --verify 檢查格式。都通過了才重開機。
+B> 欄位：**裝置 掛載點 類型 選項 dump pass**；裝置用 **UUID=** 或 **LABEL=**，或固定不變的 /dev/mapper/VG-LV 名稱
+B> 改完：**systemctl daemon-reload**（systemd 會把 fstab 轉成 .mount unit）→ **mount -a**（把還沒掛的都掛上，錯誤當場顯示）→ **findmnt --verify**
+B> 非開機必要的掛載加 **nofail**，掛失敗也不會卡住開機
+B> 巢狀掛載點要注意順序：/mnt/hw2 要先掛，/mnt/hw2/sftp 才掛得上（systemd 會依路徑自動排序）
+B> 確認實際掛了什麼：**findmnt /mnt/hw2**、**findmnt -s**（列出 fstab 中的設定）
+X> UUID=xxxx-xxxx  /mnt/new-part  ext4  defaults  0  2
+X> /dev/mapper/SA2026vg-SARaid10  /mnt/hw2       btrfs  subvol=root  0  0
+X> /dev/mapper/SA2026vg-SARaid10  /mnt/hw2/sftp  btrfs  subvol=sftp  0  0
+X> sudo systemctl daemon-reload && sudo mount -a && sudo findmnt --verify
+?ord 修改 /etc/fstab 之後，安全的驗證順序：
+> systemctl daemon-reload
+> mount -a
+> findmnt --verify
+> reboot 並確認掛載都還在
+E> 前三步任何一步出錯，都先修好再重開機。
+?cmd 掛載 /etc/fstab 中所有尚未掛載的檔案系統（用來測試 fstab）：
+= mount -a
+= sudo mount -a
+E> 已經掛著的不會重掛；新加的那幾行若有錯會立刻顯示。
+?mc 在 /etc/fstab 中加入 nofail 選項的效果？
++ 掛載失敗也不影響開機
+- 該裝置永遠不會被掛載
+- 掛載後不允許寫入
+- 開機時跳過 fsck
+E> 該裝置掛載失敗時不會讓開機失敗或進入 emergency mode。適合外接碟或非必要的資料碟。
+
+@CARD fs.p_chmodlab | 實作：特殊位元組合的設定與檢查
+A> setgid、sticky 這些位元平常看不到，一組合起來就決定了共享目錄的規則。用八進位要多寫第四位數：4 = setuid、2 = setgid、1 = sticky，加起來放在最前面。
+B> 八進位：**chmod 3775 dir** = setgid（2）+ sticky（1）+ rwxrwxr-x；**chmod 1777 /tmp** 就是 sticky
+B> 符號寫法：**chmod g+s dir**（setgid）、**chmod +t dir**（sticky）、**chmod o-rwx 檔案**
+B> ls -l 的顯示：執行位置出現 **s / t** 代表該位元與 x 都有；大寫 **S / T** 代表有特殊位元但**沒有 x**（通常是設錯了）
+B> setgid 目錄：裡面新建的檔案與子目錄自動屬於該目錄的群組，子目錄也會繼承 setgid
+B> 改目錄樹的擁有者：`chown -R sysadm:sftpusers public`；只改目錄不動檔案：`find public -type d -exec chmod 2775 {} +`
+?fill 讓目錄同時擁有 setgid 與 sticky，且權限為 rwxrwxr-x，八進位寫成 chmod ＿＿ dir
+= 3775
+E> 2（setgid）+ 1（sticky）= 3。
+?mc `ls -ld dir` 顯示 `drwxrwsr-T`，其中最後的大寫 T 代表？
++ 有 sticky bit，但 other 沒有 x 權限
+- 有 sticky bit，且 other 有 x
+- 沒有 sticky bit
+- 有 setgid bit，而且 other 沒有 x 權限
+E> 小寫 t = sticky + x，大寫 T = sticky 但沒有 x。
+?cmd 用符號模式，把 public 目錄加上 sticky bit：
+= chmod +t public
+= chmod o+t public
+= chmod a+t public
+E> sticky：目錄內的檔案只有擁有者、目錄擁有者或 root 可以刪除或改名。

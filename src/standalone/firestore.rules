@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Each person's data lives under a secret 20-character sync code.
+    // Only exact documents can be read or written; listing (finding other codes) is not allowed.
+    match /sync/{code}/d/{name} {
+      allow get, delete: if code.matches('[a-z2-9]{20}');
+      allow create, update: if code.matches('[a-z2-9]{20}')
+        && request.resource.data.keys().hasOnly(['j', 'u'])
+        && request.resource.data.j is string
+        && request.resource.data.j.size() < 900000;
+    }
+  }
+}

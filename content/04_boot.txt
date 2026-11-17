@@ -1,0 +1,838 @@
+@CH boot | 開機與關機 | 🚀 | 06_Boot_ShutDown.pdf
+
+@CARD boot.stages | 開機流程五階段
+A> 開機像接力賽：Firmware（裁判鳴槍、檢查場地、挑選跑道）→ Boot loader（第一棒，把 kernel 和 initramfs 搬上場）→ Kernel（第二棒，初始化驅動與記憶體、準備 root filesystem）→ PID 1 systemd（第三棒，啟動並看顧所有服務）→ Login services（終點，讓你登入）。
+B> **Firmware**：初始化平台，選擇開機裝置或 EFI 程式
+B> **Boot loader**：載入 kernel、modules、（選用）initramfs
+B> **Kernel**：初始化驅動與記憶體，準備 root filesystem
+B> **PID 1**：啟動 user space，監管服務
+B> **Login services**：console、SSH、圖形登入
+B> 兩個不同層：boot loader **載入 OS**；service manager **啟動與管理 user-space 服務**
+M> 「韌 → 載 → 核 → 一 → 登」：韌體、載入器、核心、PID 1、登入
+?ord 依序排列 Linux 開機階段：
+> Firmware（BIOS / UEFI）
+> Boot loader（GRUB）
+> Kernel（含 initramfs）
+> PID 1（systemd）
+> Login services（getty / sshd / display manager）
+E> 每一層都有不同的設定與排錯方法。
+?mt 配對階段與職責：
+> Firmware :: 初始化平台、選擇開機裝置或 EFI 程式
+> Boot loader :: 載入 kernel 與 initramfs
+> Kernel :: 初始化驅動、準備 root filesystem
+> PID 1 :: 啟動並監管 user-space 服務
+E> 先判斷問題卡在哪一層。
+
+@CARD boot.biosuefi | BIOS/MBR vs UEFI/GPT
+A> BIOS 像「只會看第一頁的老管理員」：直接執行磁碟 sector 0 的開機碼；UEFI 像「會看目錄的新管理員」：到一個 FAT 格式的資料夾（ESP）裡找指定的 .efi 程式來執行。
+B> **Legacy BIOS/MBR**：第一個執行的是**磁碟 sector 0 的開機碼**；分割資訊在 MBR partition table；Debian 例：GRUB boot.img、core.img
+B> **UEFI/GPT**：firmware 直接選擇**EFI 程式**；分割資訊在 GPT header 與 partition entries；loader 放在 **EFI System Partition (ESP)**，通常 **FAT**；Debian 例：ESP 上的 shim / GRUB EFI loader
+B> Firmware 模式與分割格式是**獨立的選擇**：BIOS 搭配適當開機碼也能從 GPT 開機
+B> 判斷：test -d /sys/firmware/efi && echo UEFI
+?mc UEFI 開機時，firmware 從哪裡找 boot loader？
++ EFI System Partition（ESP，通常 FAT 格式）中的 .efi 檔
+- 磁碟第 0 個 sector 前 446 bytes 的開機碼（boot code）
+- /boot/grub/grub.cfg，firmware 直接讀取 GRUB 的選單設定
+- /etc/default/grub 中 GRUB_DEFAULT 指定的開機項目
+E> BIOS 才是執行 sector 0 的開機碼。
+?cmd 判斷目前系統是否以 UEFI 模式開機（存在則印 UEFI）：
+= test -d /sys/firmware/efi && echo UEFI
+= [ -d /sys/firmware/efi ] && echo UEFI
+E> UEFI 開機時 kernel 會提供 /sys/firmware/efi。
+?tf BIOS 模式只能從 MBR 分割的磁碟開機，不可能用 GPT。
+=F
+E> 兩者是獨立選擇；BIOS + GPT 需要 BIOS Boot Partition 放 GRUB core.img。
+
+@CARD boot.mbr | Master Boot Record 結構
+A> MBR 是磁碟第一個 512 bytes 的「小紙條」：446 bytes 寫開機咒語、64 bytes 寫四個房間的位置（4 個 partition entry × 16 bytes）、最後 2 bytes 蓋章 55 AA 證明是真的。
+B> 經典 MBR：**446 bytes** 開機碼 + **64 bytes** 四個 partition entries + **2 bytes** signature = 512 bytes
+B> Signature 在 offset **510、511**，值為 **55 aa**
+B> GRUB BIOS 開機碼把控制權交給 **core.img**；EFI loader 走不同路徑
+B> GPT 通常保留一個 **protective MBR**；有 MBR signature **不代表**是 BIOS 開機
+B> 實際判斷用 lsblk 與分割 metadata
+?fill MBR 中 boot code 佔＿＿bytes
+= 446
+E> 446 + 64 + 2 = 512。
+?fill MBR 的 signature 位於 offset 510、511，值為 55 ＿＿（十六進位）
+= aa
+= AA
+E> 55 AA。
+?mc MBR 最多可以直接記錄幾個 partition entry？
++ 4
+- 8
+- 16
+- 128
+E> 64 bytes ÷ 16 bytes = 4 個 primary partition；GPT 預設可到 128 個。
+
+@CARD boot.grubbios | GRUB 2 的 BIOS 開機路徑
+A> BIOS 只會讀很小的一段（boot.img），它的唯一工作就是「去叫 core.img」；core.img 比較大，會載入模組、找到 GRUB 設定，最後顯示選單、載入 kernel + initramfs。
+B> BIOS → 讀取磁碟的初始開機碼
+B> **boot.img** → 把控制權交給 core.img
+B> **core.img** → 載入 modules、找到 GRUB 設定
+B> **GRUB menu** → 選 kernel，載入 kernel + initramfs
+B> BIOS + GPT 時，GRUB 通常需要 **BIOS Boot Partition** 放 core.img（和 ESP 是不同的東西）
+?ord GRUB 2 在 BIOS 模式下的執行順序：
+> BIOS 讀取磁碟最前面的開機碼
+> GRUB boot.img
+> GRUB core.img（載入模組、找設定）
+> GRUB menu 載入 kernel 與 initramfs
+E> boot.img 很小，只負責跳到 core.img。
+?mc BIOS + GPT 的磁碟上，GRUB 的 core.img 通常放在哪裡？
++ BIOS Boot Partition
+- EFI System Partition（ESP）
+- /boot/efi
+- swap 分割區
+E> ESP 是 UEFI 用的；BIOS + GPT 需要另外一個小的 BIOS Boot Partition。
+?fill GRUB 2 在 BIOS 模式下，由 boot.img 把控制權交給 ＿＿.img
+= core
+E> core.img 再載入 modules 並找到 GRUB 設定。
+
+@CARD boot.files | Debian 開機相關檔案
+A> /boot 是「行李箱」：vmlinuz 是主角 kernel、initrd.img 是幫主角先打開門鎖（掛載 root）的小幫手，兩者版本要成對。grub.cfg 是印好的菜單（自動生成，不要手改）；/etc/default/grub 才是你寫菜單需求的地方。
+B> **/boot/vmlinuz-<ver>**：Linux kernel image
+B> **/boot/initrd.img-<ver>**：early user-space image（initramfs）
+B> **/boot/grub/grub.cfg**：**自動產生**的 GRUB 選單設定
+B> **/etc/default/grub**：管理員的 GRUB 設定
+B> **/etc/grub.d/**：產生選單用的腳本
+B> kernel 與 initramfs 版本要一致；保留一個已知可用的 kernel 以便救援
+?mt 配對檔案與用途：
+> /boot/vmlinuz-<ver> :: Linux kernel image
+> /boot/initrd.img-<ver> :: early user-space image
+> /boot/grub/grub.cfg :: 自動產生的 GRUB 選單
+> /etc/default/grub :: 管理員修改的 GRUB 設定
+E> 想改 GRUB 設定改 /etc/default/grub，再 update-grub。
+?mc 想永久修改 kernel 開機參數，應該編輯哪個檔案，再執行 update-grub？
++ /etc/default/grub
+- /boot/grub/grub.cfg
+- /boot/vmlinuz
+- /etc/grub.d/README
+E> grub.cfg 是自動產生的，直接改會在下次 update-grub 時被覆蓋。
+?tf /boot/grub/grub.cfg 是自動產生的檔案，不應該手動編輯。
+=T
+E> 它由 /etc/default/grub 與 /etc/grub.d/ 的腳本產生。
+
+@CARD boot.grubcfg | GRUB 設定與 update-grub
+A> 改菜單的正確方式：在「需求單」/etc/default/grub 寫好，叫印刷廠 update-grub 重印 grub.cfg。直接在印好的菜單上塗改，下次重印就不見了。grub-install 則是「重新安裝整台點菜機」，不是改菜單。
+B> 編輯 **/etc/default/grub** 與 /etc/grub.d/（例：GRUB_TIMEOUT=5、GRUB_CMDLINE_LINUX_DEFAULT="quiet"）
+B> **sudo update-grub** 重新產生 /boot/grub/grub.cfg
+B> **不要**為了持久變更去編輯產生出來的 grub.cfg
+B> kernel 參數不是 systemd service 設定
+B> **update-grub 重新產生選單**；**grub-install 安裝 loader 程式碼**，只用在確認過的開機路徑
+?cmd 修改 /etc/default/grub 後，重新產生 GRUB 選單：
+= update-grub
+= grub-mkconfig -o /boot/grub/grub.cfg
+E> Debian 用 update-grub（底層是 grub-mkconfig）。
+?mc 想讓 GRUB 選單等待 10 秒，正確做法是？
++ 改 /etc/default/grub 的 GRUB_TIMEOUT=10，再執行 update-grub
+- 直接修改 /boot/grub/grub.cfg 中的 set timeout=10，存檔即可生效
+- 執行 grub-install --timeout=10，讓設定寫入磁碟的開機磁區
+- 修改 /etc/systemd/system.conf 的 DefaultTimeoutStartSec=10s
+E> grub.cfg 會被重新產生覆蓋。
+
+@CARD boot.uefi | Debian UEFI 開機
+A> Secure Boot 像「層層驗證身分」：firmware 只信任有簽章的 shim，shim 再驗證 GRUB，GRUB 再載入 kernel 和 initramfs。
+B> Firmware 從 **ESP** 選 EFI loader
+B> **Secure Boot**：**shim** 驗證下一個 loader；GRUB 載入 kernel 與 initramfs
+B> amd64 上 EFI/debian 通常有 **shimx64.efi** 與 **grubx64.efi**
+B> **/boot/efi** 是 Debian 慣用的 ESP 掛載點
+B> 檢查：lsblk -f、findmnt /boot/efi、**efibootmgr -v**（列出 firmware 開機項目）
+?cmd 列出 UEFI firmware 中的開機項目（詳細）：
+= efibootmgr -v
+= efibootmgr
+E> efibootmgr 管理 UEFI NVRAM 開機項目與 BootOrder。
+?fill Debian 慣用把 ESP 掛載在 /boot/＿＿
+= efi
+E> /boot/efi。
+
+@CARD boot.multiboot | 多重開機與修復
+A> 修開機像修車：先確認車型（BIOS 還是 UEFI、磁碟配置、root 在哪、有沒有加密），再檢查零件（EFI 項目、ESP 檔案），先試另一把備用鑰匙（舊 kernel），最後才拆引擎（重裝 loader）。
+B> 先確認：**BIOS 或 UEFI**、磁碟配置、root filesystem、加密
+B> 檢查 EFI 項目與 ESP 檔案，或 BIOS GRUB embedding 區
+B> 重裝 loader 前，先在 GRUB 選單試**已知可用的 kernel**
+B> 用 Debian installer **rescue mode** 或 live media 修復；掛上實際的 root、/boot、ESP
+B> 更新選單（update-grub）**不能**修好所有 loader 故障
+?sa Koji 使用 Linux 和 Windows dual boot 一段時間。某次 Windows 強制更新後，他每次開機都在黑畫面後直接進入 UEFI 設定介面，看不到 boot manager 也沒有 emergency shell。請推斷 Windows 更新時可能做了什麼，並提出合理解釋。
+S> 2025 期末 Q14
+R> 推斷：Windows 更新時改動了 UEFI 開機設定，例如刪除或覆寫了 NVRAM 中 Linux（debian / shim / GRUB）的開機項目、修改 BootOrder，或覆寫 / 清掉 ESP 上的 EFI/debian（shimx64.efi、grubx64.efi）或 fallback 的 EFI/Boot/bootx64.efi，甚至重建 / 重新格式化了 ESP。
+R> 解釋：UEFI firmware 開機時要依 NVRAM 的開機項目到 ESP 載入 .efi 程式；如果項目不存在或指向的檔案不見，firmware 找不到任何有效的 boot loader，就只能停在 UEFI 設定介面。因為 GRUB 根本沒被載入，所以不會出現 boot manager 選單，也到不了 kernel / emergency shell（那是更後面的階段）。
+R> 修復：用 live / rescue media 開機，掛上 root 與 ESP，以 efibootmgr 重建開機項目或 grub-install 重新安裝 loader。
+P> Windows 更改 / 刪除了 UEFI 開機項目（NVRAM BootOrder）或覆寫 ESP 上的 loader
+P> firmware 找不到可執行的 EFI loader，所以進入 UEFI 設定
+P> GRUB 未載入 → 沒有選單、也沒有 emergency shell（失敗在 firmware 層）
+?mc 開機 loader 壞掉需要修復時，在重裝 loader「之前」應該先確認什麼？
++ 是 BIOS 還是 UEFI 開機
+- root 檔案系統的使用率
+- 螢幕解析度與顯示卡驅動是否相容
+- 使用者預設的 shell
+E> 這台機器是 BIOS 還是 UEFI 開機，以及磁碟配置與 root 檔案系統的位置。修錯模式（例如在 UEFI 機器上裝 BIOS 版 GRUB）只會讓情況更糟。
+?tf 只要執行 update-grub，就能修好所有 boot loader 的故障。
+=F
+E> update-grub 只更新選單；loader 本身或 EFI 開機項目壞掉要另外修復。
+
+@CARD boot.initramfs | Kernel 與 initramfs
+A> initramfs 是「先遣部隊」：真正的 root filesystem 可能被鎖在加密箱（LUKS）、或藏在 LVM 倉庫裡，kernel 自己打不開；所以先派一個小小的臨時檔案系統，裡面帶好驅動和工具，把 root 解鎖、組裝、掛好，再把棒子交給 systemd (PID 1)。
+B> **vmlinuz**：初始化 kernel 與內建驅動
+B> **initrd.img（initramfs）**：準備儲存裝置並**掛載真正的 root filesystem**
+B> early user space 可以：載入驅動、**解鎖加密儲存（LUKS）**、**啟用 LVM**
+B> root handoff 之後，**systemd 以 PID 1 執行**
+B> initramfs-tools（update-initramfs）與 dracut 的設定不同；重建前先確認產生器
+B> 雞生蛋問題：kernel modules 放在 /lib/modules（在 root fs 上），若掛 root 需要的驅動不在 kernel 裡，就**必須放進 initramfs**
+?mc 為什麼 root filesystem 在 LVM 或 LUKS 加密磁碟上時，需要 initramfs？
++ 掛載 root 前要先載入驅動、解鎖、啟用 LV，這些工具不能放在還沒掛載的 root 上
+- 因為 systemd 只能從 initramfs 啟動，root 上的那份 systemd 只是給救援模式用的備份
+- 因為 systemd 只能從 initramfs 啟動，root 上的 systemd 是備用的
+- 因為 kernel 本身不認得任何檔案系統，所有 ext4 驅動都只放在 initramfs 裡面
+E> early user space 負責解鎖與啟用 LVM，再掛載真正的 root。
+?sa LVVM 是一個運作原理類似 LVM 的 kernel device-mapper framework。若系統的 rootfs 在 LVVM partition 上，相比於直接在一般 GPT partition 上，需要額外做哪些設定？LVVM driver 需要在哪個 booting stage 被載入？為什麼？
+S> 2025 期末 Q16
+R> 額外設定：① 把 LVVM 的 kernel module 與使用者空間工具（啟用 volume 的指令）加入 initramfs，並在 initramfs 中於掛載 root 前啟用 LVVM volume（類似 LVM 的 vgchange -ay），之後重建 initramfs（update-initramfs -u）；② kernel command line 的 root= 指向 LVVM 的 device mapper 路徑（如 /dev/mapper/...），/etc/fstab 也要對應；③ boot loader 可能無法讀取 LVVM，所以 /boot（kernel 與 initramfs）通常要放在一般 partition 上（UEFI 的 ESP 也要是一般 FAT partition）。
+R> 載入階段：必須在 kernel 掛載 root filesystem 之前，也就是 initramfs（early user space）階段，或直接編進 kernel。原因：一般 kernel module 存放在 root filesystem 的 /lib/modules，但 root 本身就在 LVVM 上，沒有 driver 就無法掛載 root，形成雞生蛋問題；所以 driver 必須由 initramfs 提供（或 built-in），等到 systemd（PID 1）才載入就太晚了。
+P> initramfs 需包含 LVVM driver 與工具並啟用 volume，重建 initramfs
+P> root= / fstab 指向 LVVM 裝置；/boot 放在一般 partition
+P> 在 initramfs（掛 root 之前）載入
+P> 原因：modules 在 root fs 上，雞生蛋問題
+?cmd 在 Debian（initramfs-tools）重建目前 kernel 的 initramfs：
+= update-initramfs -u
+= update-initramfs -u -k $(uname -r)
+= update-initramfs -u -k all
+E> -u 更新、-k 指定 kernel 版本。
+
+@CARD boot.modules | 裝置與 Kernel Modules
+A> kernel module 像「可插拔的工具卡」：lsmod 看插了哪些、modinfo 看說明書、modprobe 會連同依賴的卡一起插。開機時 root 磁碟需要的卡，必須在 kernel 或 initramfs 裡就準備好。
+B> modules 通常在 **/lib/modules/<kernel-version>**；**uname -r** 看版本
+B> **lsmod** 列出已載入模組；**modinfo** 顯示模組資訊
+B> **modprobe** 會解析並載入相依模組
+B> root 儲存裝置的驅動必須在 **kernel 或 initramfs** 中
+B> 不要卸載使用中的驅動；**journalctl -k -b** 看本次開機 kernel 訊息
+B> 持久設定：**modprobe.d** 控制模組選項；**modules-load.d** 要求開機靜態載入（多數裝置會自動載入）
+?mt 配對指令與用途：
+> lsmod :: 列出已載入的模組
+> modinfo :: 顯示模組資訊
+> modprobe :: 載入模組（含相依模組）
+> uname -r :: 顯示目前 kernel 版本
+E> modprobe 比 insmod 聰明，會處理相依。
+?mc 想讓某個 kernel module 每次開機都固定載入，應設定在？
++ /etc/modules-load.d/
+- /etc/modprobe.d/
+- /etc/default/grub
+- /boot/grub/grub.cfg
+E> modprobe.d 是設定模組「選項」；modules-load.d 是要求載入。
+
+@CARD boot.pid1 | PID 1 與 kernel threads
+A> PID 1 是「這棟大樓的總管」：所有 user-space 服務都由它啟動、它負責看顧；父母先走的孤兒 process 也由它收養。kernel threads（如 kthreadd）則是 kernel 自己的工作人員。
+B> Debian：PID 1 是 **systemd**；kernel tasks 如 **kthreadd**
+B> FreeBSD：PID 1 是 **init**
+B> PID 1 啟動 / 監管 user space，並**處理 orphaned processes**
+B> kernel task 名稱與 PID 會因版本改變 → 理解 PID 1 的角色，而不是死背 PID 列表
+X> ps -p 1 -o pid,comm
+?cmd 查看 PID 1 是什麼程式（顯示 pid 與指令名稱）：
+= ps -p 1 -o pid,comm
+= ps -o pid,comm -p 1
+E> -p 選 PID、-o 選欄位。
+?mc 一個 process 的父 process 先結束了（成為 orphan），之後由誰接手？
++ PID 1（或指定的 subreaper）
+- kernel thread kthreadd
+- 它的子 process
+- 沒有人，它會立刻被殺掉
+E> PID 1 會處理 orphaned processes，負責在它們結束後 reap。
+?mt 配對系統與 PID 1：
+> Debian :: systemd
+> FreeBSD :: init
+E> PID 1 的角色相同：啟動並監管 user space。
+
+@CARD boot.unitfiles | systemd Unit 檔位置與修改
+A> 套件給的 unit 是「原廠說明書」（/usr/lib），不要直接塗改；你的修改寫在「便利貼」drop-in（/etc），systemctl edit 會幫你建便利貼。改完要叫 systemd 重讀（daemon-reload）。
+B> **/usr/lib/systemd/system/**：套件提供的 units
+B> **/etc/systemd/system/**：本地 units 與管理員覆寫（優先）
+B> **/run/systemd/system/**：runtime unit 設定
+B> **systemctl cat ssh.service**：顯示 unit 與 drop-in 檔
+B> **systemctl edit ssh.service**：建立本地 drop-in 覆寫
+B> 手動編輯 unit 後要 **systemctl daemon-reload**，再視情況 restart / reload；**不要直接改 vendor unit**
+?mt 配對位置：
+> /usr/lib/systemd/system/ :: 套件提供的 unit
+> /etc/systemd/system/ :: 管理員自訂與覆寫
+> /run/systemd/system/ :: runtime 設定
+E> /etc 的優先權高於 /usr/lib。
+?cmd 手動編輯了 /etc/systemd/system/myapp.service 後，讓 systemd 重新讀取 unit 定義：
+= systemctl daemon-reload
+E> 之後再 systemctl restart myapp.service。
+?cmd 用 drop-in 方式覆寫 ssh.service 的設定（不改原廠檔）：
+= systemctl edit ssh.service
+= systemctl edit ssh
+E> 會在 /etc/systemd/system/ssh.service.d/ 建立 override.conf。
+
+@CARD boot.systemctl | systemctl：start vs enable
+A> start 是「現在開燈」，enable 是「設定每天回家自動開燈」。兩件事獨立：開了燈不代表明天會自動開；設定了自動開燈也不會讓現在的燈亮，除非加 --now。
+B> **start** 改變 **runtime** 狀態（現在跑起來）
+B> **enable** 設定**開機時**（或透過依賴）啟動的策略
+B> **enable --now** = enable + start
+B> **daemon-reload** 重讀 unit 定義
+B> 檢查：systemctl status、**is-enabled**、**get-default**（預設 target）
+B> SSH：Debian 的 openssh-server 提供 **ssh.service**；重載前先 **sshd -t** 檢查設定語法；改 SSH 時保留一個現有連線直到新連線成功
+?cmd 立刻啟動 ssh.service 並設定開機自動啟動（一個指令）：
+= systemctl enable --now ssh.service
+= systemctl enable --now ssh
+= systemctl --now enable ssh.service
+E> --now 同時 start。
+?tf systemctl start nginx 之後，nginx 下次開機也會自動啟動。
+=F
+E> start 只影響現在；要 enable 才會開機啟動。
+?cmd 在重新載入 sshd 前，檢查 SSH 設定檔語法：
+= sshd -t
+= /usr/sbin/sshd -t
+E> -t = test mode。
+?cmd 查詢系統預設開機 target：
+= systemctl get-default
+E> set-default 可設定。
+
+@CARD boot.units | Unit 類型與依賴
+A> Unit 是 systemd 的「樂高積木」種類：service（服務）、socket（有人敲門才叫醒服務）、mount（掛載點）、timer（鬧鐘）、target（集合點，像「全員到齊」的群組）。依賴分兩種：Requires/Wants 是「我需要誰」，After/Before 是「誰先誰後」，兩者是不同的事。
+B> **service**：執行或監管服務（ssh.service）
+B> **socket**：由 socket 觸發啟動服務（app.socket）
+B> **mount**：代表檔案系統掛載（home.mount）
+B> **timer**：排程啟動（backup.timer）
+B> **target**：一組 units 的群組與同步點（multi-user.target）
+B> **After= / Before=** 只控制**順序**；**Requires= / Wants=** 表示**依賴關係**
+B> Wants = 弱依賴（對方失敗我照樣啟動）；Requires = 強依賴
+?tf 在 unit 中寫 After=network.target，就代表啟動本服務時會順便把 network.target 拉起來。
+=F
+E> After 只管順序，不會拉起依賴；拉起要 Wants= 或 Requires=。
+?mt 配對 unit 類型：
+> .timer :: 排程啟動另一個 unit
+> .socket :: 有連線進來時啟動服務
+> .target :: 一組 units 的群組 / 同步點
+> .mount :: 代表一個掛載點
+E> service 是最常見的類型。
+?mc 哪個 unit 設定只表示「啟動順序」，不表示依賴？
++ After=
+- Requires=
+- Wants=
+- BindsTo=
+E> Before/After 是 ordering；Wants/Requires 是 dependency。
+
+@CARD boot.targets | Targets 與傳統 Runlevel
+A> 傳統 runlevel 像「大樓的營業模式編號」；systemd 改成「有名字的集合（target）」，而且是依賴關係組成，不是一級一級往上爬的數字。
+B> 0 → **poweroff.target**
+B> 1 → **rescue.target**（維護、rescue shell）
+B> 2, 3, 4 → **multi-user.target**（非圖形多人）
+B> 5 → **graphical.target**（圖形登入）
+B> 6 → **reboot.target**
+B> runlevel 在各 SysV 發行版意義不同；systemd target 是**依賴群組**，不是數字步驟
+?mt 配對 runlevel 與 target：
+> 0 :: poweroff.target
+> 1 :: rescue.target
+> 3 :: multi-user.target
+> 5 :: graphical.target
+> 6 :: reboot.target
+E> 2、3、4 都對應 multi-user.target。
+?fill 傳統 runlevel 5（圖形登入）對應的 systemd target 是 ＿＿.target
+= graphical
+E> 2、3、4 都對應 multi-user.target。
+?mc 想進入只有 root shell 的維護環境（對應 runlevel 1），應該用哪個 target？
++ rescue.target
+- poweroff.target
+- graphical.target
+- reboot.target
+E> rescue.target 提供維護用的 rescue shell。
+
+@CARD boot.deps | 宣告依賴：Wants / WantedBy / list-dependencies
+A> 讓 A 依賴 B 有兩種寫法：在 A 的 [Unit] 寫「我要 B」（Wants=B），或在 B 的 [Install] 寫「我被 A 需要」（WantedBy=A），enable 時 systemd 會在 A.wants/ 目錄建一個 symlink。
+B> **[Unit] Wants= / Requires=**：在「需要別人」的 unit 中宣告
+B> **[Install] WantedBy= / RequiredBy=**：在「被需要」的 unit 中宣告；**systemctl enable** 時在 <target>.wants/ 或 .requires/ 建立 symlink
+B> 也可以直接在 /etc/systemd/system/<unit>.wants/ 建 symlink
+B> 順序另外用 **Before= / After=**（例：sddm.service 寫 Before=graphical.target 或 graphical.target 寫 After=）
+B> **systemctl list-dependencies graphical.target**：以樹狀列出依賴
+X> graphical.target
+X> ● ├─sddm.service（display-manager.service）
+X> ● └─multi-user.target
+X> ●   ├─ssh.service …
+X> ●   └─basic.target
+X> ●     ├─sockets.target …
+X> ●     └─sysinit.target …
+?sa SDDM 的 systemd service 應在 graphical.target ready 之前先啟動。試問在 shell 輸入 systemctl list-dependencies graphical.target 會有什麼輸出？（至少列出 sddm.service、multi-user.target、basic.target）在 systemd unit 裡，有多種方式可以宣告這種 dependency，列出兩種（需列出在哪個 section 的哪個 property）。
+S> 2025 期末 Q12
+R> 輸出是樹狀結構，例如：
+R> graphical.target
+R> ├─sddm.service（或 display-manager.service）
+R> └─multi-user.target
+R>   ├─（其他服務，如 ssh.service…）
+R>   └─basic.target
+R>     ├─sockets.target / paths.target / timers.target …
+R>     └─sysinit.target …
+R> 宣告方式：① 在 sddm.service 的 [Install] section 寫 WantedBy=graphical.target（或 RequiredBy=），systemctl enable 時會在 graphical.target.wants/ 建立 symlink；② 在 graphical.target 的 [Unit] section 寫 Wants=sddm.service（或 Requires=，實際上 Debian 是 Wants=display-manager.service 再以 alias 指到 sddm.service）。順序部分可在 sddm.service 的 [Unit] 寫 Before=graphical.target。
+P> 樹狀輸出：graphical.target 下有 sddm.service 與 multi-user.target，multi-user.target 下有 basic.target
+P> [Install] WantedBy=graphical.target
+P> [Unit] Wants=/Requires=sddm.service（寫在 graphical.target）
+?mc 在 myapp.service 的 [Install] 寫 WantedBy=multi-user.target，執行 systemctl enable myapp 時實際做了什麼？
++ 在 multi-user.target.wants/ 建立指向它的 symlink
+- 把 myapp.service 的內容複製到 multi-user.target 檔案的 [Unit] 區段裡
+- 把 myapp.service 複製一份到 /usr/lib/systemd/system/
+- 修改 multi-user.target 檔案，在裡面加入 myapp
+E> enable 就是依 [Install] 建 symlink。
+
+@CARD boot.defdeps | 預設依賴：Conflicts=shutdown.target
+A> 一般服務都被 systemd 自動貼上兩張貼紙：「關機（shutdown.target）來了我就要停」（Conflicts=）以及「關機要等我先停好」（Before=）。只有少數必須撐到最後的特殊 unit 會撕掉貼紙（DefaultDependencies=no）。
+B> **Conflicts=shutdown.target**：shutdown.target 被啟動時，這個 unit 會被**停止**（兩者不能同時存在）
+B> **Before=shutdown.target**：確保這個 unit 在 shutdown.target 達成**之前**停止完成（關機時的順序）
+B> 一般 service unit 在 **DefaultDependencies=yes**（預設）時會**自動**加上這兩個屬性
+B> 要撐到關機很後面的 unit（或早期開機 unit）會設 **DefaultDependencies=no**
+?sa 在 systemd unit 裡，Conflicts=shutdown.target 以及 Before=shutdown.target 的作用為何？什麼樣的 systemd unit 會有這些 properties？
+S> 2025 期末 Q11
+R> Conflicts=shutdown.target：表示此 unit 與 shutdown.target 互斥，當系統要關機而啟動 shutdown.target 時，systemd 會先把此 unit 停止。
+R> Before=shutdown.target：設定順序，shutdown.target 要等此 unit 停止完成之後才算達成，確保服務在關機流程繼續前被乾淨地停掉（關機時能依序 stop）。
+R> 擁有這些屬性的：幾乎所有一般的 service（及 socket、timer 等）unit，只要 DefaultDependencies=yes（預設值），systemd 就會自動幫它們加上這兩個依賴；例如 ssh.service、cron.service 等一般長駐服務。設了 DefaultDependencies=no 的特殊 unit（早期開機或需撐到關機最後的 unit）則沒有。
+P> Conflicts：關機啟動 shutdown.target 時此 unit 被停止
+P> Before：在 shutdown.target 之前完成停止（順序）
+P> 一般 service（DefaultDependencies=yes 自動加入）
+?tf 一般的 service unit 即使沒有寫，也會自動帶有 Conflicts=shutdown.target 與 Before=shutdown.target。
+=T
+E> 因為 DefaultDependencies=yes 是預設值。
+?fill 不想要這些自動加入的依賴時，設定 DefaultDependencies=＿＿
+= no
+= false
+E> 只有需要撐到關機很後面、或在開機極早期執行的 unit 才會這樣設定。
+
+@CARD boot.timerinst | Template unit 與沒有 [Install] 的 unit
+A> 沒有 [Install] 的 unit 像「沒有自己大門鑰匙的房客」：它不能被 enable，但別人可以把它叫醒，例如鬧鐘（timer）、別的 unit 的依賴、socket、或 udev 事件。xxx@.service 是「範本」，@ 後面填參數就變成一個實例。
+B> 沒有 [Install] section → 無法 systemctl enable，但仍可被：**timer**、其他 unit 的 **Wants/Requires**、**socket / path** activation、udev 等觸發
+B> **Template unit**：name@.service；實例 name@參數.service；%i、%f 等 specifier 代入參數（%f = 解碼成路徑）
+B> **Timer**：xxx.timer 預設啟動同名的 xxx.service；例 btrfs-scrub@.timer（OnCalendar=monthly）
+B> 啟用 timer：systemctl enable --now btrfs-scrub@-.timer（- 代表 /）
+?sa btrfs-scrub@.service 沒有 [Install] section。試問這個 systemd unit 在不手動下 systemctl start 的情況下該如何被啟動？
+QX> [Unit]
+QX> Description=Btrfs scrub on %f
+QX> ConditionPathIsMountPoint=%f
+QX> RequiresMountsFor=%f
+QX> [Service]
+QX> Nice=19
+QX> IOSchedulingClass=idle
+QX> KillSignal=SIGINT
+QX> ExecStart=/usr/bin/btrfs scrub start -B %f
+S> 2025 期末 Q13
+R> 它是 template unit，需要由其他 unit 觸發。最典型的是搭配同名的 timer：btrfs-scrub@.timer（內含 [Timer] OnCalendar=monthly 之類的排程，以及 [Install] WantedBy=timers.target），對某個掛載點 enable 該 timer 的實例，例如 systemctl enable --now btrfs-scrub@-.timer（- 表示 /，%f 會被還原成路徑），時間到時 timer 就會啟動對應的 btrfs-scrub@-.service。
+R> 其他方式：被其他 unit 以 Wants=/Requires= 拉起（依賴觸發），或由 socket/path activation 等機制啟動。
+P> 由 timer（btrfs-scrub@.timer）定期啟動
+P> enable 的是 timer 的實例，%f / 實例名代表掛載點
+P> 也可被其他 unit 依賴（Wants/Requires）拉起
+?mt 配對 systemd 名詞：
+> backup.timer :: 時間到時啟動 backup.service
+> getty@tty1.service :: template unit 的一個實例
+> %i :: template 實例名稱
+> OnCalendar= :: timer 的日曆時間設定
+E> timer 預設啟動同名的 service。
+
+@CARD boot.frameworks | 其他啟動框架（比較）
+A> 不同系統有不同的「總管」：Debian 用 systemd（units + systemctl）、老 Linux 用 SysV（/etc/init.d 腳本 + rcN.d 裡的 S/K 連結）、FreeBSD 用 rc（/etc/rc.conf + service + sysrc）。
+B> **Debian systemd**：units、drop-ins、systemctl
+B> **Legacy SysV**：/etc/init.d 與 /etc/rcN.d；以 **S（start）/ K（kill）** 開頭、有序號的 link
+B> **FreeBSD**：/etc/rc.conf、rcorder、service、sysrc
+B> FreeBSD 的 rc 設定與 boot0/boot1/boot2 不是 Debian 的設定或開機階段
+?mt 配對系統與服務管理方式：
+> Debian（systemd） :: systemctl 與 unit 檔
+> 傳統 SysV :: /etc/init.d 腳本與 rcN.d 的 S/K 連結
+> FreeBSD :: /etc/rc.conf、service、sysrc
+E> 考 Linux vs FreeBSD 差異時很好用。
+?mc SysV init 的 /etc/rc3.d/ 目錄中，S20nginx 這個 link 的意思是？
++ runlevel 3 時啟動 nginx
+- 開機時第 20 秒啟動 nginx
+- nginx 的第 20 個設定檔
+- 只在 20 秒後啟動
+E> 進入 runlevel 3 時，以序號 20 的順序啟動（Start）nginx。S 開頭是 start、K 開頭是 kill，數字決定順序。
+?cmd 在 FreeBSD 上用 sysrc 設定開機啟用 sshd（寫入 rc.conf）：
+= sysrc sshd_enable=YES
+= sysrc sshd_enable="YES"
+E> FreeBSD 的服務開關在 /etc/rc.conf，用 sysrc 修改比手動編輯安全。
+
+@CARD boot.login | 登入流程與 fork/exec
+A> fork 是「影分身」（多一個新 PID 的自己）、exec 是「變身」（PID 不變，但整個人換成另一個程式）。shell 執行 ls：先影分身，分身再變身成 ls。
+B> ① init / service manager 啟動 **getty**
+B> ② **login** 檢查帳號與認證政策
+B> ③ login **exec** 設定的 login shell
+B> ④ shell 執行外部指令：通常 **fork** 出 child，child 再 **exec** 程式
+B> **fork 產生新 process / 新 PID；exec 替換 process image 但保留 PID**
+B> SSH 有自己的 session 路徑
+?ord console 登入的流程：
+> service manager 啟動 getty
+> login 檢查帳號與認證
+> login exec 使用者的 login shell
+> shell fork 子程序，子程序 exec 外部指令
+E> exec 不會產生新 PID。
+?tf exec 會建立一個新的 PID。
+=F
+E> fork 產生新 PID；exec 保留 PID、替換程式。
+
+@CARD boot.rescue | Rescue 與 Emergency 模式
+A> rescue.target 是「維修模式」：保留基本服務和掛載，像醫院急診室有基本設備；emergency.target 是「加護病房最小配置」：幾乎什麼都沒啟動，root 甚至是唯讀。如果連這都不行，就拿救護車（installer rescue / live USB）從外面救。
+B> **rescue.target**：維修 shell，有基本服務與掛載；網路**不保證**
+B> **emergency.target**：最小 shell，更少 units 與 mounts；**root 可能唯讀**
+B> **Installer rescue**：從外部媒體修復，要先掛載/解鎖正確的 root
+B> 進入：GRUB 選單按 **e** → 在 linux 那行加 **systemd.unit=rescue.target**（或 emergency.target）→ **Ctrl+X 或 F10** 開機（只影響這次開機）
+B> 執行中系統：**sudo systemctl rescue**（會中斷服務與連線，**不要透過 SSH 做**）
+B> 認證：rescue/emergency 常用 **sulogin** 要 root 密碼；有些 Debian 安裝鎖了 root（root locked）→ 可能無法用一般 rescue 登入 → 先準備 installer rescue 媒體
+?fill 在 GRUB 編輯畫面，於 linux 那行加上 systemd.unit=＿＿.target 可進入維修模式（有基本服務）
+= rescue
+E> emergency.target 更精簡。
+?mc rescue.target 與 emergency.target 的差異何者正確？
++ emergency 更精簡，root filesystem 可能是唯讀
+- rescue.target 一定會啟動網路，方便遠端登入修復
+- emergency.target 會啟動所有服務，只是不顯示登入畫面
+- 兩者完全一樣，只是不同發行版使用不同名稱
+E> rescue 有基本服務與掛載；emergency 最少。
+?ord 從 GRUB 暫時進入 rescue 模式的步驟：
+> 在 GRUB 選單選到項目按 e
+> 在 linux 開頭的那行最後加上 systemd.unit=rescue.target
+> 按 Ctrl+X（或 F10）以修改後的設定開機
+E> 這是暫時修改，不會寫入 /etc/default/grub。
+?tf 透過 SSH 連線執行 systemctl rescue 是安全的，連線會保留。
+=F
+E> rescue 會停止服務與連線；要在 console 上做。
+
+@CARD boot.fsrescue | 維護模式下的檔案系統
+A> 在急診室先看病歷（findmnt、lsblk）再動刀；remount,rw 只是「把病床從唯讀變可寫」，不是治療（修復）。修檔案系統要在「沒掛載」的狀態下用對的工具。
+B> 先讀錯誤訊息、檢查掛載：**findmnt /**、**lsblk -f**
+B> 安全時才讓 root 可寫：**mount -o remount,rw /**
+B> **remount 不是修復**；不要對**已掛載**的 root 執行修復
+B> ext4 在**未掛載**狀態下修（通常用 rescue media）；XFS、Btrfs 有自己的工具
+B> 沒有萬用的 fsck
+?cmd 在 emergency shell 中，把唯讀的 root filesystem 重新掛載為可寫：
+= mount -o remount,rw /
+= mount -o rw,remount /
+E> remount 只改掛載選項，不是修復。
+?tf 可以直接對已掛載、正在使用的 root filesystem 執行 fsck 修復。
+=F
+E> 修復要在未掛載狀態，通常從 rescue media 開機進行。
+
+@CARD boot.diag | 開機失敗：定位是哪一層
+A> 看症狀找層級：連選單都沒有 → firmware/loader；選單有但找不到 kernel → loader 路徑；kernel 掛不上 root → 驅動/加密/LVM；服務起不來 → systemd units；登不進去 → 帳號/認證。
+B> 沒有 firmware / loader 選單 → 開機順序、偵測到的儲存、EFI 項目或開機碼
+B> loader 找不到 kernel → loader 路徑、已安裝的 kernel、檔案系統存取
+B> kernel 無法掛載 root → root 裝置、**驅動、加密、pool/filesystem**
+B> 服務啟動失敗 → units、drop-ins、依賴、journal
+B> 登入失敗 → 帳號、認證、shell、SSH 政策
+B> 先記錄**第一個有意義的錯誤**與**最後成功的階段**
+B> Log：**systemctl --failed**、journalctl **-b**（本次開機）、**-k**（kernel）、**-u** unit、**-p warning**、**-b -1**（上次開機，需保留 journal）
+?mt 配對症狀與優先檢查：
+> 開機直接進 UEFI 設定、沒有 GRUB 選單 :: EFI 開機項目 / boot loader
+> 看到 GRUB 但說找不到 kernel :: loader 路徑與 kernel 檔
+> kernel panic：無法掛載 root fs :: 驅動、加密、LVM、root= 參數
+> 開機完成但 nginx 沒起來 :: systemd unit 與 journal
+E> 判斷「最後成功」的階段就知道壞在哪層。
+?cmd 列出所有啟動失敗的 systemd units：
+= systemctl --failed
+= systemctl list-units --failed
+E> 接著用 journalctl -u <unit> 看細節。
+?cmd 查看「上一次開機」的 journal 記錄：
+= journalctl -b -1
+= journalctl --boot=-1
+= journalctl -b-1
+= journalctl --boot -1
+E> -b 0 或 -b 是本次；-b -1 是上次（需要持久保存 journal）。
+?cmd 查看本次開機中 ssh.service 的 log：
+= journalctl -b -u ssh.service
+= journalctl -u ssh.service -b
+= journalctl -b -u ssh
+= journalctl -u ssh -b
+E> -b 本次開機，-u 指定 unit。
+
+@CARD boot.shutdown | 有序關機與關機指令
+A> 有序關機像打烊：先通知客人、各部門收工（停服務）、把帳本寫好（flush、unmount）、最後關燈或關電源。halt 是「停止營業但電燈沒關」、poweroff 是「關掉總電源」、reboot 是「打烊後重新開店」。
+B> 通知使用者 → 停止服務、終止剩餘 process → flush 寫入、unmount → halt / poweroff / reboot
+B> **sync 不能取代**有序關機
+B> **Halt**：停止執行，**電源可能仍開著**（systemctl halt）
+B> **Poweroff**：停止並要求斷電（systemctl poweroff）
+B> **Reboot**：停止並重啟（systemctl reboot）
+B> **shutdown -r +10 "Maintenance"**：10 分鐘後重開；**now** 立即；**shutdown -c** 取消
+B> Debian systemd 的 **shutdown -h** 通常是 poweroff；**FreeBSD shutdown -h 是 halt、-p 是 poweroff**
+B> 關機卡住（服務掛住）與 halt 了但沒斷電（ACPI/firmware/hypervisor）要分開調查
+?cmd 排程 10 分鐘後重開機，並廣播訊息 Maintenance：
+= shutdown -r +10 "Maintenance"
+= shutdown -r +10 Maintenance
+= shutdown -r +10 'Maintenance'
+E> +10 = 十分鐘後。
+?cmd 取消已排程的 shutdown：
+= shutdown -c
+E> -c = cancel。
+?mt 配對 FreeBSD shutdown 選項：
+> shutdown -p now :: 立即關機並斷電 (poweroff)
+> shutdown -r now :: 立即重新開機
+> shutdown -h now :: 立即 halt（停止但可能不斷電）
+E> 在 Debian systemd 上 -h 通常會 poweroff，兩平台不同。
+?mc halt 與 poweroff 的差別？
++ halt 不一定斷電，poweroff 會
+- 兩者完全相同，只是名稱不同
+- halt 會重新開機，poweroff 不會
+- poweroff 不會停止系統服務
+E> halt 停止系統執行但電源可能仍開著；poweroff 會要求斷電。指令語意在不同系統間有差，讀本機 man page。
+
+@CARD boot.disaster | dd 誤寫磁碟開頭：MBR vs GPT
+A> MBR 把分割表寫在「唯一一張」紙條上，撕掉就沒了；GPT 在磁碟開頭和結尾各放一份（主表 + 備份），開頭被毀還能用尾巴那份救回來。
+B> GPT 佈局：LBA 0 = protective MBR、LBA 1 = **primary GPT header**、LBA 2-33 = partition entries；磁碟**最後**還有 **backup GPT header + entries**
+B> dd 從 /dev/sda 開頭寫掉 40KB：MBR（boot code + 分割表）或 GPT 主 header 與主分割表都會被毀；partition 通常從 1MiB 開始，所以 filesystem 本身可能完好
+B> 執行中的系統：kernel 已在記憶體中讀好分割表，可能還能跑；**重開機才是問題**
+B> **MBR**：boot code 與唯一一份分割表都沒了 → BIOS 無法開機、kernel 找不到 partition；只能靠事先備份（sfdisk -d）或 testdisk 掃描重建
+B> **GPT**：主表毀，但可用磁碟尾端的**備份 GPT** 恢復（gdisk / sgdisk），部分 UEFI firmware 也會自動用備份 → 災難復原容易得多
+?sa 培根要用 dd 清空 USB（/dev/sdc），卻打成 rootfs 所在的 /dev/sda，按 Ctrl+C 時已有 10 個 block（40KB）被清掉。假設 root filesystem 與 system files 沒被清掉，這台工作站還有辦法重開機嗎？為什麼？在這種情況下 MBR 與 GPT 在災難復原的考量上有什麼差別？
+S> 2025 期末 Q15
+R> 磁碟開頭 40KB 存放的是分割資訊與開機資料：MBR 的 boot code 與 partition table（sector 0），或 GPT 的 protective MBR、primary GPT header（LBA 1）與 partition entry array（LBA 2-33，約 16KB）。這些都被清掉了。
+R> 目前系統因為 kernel 已在記憶體中載入分割表，可能還能繼續執行，但「直接重開機」很可能無法開機：BIOS/MBR 情況下 boot code 不見，firmware 無法開機；即使能載入 loader，也讀不到分割表找不到 root / ESP。所以應在重開機前先修復分割表。
+R> MBR vs GPT：MBR 只有一份分割表、沒有備份，被覆蓋後只能靠事先的備份（sfdisk -d）或用 testdisk 等工具掃描磁碟猜回分割位置，風險高。GPT 在磁碟最後有 backup GPT header 與 partition entries，可以用 gdisk / sgdisk 從備份重建主表（部分 UEFI firmware 也能自動使用備份），災難復原容易很多；之後再重建 protective MBR 或重新 grub-install / 確認 ESP。
+P> 被清掉的是 MBR / GPT header 與分割表（+ BIOS boot code）
+P> 重開機會失敗（找不到 boot code / 分割資訊），執行中系統暫時可運作
+P> MBR 無備份，只能事前備份或掃描重建
+P> GPT 有磁碟尾端的 backup header / table 可復原
+?fill GPT 的備份 header 與 partition entries 存放在磁碟的＿＿（開頭/結尾）
+= 結尾
+= 尾端
+= 最後
+= 末端
+E> 主表在開頭，備份在結尾。
+
+@CARD boot.p_journal | 實作：journalctl 常用查法
+A> journal 是整台機器的「行車紀錄器」，所有服務的輸出都錄在裡面。重點是學會快轉：只看某個服務、只看這次開機、只看錯誤、只看最近十分鐘。
+B> **-u 服務**：某個 unit；**-t 名稱**：依 syslog identifier（程式自稱的名字）；**-k**：kernel 訊息（等同 dmesg）
+B> **-b**：這次開機；**-b -1**：上一次開機（查「為什麼上次開不起來」）
+B> **-e** 跳到最後、**-f** 持續追蹤、**-n 50** 最後 50 行、**-x** 附加說明、**--no-pager** 不進 less（接 pipe 時用）
+B> **-p err**：只看 err 以上的等級；**--since "10 min ago"**、**--since today**
+B> 可以組合：`journalctl -u ssh -b -p warning --no-pager`
+X> journalctl -u sftp_watchd -f
+X> journalctl -b -1 -p err --no-pager
+X> journalctl -t internal-sftp -t sftp-server --since "5 min ago"
+?cmd 持續追蹤（follow）sftp_watchd 這個 service 的 log：
+= journalctl -u sftp_watchd -f
+= journalctl -fu sftp_watchd
+= journalctl -f -u sftp_watchd
+= journalctl -u sftp_watchd.service -f
+E> -u 選 unit，-f 像 tail -f。
+?cmd 只看「上一次開機」期間、等級為 err 以上的 log：
+= journalctl -b -1 -p err
+= journalctl -p err -b -1
+E> -b 0 是這次、-b -1 是上一次。
+?mt 配對 journalctl 選項：
+> -u ssh :: 只看 ssh 這個 unit
+> -t sudo :: 依 syslog identifier 過濾
+> -k :: 只看 kernel 訊息
+> -p err :: 只看 err 以上等級
+E> -u 是 systemd unit 名稱，-t 是程式寫 log 時自報的名字，兩者不同。
+
+@CARD boot.p_status | 實作：服務起不來怎麼查
+A> 服務啟動失敗時，systemctl status 是「病歷首頁」：Loaded 那行告訴你 unit 檔在哪、有沒有 enable；Active 那行告訴你死因的代號；最下面附上最後幾行 log。看不夠再去 journalctl 翻完整病歷。
+B> **systemctl status X**：看 Loaded（路徑、enabled / disabled）、Active（active / failed / activating）、Main PID、最後幾行 log
+B> **systemctl --failed** 列出所有失敗的 unit；**systemctl cat X** 看實際生效的 unit 檔（含 drop-in）
+B> 改過 unit 檔一定要 **systemctl daemon-reload**，不然 systemd 用的還是舊版
+B> 常見死因：**status=203/EXEC**（ExecStart 的檔案不存在、沒有執行權限、或 shebang 錯）、**status=217/USER**（User= 指定的帳號不存在）、**status=200/CHDIR**（WorkingDirectory 不存在）
+B> 一直重啟被擋下（start request repeated too quickly）：修好後 **systemctl reset-failed X** 再 start
+B> 寫完先驗證：**systemd-analyze verify 檔案.service**
+X> systemctl status sftp_watchd --no-pager
+X> systemctl cat sftp_watchd
+X> journalctl -u sftp_watchd -e
+X> systemd-analyze verify /etc/systemd/system/sftp_watchd.service
+?mc service 啟動失敗，status 顯示 `Main process exited, code=exited, status=203/EXEC`。最可能的原因？
++ ExecStart 的程式無法執行
+- User= 指定的帳號不存在
+- 服務被 SIGKILL 終止
+- 記憶體不足
+E> ExecStart 指定的程式不存在、沒有執行權限，或 shebang 有誤。203 是 systemd 連 exec 都做不到。217 才是 USER 問題。
+?mc 修改了 /etc/systemd/system/foo.service 之後直接 `systemctl restart foo`，結果行為沒變，還出現警告。漏了哪一步？
++ systemctl daemon-reload
+- systemctl enable foo
+- systemctl isolate default.target
+- reboot
+E> systemd 把 unit 檔讀進記憶體，改檔後要叫它重新讀。
+?cmd 列出目前所有處於 failed 狀態的 unit：
+= systemctl --failed
+= systemctl list-units --failed
+= systemctl list-units --state=failed
+E> 開機後第一件事可以先看這個。
+?cmd 顯示 ssh.service 實際生效的 unit 檔內容（包含 drop-in 覆寫）：
+= systemctl cat ssh
+= systemctl cat ssh.service
+E> 比自己去 /lib/systemd/system 找更可靠。
+
+@CARD boot.p_unit | 實作：寫一個可靠的 service unit
+A> systemd 是「會幫你顧小孩的保母」：你只要寫一個一直在前景跑的程式，背景化、重啟、收 log、關機時叫它停，全部交給保母。最常見的錯就是自己在腳本裡加 & 或 nohup 把程式丟到背景，保母以為小孩不見了。
+B> **Type=simple**（預設）：ExecStart 的程式要**留在前景**一直跑，不要自己 fork 到背景
+B> **ExecStart 必須是絕對路徑**；指令裡要用 pipe 或變數展開得包一層 `/bin/sh -c '...'`
+B> **Restart=on-failure** 加 **RestartSec=2**：異常結束自動重啟
+B> 程式的 stdout / stderr 自動進 journal（journalctl -u 看得到）；Python 等有輸出緩衝的語言要關掉緩衝（`python3 -u` 或 `Environment=PYTHONUNBUFFERED=1`），不然 log 會延遲很久才出現
+B> **After=** 只管順序、**Wants= / Requires=** 才是依賴；需要某掛載點先就緒：**RequiresMountsFor=/mnt/hw2/sftp**
+B> **[Install] WantedBy=multi-user.target** 才能 enable；放在 **/etc/systemd/system/**
+X> [Unit]
+X> Description=SFTP upload watcher
+X> RequiresMountsFor=/mnt/hw2/sftp
+X> [Service]
+X> Type=simple
+X> ExecStart=/usr/local/bin/sftp_watchd
+X> Restart=on-failure
+X> RestartSec=2
+X> [Install]
+X> WantedBy=multi-user.target
+?mc 把一個 shell script 做成 Type=simple 的 service，腳本最後一行寫成 `main_loop &` 就結束。會發生什麼事？
++ 主程序馬上結束，systemd 認為服務已停止（並依設定清掉殘留的背景程序）
+- 服務正常運作，只是 MainPID 指向背景的程序
+- systemd 偵測到背景程序，會自動改用 Type=forking
+- systemd 會等背景程序結束後才把服務標成 active，所以開機一直卡住
+E> Type=simple 要求 ExecStart 啟動的那個程序就是服務本身，必須留在前景。
+?mc Python 寫的 daemon 用 print 輸出訊息，但 `journalctl -u` 很久才看到 log，或停止服務時才一次出現。原因？
++ stdout 被緩衝，要關閉緩衝
+- journald 每小時才寫入一次
+- 沒有設定 SyslogIdentifier
+- 沒有 enable 服務
+E> stdout 不是終端機時會被整塊緩衝；要用 -u 或 PYTHONUNBUFFERED 關閉緩衝。也可以在 print 加 flush=True。
+?fill 希望 service 在 /mnt/hw2/sftp 這個掛載點就緒之後才啟動，可以在 [Unit] 寫 ＿＿=/mnt/hw2/sftp
+= RequiresMountsFor
+E> systemd 會自動加上對應 .mount unit 的 Requires 與 After。
+?tf unit 檔的 ExecStart= 可以直接寫 `sftp_watchd`，systemd 會用 PATH 幫忙找。
+=F
+E> 傳統上必須寫絕對路徑；請一律寫完整路徑，最不會出錯。
+
+@CARD boot.p_grubedit | 實作：在 GRUB 選單臨時改開機參數
+A> GRUB 選單是開機路上的「最後一個收費站」，你可以在這裡臨時改這一趟的行程：按 e 編輯那一筆的指令，改完按 Ctrl+X 開機。改的東西只對這一次有效，不會寫回硬碟，所以很適合拿來救援與實驗。
+B> 選單上按 **e** 編輯、**c** 進入 GRUB 指令列；編輯畫面按 **Ctrl+X 或 F10** 用改過的內容開機
+B> 找到 **linux** 開頭那行，在行尾加參數：**systemd.unit=rescue.target**（救援模式）、**systemd.unit=multi-user.target**（強制進多人模式）、**init=/bin/bash**（連 systemd 都不跑，直接拿到 root shell）
+B> 用 init=/bin/bash 進去時 root 是唯讀的：先 `mount -o remount,rw /` 才能改檔
+B> 開機後確認這次用了哪些參數：**cat /proc/cmdline**
+B> 想永久修改：編輯 **/etc/default/grub** 的 GRUB_CMDLINE_LINUX，再 **update-grub**
+B> 缺 initramfs 或 root= 寫錯的典型畫面：**Kernel panic: VFS: Unable to mount root fs on unknown-block(0,0)**
+?mc 開機時在 GRUB 選單按 e，於 linux 那行尾端加上 systemd.unit=multi-user.target 後開機。這個修改？
++ 只對這一次開機有效，下次重開機就恢復原狀
+- 會永久寫入 /boot/grub/grub.cfg
+- 會永久寫入 /etc/default/grub
+- 會改變 systemctl get-default 的結果
+E> 要永久改就 set-default，或修改 /etc/default/grub 後 update-grub。
+?cmd 開機後，查看 kernel 這次開機實際收到的命令列參數：
+= cat /proc/cmdline
+E> 懷疑 GRUB 設定被人加了奇怪的參數時，先看這裡。
+?mc 用 init=/bin/bash 開機拿到 shell 後，想改 /etc/shadow 卻顯示 Read-only file system。應該先？
++ mount -o remount,rw /
+- fsck -y /
+- chmod 666 /etc/shadow
+- systemctl daemon-reload
+E> kernel 預設以唯讀掛載 root，正常開機時是後續流程把它 remount 成可寫。
+?mc 開機出現 `VFS: Unable to mount root fs on unknown-block(0,0)`，最可能的原因是？
++ 沒有載入 initramfs
+- 使用者密碼過期
+- /etc/fstab 的 swap 設定錯誤
+- 預設 target 被設成 rescue
+E> 沒有載入 initramfs（檔案不在 /boot 或 GRUB 設定沒有 initrd 那行），kernel 找不到 root 裝置。root 在 LVM / LUKS 上時，沒有 initramfs 裡的驅動與工具就掛不起來。
+
+@CARD boot.p_chroot | 實作：Live 環境加 chroot 救援
+A> 系統開不起來時，就「開另一台車把壞車拖進維修廠」：用 Live ISO 開機，把壞掉系統的 root 掛到 /mnt，再 chroot 進去。此時你下的指令（update-initramfs、update-grub、passwd）改的都是壞掉的那套系統。
+B> 層層打開：有 LUKS 先 **cryptsetup open**、有 LVM 再 **vgchange -ay**，然後才 mount
+B> 掛載順序：root 到 /mnt → /boot 到 /mnt/boot → ESP 到 /mnt/boot/efi
+B> chroot 之前把虛擬檔案系統 bind 進去：**/dev、/proc、/sys、/run**，不然裡面的工具找不到裝置
+B> `chroot /mnt` 之後就像在原系統裡一樣修：把 initramfs 放回 /boot、`update-initramfs -u -k all`、`update-grub`
+B> 修完 exit，`umount -R /mnt` 再重開機
+B> 用 `lsblk -f` 先認清哪個分割區是什麼，不要憑印象下指令
+X> cryptsetup open /dev/sda3 cryptroot
+X> vgchange -ay
+X> mount /dev/mapper/debian--vg-root /mnt
+X> mount /dev/sda2 /mnt/boot && mount /dev/sda1 /mnt/boot/efi
+X> for d in dev proc sys run; do mount --bind /$d /mnt/$d; done
+X> chroot /mnt /bin/bash
+?ord 用 Live ISO 救援一台「LUKS 上疊 LVM」的系統，正確順序是：
+> cryptsetup open 解開加密分割區
+> vgchange -ay 啟用 volume group
+> mount root LV 到 /mnt，再掛 /boot 與 ESP
+> bind mount /dev /proc /sys /run 到 /mnt 底下
+> chroot /mnt 後進行修復
+E> 由外層往內層一層一層打開，結束時反過來收。
+?mc chroot 之前為什麼要把 /dev、/proc、/sys bind mount 進去？
++ 工具要透過它們看到裝置與 kernel
+- 為了讓 chroot 之後有網路
+- 為了避免 root 被掛成唯讀
+- 為了讓 chroot 不需要 root 權限
+E> update-initramfs、update-grub 等工具需要透過它們看到實際的裝置與 kernel 資訊。沒有它們，grub 找不到磁碟、initramfs 工具也認不出 root 裝置。
+?cmd 啟用系統上所有 LVM volume group（讓 LV 出現在 /dev/mapper）：
+= vgchange -ay
+= vgchange -a y
+E> 在救援環境裡，LV 預設不一定會自動啟用。
+
+@CARD boot.p_initramfs | 實作：initramfs 的檢查與重建
+A> initramfs 是「kernel 的隨身工具包」：裡面裝著解鎖 LUKS、啟動 LVM、掛載 root 需要的驅動與工具。每個 kernel 版本配一包，檔名上的版本號要對得上；工具包內容過期（例如改了 crypttab）就要重新打包。
+B> 檔案成對：**/boot/vmlinuz-版本** 與 **/boot/initrd.img-版本**；目前跑的版本用 **uname -r** 查，已安裝的版本看 `ls /lib/modules`
+B> **update-initramfs -u**：更新目前版本；**-u -k all**：全部版本；**-c -k 版本**：為某版本新建
+B> **lsinitramfs /boot/initrd.img-版本 | less**：看裡面包了什麼（查有沒有 cryptsetup、lvm）
+B> 改了 **/etc/crypttab**、/etc/fstab 的 root、或要在開機早期載入的 module 之後，都要 update-initramfs -u
+B> initramfs 檔案被搬走時：搬回 /boot（檔名版本要與 vmlinuz 一致），再 update-grub 讓選單重新產生 initrd 那一行
+X> uname -r
+X> ls -l /boot/vmlinuz-* /boot/initrd.img-*
+X> lsinitramfs /boot/initrd.img-$(uname -r) | grep -E 'cryptsetup|lvm'
+X> update-initramfs -u -k all && update-grub
+?cmd 為系統上所有已安裝的 kernel 版本更新 initramfs：
+= update-initramfs -u -k all
+= update-initramfs -k all -u
+E> 只寫 -u 則只更新最新的那一個版本。
+?mc /boot 裡有 vmlinuz-6.1.0-25-amd64，卻沒有對應的 initrd.img。把檔案放回 /boot 之後，還應該做什麼讓 GRUB 選單使用它？
++ 執行 update-grub 重新產生 grub.cfg
+- 執行 depmod -a
+- 執行 systemctl daemon-reload
+- 執行 mkfs
+E> grub.cfg 是掃描 /boot 之後產生的；當初掃不到 initrd，選單裡就沒有 initrd 那一行。
+?cmd 列出 /boot/initrd.img-6.1.0-25-amd64 這個 initramfs 裡面包含的檔案：
+= lsinitramfs /boot/initrd.img-6.1.0-25-amd64
+E> 可以接 grep 確認 cryptsetup、lvm 等工具有沒有被包進去。
+
+@CARD boot.p_luks | 實作：LUKS 與 cryptsetup
+A> LUKS 加密碟像「有 8 個鑰匙孔的保險箱」：真正加密資料的 master key 只有一把，但每個鑰匙孔（key slot）可以各設一組密碼，任何一組都開得了。所以換密碼不必重新加密整顆碟，只是換掉某個鑰匙孔。
+B> 堆疊順序（由下而上）：分割區 → **LUKS** → /dev/mapper/名稱 → LVM PV → LV → 檔案系統；`lsblk` 的 TYPE 欄會顯示 **crypt**
+B> 看標頭與 key slot：**cryptsetup luksDump 裝置**
+B> 換密碼：**cryptsetup luksChangeKey 裝置**（先問舊的再問新的）；加一組：**luksAddKey**；移除：**luksRemoveKey**
+B> 開 / 關：**cryptsetup open 裝置 名稱**、**cryptsetup close 名稱**
+B> 開機時自動解鎖的對照表：**/etc/crypttab**（名稱、來源裝置、金鑰檔或 none、選項），改完要 update-initramfs -u
+B> 換完密碼務必重開機實測；最好先 luksAddKey 加新的、確認能用，再刪舊的
+X> lsblk -o NAME,TYPE,FSTYPE,MOUNTPOINT
+X> cryptsetup luksDump /dev/sda3 | grep -i slot
+X> cryptsetup luksChangeKey /dev/sda3
+X> cat /etc/crypttab      # sda3_crypt UUID=... none luks
+?mc 為什麼更改 LUKS 密碼幾乎瞬間完成，不需要把整顆磁碟重新加密？
++ 密碼只保護 master key
+- 因為 LUKS 其實沒有加密資料
+- 因為新密碼要等到下次開機才生效
+- 因為只加密了檔案名稱
+E> 密碼只用來保護 key slot 裡的 master key；資料是用 master key 加密的，master key 沒變。這也是為什麼可以同時存在多組密碼。
+?mt 配對 cryptsetup 子指令：
+> luksDump :: 顯示 LUKS 標頭與 key slot 資訊
+> luksChangeKey :: 把某組舊密碼換成新密碼
+> luksAddKey :: 在空的 key slot 新增一組密碼
+> open :: 解鎖並建立 /dev/mapper 下的裝置
+E> 加與換都需要先提供一組現有的有效密碼。
+?ord 一個典型加密系統的儲存堆疊，由最底層到最上層：
+> 磁碟分割區（/dev/sda3）
+> LUKS 加密層（/dev/mapper/sda3_crypt）
+> LVM（PV → VG → LV）
+> 檔案系統（ext4）
+E> 所以開機要先解鎖 LUKS，才看得到裡面的 LVM。
+?fill 記錄「開機時要解鎖哪些加密裝置」的設定檔是 /etc/＿＿
+= crypttab
+E> 格式：名稱、來源裝置、金鑰檔（none 表示詢問密碼）、選項。
+
+@CARD boot.p_target | 實作：卡在 rescue / emergency 怎麼出來
+A> 每次開機都掉進 rescue，像「車子每次發動都自動開進維修廠」。原因只有幾種：預設目的地被設成維修廠（default target）、有人在開機參數寫死了目的地、或是路上真的壞了（fstab 掛不起來會掉進 emergency）。先分辨是哪一種。
+B> 查預設：**systemctl get-default**；改回來：**systemctl set-default multi-user.target**（其實是改 /etc/systemd/system/default.target 這個 symlink）
+B> 不重開機直接切換：**systemctl isolate multi-user.target**，或 **systemctl default**
+B> 預設值正常卻還是進 rescue：看 **/proc/cmdline** 有沒有 systemd.unit=rescue.target 或 single，源頭在 /etc/default/grub，改完 update-grub
+B> **emergency** 模式通常是 fstab 某一行掛載失敗：`journalctl -xb` 找原因，非必要的掛載加 **nofail**
+B> rescue 與 emergency 的差別：rescue 會掛載本機檔案系統並啟動基本服務；emergency 只有唯讀的 root 和一個 shell
+X> systemctl get-default
+X> ls -l /etc/systemd/system/default.target
+X> cat /proc/cmdline
+X> systemctl set-default multi-user.target && systemctl isolate multi-user.target
+?cmd 查詢系統目前的預設開機 target：
+= systemctl get-default
+E> 結果應該是 multi-user.target 或 graphical.target。
+?mc `systemctl get-default` 顯示 multi-user.target，但每次開機仍然進入 rescue mode。接下來最該檢查什麼？
++ 看 /proc/cmdline 的 kernel 參數
+- /etc/passwd 的 root shell
+- /etc/hostname
+- 記憶體大小
+E> cat /proc/cmdline，看 kernel 參數有沒有指定 systemd.unit=rescue.target。kernel 命令列的 systemd.unit= 會蓋過 default.target，源頭通常在 /etc/default/grub。
+?cmd 不重開機，立刻從 rescue 切換到 multi-user.target：
+= systemctl isolate multi-user.target
+= systemctl default
+E> isolate 會啟動目標 target 需要的 unit，並停掉不屬於它的。
+?mc 在 /etc/fstab 新增一行掛載，但裝置路徑打錯了。下次開機最可能的結果？
++ 等待逾時後進入 emergency mode
+- 系統會忽略那一行，照常完成開機
+- GRUB 的開機選單會消失
+- kernel 找不到 root 而 panic
+E> 沒有 nofail 的掛載被視為必要，失敗就會掉進 emergency。

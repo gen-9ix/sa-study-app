@@ -1,0 +1,20 @@
+const { chromium } = await import(process.env.PW || 'playwright');
+const b = await chromium.launch({executablePath: process.env.CHROME || undefined});
+const errs=[];
+async function mk(url){ const c=await b.newContext({viewport:{width:390,height:844}}); const p=await c.newPage(); p.on('pageerror',e=>errs.push(e.message)); await p.goto(url); await p.waitForTimeout(800);
+  await p.fill('#pname','測試'); await p.click('[data-act=profnew]'); await p.waitForTimeout(500); return p; }
+const a=await mk(process.env.SA_DIST);
+await a.evaluate(()=>{ S.xp=1234; S.q['x.1']={t:Date.now(),n:3}; S.q['x.2']={t:Date.now(),n:1}; S.boss={sh:{w:2,l:1,t:5}}; S.room.hide={plant:1}; S.room.t=9; S.set.pet='ghost'; S.set.t=Date.now(); save(); });
+await a.evaluate(()=>{ VIEW={name:'settings'}; render(); });
+await a.click('[data-act=export]'); await a.waitForTimeout(400);
+const code=await a.inputValue('#expbox'); const msg=await a.textContent('#importbox');
+console.log('export len',code.length, msg.slice(0,40));
+const s=await mk(process.env.SA_URL);
+await s.evaluate(()=>{ S.q['y.9']={t:Date.now(),n:2}; save(); VIEW={name:'settings'}; render(); });
+await s.click('[data-act=importui]'); await s.fill('#imp', code.slice(0,40)+'\n'+code.slice(40)); await s.click('[data-act=importgo]'); await s.waitForTimeout(300);
+const r=await s.evaluate(()=>({xp:S.xp,q:Object.keys(S.q).sort(),boss:S.boss,hide:S.room.hide,pet:S.set.pet,ls:JSON.parse(localStorage.getItem(pKey(PROF.cur))).xp}));
+console.log(JSON.stringify(r));
+await s.click('[data-act=importui]'); await s.fill('#imp','garbage'); await s.click('[data-act=importgo]'); await s.waitForTimeout(200);
+console.log('toast', await s.locator('.toast').last().textContent());
+await s.screenshot({path:'/tmp/backup.png'});
+console.log(errs.length?'ERRORS '+errs.join('|'):'NO ERRORS'); await b.close();

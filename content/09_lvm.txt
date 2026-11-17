@@ -1,0 +1,323 @@
+@CH lvm | LVM 邏輯磁碟管理 | 🧱 | LVM.pdf
+
+@CARD lvm.what | LVM 是什麼
+A> LVM 像「把好幾個存錢筒倒進同一個大池子，再依需要分裝成任意大小的瓶子」：硬碟 / 分割區（存錢筒）→ 合成一個儲存池 → 切出可以隨時放大縮小的「虛擬分割區」。檔案系統只看到瓶子，不用管底下是幾顆硬碟。
+B> **Device mapper** 框架（/dev/mapper/），為 Linux kernel 提供邏輯磁碟管理
+B> 把磁碟 / 分割區變成**儲存池**，位於**硬碟與檔案系統之間**
+B> 多顆磁碟當成一顆大磁碟用；提供「虛擬分割區」
+B> **容易調整大小**，不必在意分割區的前後位置
+B> 何時用：多顆磁碟、未來要擴充、不想管分割順序、不確定各掛載點需要多大（單顆磁碟也有用）
+?mc 下列哪個不是使用 LVM 的好處？
++ 自動備份資料，snapshot 可以取代備份
+- 可以把多顆磁碟合成一個儲存池
+- 可以用 pvmove 在線上把資料搬到另一顆磁碟
+- 不必在意分割區的前後順序
+E> LVM snapshot 不是備份（Not backup!）。
+?tf LVM 位於硬碟（分割區）與檔案系統之間。
+=T
+E> 它把磁碟變成儲存池，再切出邏輯磁區給檔案系統使用。
+?fill LVM 建立在 Linux kernel 的 device ＿＿ 框架上（裝置出現在 /dev/mapper/）
+= mapper
+E> 所以 LV 的裝置路徑長得像 /dev/mapper/vg-lv。
+
+@CARD lvm.arch | PV → VG → LV 三層架構
+A> 三層樂高：PV（實體積木：磁碟或分割區）→ VG（把積木倒進同一個箱子）→ LV（從箱子裡拿積木蓋出你要的房間）。由下往上建，由上往下拆。
+B> **PV (Physical Volume)**：最底層儲存（磁碟、分割區、軟體 RAID /dev/mdX）；pvcreate 會寫入 LVM header
+B> **VG (Volume Group)**：由一或多個 PV 組成的儲存池
+B> **LV (Logical Volume)**：在 VG 裡切出的虛擬分割區，在上面建檔案系統
+B> LV 路徑：**/dev/<VG>/<LV>** 或 **/dev/mapper/<VG>-<LV>**（名稱中的 - 會變成 --）
+M> 「P 物、V 群、L 邏」，由下而上 P → V → L
+?ord LVM 由下（硬體）到上（檔案系統）的層次：
+> 實體磁碟 / 分割區
+> Physical Volume (PV)
+> Volume Group (VG)
+> Logical Volume (LV)
+> 檔案系統（ext4、btrfs…）
+E> 建立順序也是如此。
+?fill VG 名為 data-vg、LV 名為 data_vol，在 /dev/mapper 下的路徑是 /dev/mapper/＿＿
+= data--vg-data_vol
+E> VG 與 LV 之間用一個 -，名稱本身的 - 會被跳脫成 --（df 輸出可見 data--vg-data_vol）。
+?fill VG 為 primary_vg、LV 為 home_lv，另一個路徑寫法是 /dev/＿＿
+= primary_vg/home_lv
+E> /dev/<VG>/<LV>。
+
+@CARD lvm.cmds | 建立 PV / VG / LV 指令
+A> 指令名稱很好猜：pv / vg / lv + create / extend / reduce / remove / display / s（簡表）。
+B> **pvcreate /dev/sdb1 /dev/sdb2 …**
+B> **vgcreate <VG> <PV…>**；**vgextend <VG> <PV>** 加 PV 進現有 VG
+B> **lvcreate -l 100%FREE <VG> -n <LV>**（-l 小寫：以 extent 數或百分比）
+B> **lvcreate -L 50G <VG> -n <LV>**（-L 大寫：以容量）
+B> 查看：**pvs / vgs / lvs**（簡表）、**pvdisplay / vgdisplay / lvdisplay**（詳細，含 PE 大小與數量）
+?cmd 把 /dev/sdb 初始化成 LVM 的 PV：
+= pvcreate /dev/sdb
+E> 會寫入 LVM header。
+?cmd 用 /dev/sdb 建立名為 data-vg 的 VG：
+= vgcreate data-vg /dev/sdb
+E> vgcreate <名稱> <PV>。
+?cmd 在 data-vg 中建立名為 data_vol、使用全部剩餘空間的 LV：
+= lvcreate -l 100%FREE -n data_vol data-vg
+= lvcreate -l 100%FREE data-vg -n data_vol
+= lvcreate -n data_vol -l 100%FREE data-vg
+E> -l（小寫）可用百分比。
+?cmd 在 primary_vg 中建立 50G、名為 data_lv 的 LV：
+= lvcreate -L 50G -n data_lv primary_vg
+= lvcreate -L 50G primary_vg -n data_lv
+= lvcreate -n data_lv -L 50G primary_vg
+E> -L（大寫）指定容量。
+?mt 配對 lvcreate 選項：
+> -L 50G :: 以容量指定大小
+> -l 100%FREE :: 以 extent 數或百分比指定
+> -n :: LV 名稱
+E> 大 L = Large size；小 l = little extents。
+
+@CARD lvm.pe | PE 與 LE
+A> PE 是 LVM 的「最小積木塊」（預設 4MB）：LV 就是由一塊一塊 PE 拼起來的。LE 是在 LV 這一層看到的同一塊積木，大小和 PE 一樣。
+B> **PE (Physical Extent)**：PV 中可分配給 LV 的**最小連續單位**，預設 **4MB**
+B> PE 從 VG 分配給 LV；PV 大小須是 PE 的倍數
+B> **LE (Logical Extent)**：LV 層級的單位，**大小與 PE 相同**
+B> pvdisplay、vgdisplay 顯示 PE 大小與數量；lvdisplay 顯示 LE 數
+?fill LVM 預設的 PE 大小是＿＿MB
+= 4
+E> 可在 vgcreate -s 改。
+?tf LE 的大小和 PE 相同。
+=T
+E> LE 對應到 PE。
+
+@CARD lvm.thin | Thin Provisioning
+A> Thin provisioning 像「信用卡額度」：你可以答應每台 VM 100GB（virtual size 是上限），但實際上用多少才從池子裡扣多少（on-demand）。適合 VM 主機，但要監控池子別被刷爆。
+B> **依需求分配**（on-demand allocation），適合 VM host
+B> **Thin Pool**：由兩個隱藏 LV 組成（**metadata 與 data**）；lvcreate --type thin-pool -n <pool> -L <Size> <VG>
+B> **Thin LV**：住在 thin pool 中；lvcreate --type thin -n <LV> **-V <VirtualSize>** --thinpool <pool> <VG>
+B> Virtual size 是 thin LV 的**上限**
+?mc Thin LV 的 -V（virtual size）代表？
++ 該 thin LV 的容量上限，實際空間依使用量從 thin pool 分配
+- thin pool 的總大小上限，所有 thin LV 共用這個值
+- thin pool 用來記錄區塊對應關係的 metadata 空間大小上限
+- 之後建立 snapshot 時可以使用的空間大小，用完就無法再建立
+E> 這就是 over-provisioning 的基礎。
+?tf Thin pool 由 metadata 與 data 兩個隱藏的元件 LV 組成。
+=T
+E> 投影片重點。
+
+@CARD lvm.snap | LVM Snapshot 與 rollback
+A> LVM snapshot 像「拍照當下貼一張透明片」：一開始什麼都不複製，只有原 LV 的資料要被改時，才把舊資料先抄到透明片上（CoW）。透明片要事先指定大小，抄滿了 snapshot 就壞掉。它不是備份，原本的磁碟壞了，透明片也救不回來。
+B> **CoW snapshot**：建立快（只複製指標）、省空間；**不是備份**
+B> **lvcreate -L <SIZE> --snapshot --name <snap> <target LV>**；snapshot 本身也是 LV
+B> 大小通常設為目標 LV 的 **20-30%**
+B> Rollback：**先 umount 目標 LV**，再 **lvconvert --merge <snapshot>**
+?cmd 對 /dev/vg0/home 建立一個 5G、名為 home_snap 的 snapshot：
+= lvcreate -L 5G --snapshot --name home_snap /dev/vg0/home
+= lvcreate -L 5G -s -n home_snap /dev/vg0/home
+= lvcreate --snapshot -L 5G --name home_snap /dev/vg0/home
+= lvcreate -s -L 5G -n home_snap /dev/vg0/home
+E> --snapshot 可簡寫 -s。
+?cmd 把 snapshot vg0/home_snap 合併回原 LV（rollback）：
+= lvconvert --merge vg0/home_snap
+= lvconvert --merge /dev/vg0/home_snap
+E> 要先 umount 原 LV。
+?tf LVM snapshot 可以取代備份。
+=F
+E> 它和原 LV 共用底層資料；磁碟損壞時一起消失。
+?sa 請說明 LVM snapshot 的運作原理（Copy on Write），以及為什麼 snapshot 空間用完會失效。
+R> 建立 snapshot 時並不會複製整個 LV，只是記下當時的狀態並配置一塊 snapshot 空間。之後原始 LV 的某個區塊第一次被修改時，LVM 會先把該區塊「原本的內容」複製到 snapshot 空間，再寫入新資料（Copy on Write）；沒被改過的區塊則由 snapshot 與原 LV 共用。讀取 snapshot 時，改過的區塊從 snapshot 空間讀，沒改過的從原 LV 讀。
+R> 因此 snapshot 需要的空間取決於建立之後原 LV「被修改了多少」。snapshot 空間是建立時指定的固定大小，一旦被舊資料塞滿，就無法再保存新的變更前內容，snapshot 無法維持一致的時間點狀態而失效（invalid），只能刪除。所以要預估變動量給足空間，或設定自動擴充，並且不要長期保留 snapshot。
+P> 建立時不複製資料，只記錄狀態
+P> 原 LV 區塊被修改前，先把舊內容複製到 snapshot 空間
+P> 未修改的區塊共用
+P> snapshot 空間固定，塞滿後失效
+
+@CARD lvm.steps | 用 LVM 新增一顆資料碟
+A> 蓋房子由地基往上：準備磁碟 → pvcreate → vgcreate → lvcreate → mkfs → mount，最後寫進 fstab 讓它重開機後還在。
+B> ① 準備磁碟（lsblk 確認）② **pvcreate** ③ **vgcreate**（新 VG，把 rootfs 與資料分開）④ **lvcreate** ⑤ **mkfs.ext4 / mkfs.btrfs** ⑥ **mount**
+B> ⑦ 編輯 **/etc/fstab**（建議用 UUID）確保重開機後仍掛載
+B> 若要放到 /home 等已有資料的位置：先把原資料複製到新 LV（暫時掛在別處 cp -a），再掛到 /home
+X> pvcreate /dev/sdb
+X> vgcreate data-vg /dev/sdb
+X> lvcreate -l 100%FREE -n data_vol data-vg
+X> mkfs.btrfs /dev/data-vg/data_vol
+X> mkdir /data && mount /dev/data-vg/data_vol /data
+?ord 用新硬碟 /dev/sdb 建立一個 LVM 管理的 ext4 並掛在 /data：
+> pvcreate /dev/sdb
+> vgcreate data-vg /dev/sdb
+> lvcreate -l 100%FREE -n data data-vg
+> mkfs.ext4 /dev/data-vg/data
+> mount /dev/data-vg/data /data
+> 把 UUID 寫進 /etc/fstab
+E> 由下往上建立。
+?sa 你有一台 Linux 伺服器，最近多插了一顆硬碟 (/dev/sdb)。你希望擁有一個 mount 在 /home 的 ext4 filesystem，並使用 LVM 管理，且要在重開機後保持 mount。請完整寫出達成此目標的步驟。
+S> 2025 期末 Q20
+R> 1. lsblk 確認新硬碟為 /dev/sdb（必要時用 fdisk 建一個 Linux LVM 類型的分割區）。
+R> 2. pvcreate /dev/sdb，建立 PV。
+R> 3. vgcreate home-vg /dev/sdb，建立 VG。
+R> 4. lvcreate -l 100%FREE -n home home-vg，建立 LV。
+R> 5. mkfs.ext4 /dev/home-vg/home，建立 ext4。
+R> 6.（若 /home 已有資料）mount /dev/home-vg/home /mnt，cp -a /home/. /mnt/，umount /mnt。
+R> 7. mount /dev/home-vg/home /home。
+R> 8. 用 blkid 取得 UUID，在 /etc/fstab 加入 UUID=<uuid> /home ext4 defaults 0 2，並以 mount -a（或 findmnt --verify）確認，重開機後仍會自動掛載。
+P> pvcreate → vgcreate → lvcreate
+P> mkfs.ext4
+P> mount 到 /home（並處理既有資料）
+P> 寫入 /etc/fstab（UUID）以持久化
+
+@CARD lvm.extend | 擴充 rootfs 空間
+A> 房子要加蓋：先確認土地真的變大了（rescan）、在空地上劃新分割區（fdisk）、做成 PV、併入現有的 VG、把 LV 拉大，最後別忘了把「室內裝潢」（檔案系統）也撐大（resize2fs），不然房子大了、房間還是一樣小。
+B> 情境：磁碟還有空間沒用到，原分割區已使用 LVM
+B> ① VM 改大磁碟後若沒反應：**echo 1 > /sys/block/<disk>/device/rescan**
+B> ② **fdisk** 建新分割區（n 新增、t 改類型為 Linux LVM、p 檢查、**w 寫入**）
+B> ③ **pvcreate** 新分割區 ④ **vgextend** 加入現有 VG
+B> ⑤ **lvextend** 擴大 LV ⑥ **resize2fs <device>**（ext4，可線上擴大）
+B> 或 **lvextend --resizefs** 一步完成 ⑤⑥
+?ord 擴充已使用 LVM 的 rootfs 的步驟：
+> 讓 kernel 重新掃描磁碟大小（rescan）
+> fdisk 建立新分割區（類型 Linux LVM）並 w 寫入
+> pvcreate 新分割區
+> vgextend 把新 PV 加入現有 VG
+> lvextend 擴大 root LV
+> resize2fs 擴大 ext4 檔案系統
+E> 最後一步常被忘記：LV 變大但 df 看到的大小不變。
+?cmd 把 /dev/sda4 加入既有的 VG trixws-vg：
+= vgextend trixws-vg /dev/sda4
+E> vgextend <VG> <PV>。
+?cmd 擴大 ext4 檔案系統以填滿已擴充的 LV /dev/trixws-vg/root：
+= resize2fs /dev/trixws-vg/root
+= resize2fs /dev/mapper/trixws--vg-root
+E> ext4 支援線上擴大。
+?cmd 把 /dev/vg0/root 增加 10G，並同時調整檔案系統大小：
+= lvextend -L +10G --resizefs /dev/vg0/root
+= lvextend --resizefs -L +10G /dev/vg0/root
+= lvextend -r -L +10G /dev/vg0/root
+= lvextend -L +10G -r /dev/vg0/root
+E> --resizefs（-r）會呼叫對應的 fs resize 工具。
+?mt 配對 fdisk 指令：
+> n :: 新增分割區
+> t :: 改變分割區類型
+> p :: 印出分割表
+> w :: 寫入並離開
+> q :: 不儲存離開
+E> 在 w 之前都只改在記憶體中。
+?tf lvextend 擴大 LV 之後，df 顯示的檔案系統容量就會自動跟著變大。
+=F
+E> 還要 resize2fs（或用 lvextend --resizefs）。
+
+@CARD lvm.remove | 移除磁碟（縮小）
+A> 拆房子要從屋頂往下：先把室內（檔案系統）縮小 → 再把房間（LV）縮小 → 把那塊地從社區除名（vgreduce）→ 拆掉地基標記（pvremove）→ 最後才搬走磁碟。順序反了就會切到還有資料的地方。
+B> ① **縮小檔案系統**（如 btrfs filesystem resize -2g /data/；ext4 用 resize2fs，需離線縮小）
+B> ② **lvreduce / lvresize** 縮小 LV
+B> ③ **vgreduce <VG> <PV>** 把 PV 移出 VG
+B> ④ **pvremove <PV>** 清除 LVM 標籤
+B> ⑤ 拔除磁碟
+B> 確保已使用空間 < 保留的 PV 大小；操作前**先備份**
+?ord 從 LVM 中移除一個 PV 的順序：
+> 縮小檔案系統
+> lvreduce 縮小 LV
+> vgreduce 把 PV 移出 VG
+> pvremove 清除 PV 標籤
+> 實體移除磁碟
+E> 和建立相反：由上往下拆。
+?cmd 把 /dev/sda2 從 VG data-vg 中移除：
+= vgreduce data-vg /dev/sda2
+E> 之後 pvremove /dev/sda2。
+?mc 縮小一個 ext4 LV 時，下列哪個順序正確？
++ 先縮小檔案系統，再縮小 LV
+- 先縮小 LV，再縮小檔案系統
+- 只要縮小 LV，檔案系統會自動配合
+- 兩者順序無所謂
+E> 先縮 LV 會把還有資料的區域切掉。
+
+@CARD lvm.hw2 | HW2：shrink root、LVM RAID10
+A> HW2-1 的地基工程：把 root LV 縮到 15G 騰出空間做新 LV；再加新磁碟做 4 個 PV 組成 SA2026vg，切出 RAID10 的 LV 給 Btrfs 用。
+B> 把 debian-vg-root **縮小到 15G**（先縮 ext4 再縮 LV；root 線上不能縮 ext4 → 需在 rescue/live 環境）
+B> 用剩餘空間建 LV **new-part**，格式化 ext4，掛到 /mnt/new-part（寫入 fstab）
+B> 加磁碟 → **4 個 PV** → VG **SA2026vg** → LV **SARaid10**（**--type raid10**）
+B> 在 /dev/mapper/SA2026vg-SARaid10 上 mkfs.btrfs，Label **SAHW2**
+X> lvcreate --type raid10 -m 1 -i 2 -l 100%FREE -n SARaid10 SA2026vg
+X> mkfs.btrfs -L SAHW2 /dev/mapper/SA2026vg-SARaid10
+?mc ext4 的 root LV 要縮小時，為什麼通常要在 rescue / live 環境進行？
++ ext4 不支援線上縮小，必須在 umount 狀態下 resize2fs
+- 因為 lvreduce 只存在於 live 環境的工具中
+- 因為縮小 root LV 時會一併刪除 /boot 分割區
+- 因為 lvreduce 執行時會把 LV 卸載，root 被卸載系統就會當機
+E> ext4 可線上擴大，但縮小必須離線。
+?cmd 在 /dev/mapper/SA2026vg-SARaid10 上建立 Label 為 SAHW2 的 Btrfs：
+= mkfs.btrfs -L SAHW2 /dev/mapper/SA2026vg-SARaid10
+= mkfs.btrfs /dev/mapper/SA2026vg-SARaid10 -L SAHW2
+E> -L 設定 label。
+
+@CARD lvm.p_status | 實作：LVM 現況與 RAID 同步檢查
+A> 動 LVM 之前先看三層的現況：pvs 看「有哪些原料磚」、vgs 看「池子還剩多少」、lvs 看「切出了哪些區塊」。RAID 的 LV 建好後會在背景同步，同步進度也在 lvs 裡看。
+B> 簡表：**pvs**、**vgs**（VFree 是剩餘空間）、**lvs**；詳細：**pvdisplay / vgdisplay / lvdisplay**
+B> RAID 細節：**lvs -a -o name,segtype,devices,sync_percent SA2026vg**，-a 會顯示 _rimage_ 與 _rmeta_ 等內部 LV
+B> 名稱對照：VG `debian-vg` 的 LV `root` 在 **/dev/debian-vg/root**，也就是 **/dev/mapper/debian--vg-root**（名字裡的 - 在 mapper 中會變成 --）
+B> 新磁碟或新分割區偵測不到時：`lsblk` 確認；VM 熱插拔後可以 `echo '- - -' > /sys/class/scsi_host/host0/scan`；確認後 **pvscan**
+B> 舊磁碟上殘留其他簽章導致 pvcreate 拒絕：先 **wipefs -a 裝置**（會清掉簽章，確認是新碟再做）
+X> pvs; vgs; lvs
+X> lvs -a -o name,segtype,devices,sync_percent SA2026vg
+X> ls -l /dev/mapper/
+?cmd 列出 SA2026vg 中所有 LV（包含 RAID 內部的 image 與 metadata LV），並顯示類型、所在裝置與同步進度：
+= lvs -a -o name,segtype,devices,sync_percent SA2026vg
+= lvs -a -o name,segtype,devices,sync_percent
+E> segtype 應該顯示 raid10。
+?mc VG 名稱是 debian-vg、LV 名稱是 root，它在 /dev/mapper 底下的名字是？
++ debian--vg-root
+- debian-vg-root
+- debian_vg_root
+- root
+E> mapper 用單一 - 分隔 VG 與 LV，所以名稱本身的 - 要寫成 --。
+?cmd 用最精簡的表格顯示所有 VG 的大小與剩餘空間：
+= vgs
+= sudo vgs
+E> pvs、vgs、lvs 是日常最常用的三個。
+
+@CARD lvm.p_part | 實作：把一顆新磁碟切成多個 PV
+A> 規格要「4 個 PV」，但沒有規定要 4 顆磁碟。你可以加 4 顆虛擬磁碟，也可以加 1 顆再切成 4 個分割區，每個分割區各做一個 PV。切分割區就像在一塊蛋糕上畫線，parted 可以一行指令畫完。
+B> 確認新磁碟名稱：**lsblk**（通常是 /dev/sdb；**千萬確認不是系統碟 sda**）
+B> 一次切好：`parted -s /dev/sdb mklabel gpt mkpart p1 0% 25% mkpart p2 25% 50% mkpart p3 50% 75% mkpart p4 75% 100%`
+B> 互動式工具：**fdisk**（n 新增、p 列出、w 寫入）或 **cfdisk**；GPT 也可以用 **sgdisk**
+B> 切完：`partprobe /dev/sdb` 讓 kernel 重新讀取，再 `lsblk` 確認出現 sdb1 到 sdb4
+B> **pvcreate /dev/sdb1 /dev/sdb2 /dev/sdb3 /dev/sdb4**，再 **vgcreate SA2026vg** 加上這四個
+B> 想一想：4 個 PV 都在同一顆實體碟上，RAID10 的鏡像就保護不了「整顆碟壞掉」，只是滿足作業的結構要求
+X> lsblk
+X> sudo parted -s /dev/sdb mklabel gpt mkpart p1 0% 25% mkpart p2 25% 50% mkpart p3 50% 75% mkpart p4 75% 100%
+X> sudo pvcreate /dev/sdb{1..4}
+X> sudo vgcreate SA2026vg /dev/sdb{1..4}
+?cmd 把 /dev/sdb1 到 /dev/sdb4 四個分割區組成名為 SA2026vg 的 VG（可以用 brace expansion）：
+= vgcreate SA2026vg /dev/sdb1 /dev/sdb2 /dev/sdb3 /dev/sdb4
+= vgcreate SA2026vg /dev/sdb{1..4}
+= vgcreate SA2026vg /dev/sdb[1-4]
+E> 若還沒 pvcreate，vgcreate 也會自動幫你初始化。
+?tf 在同一顆實體磁碟的 4 個分割區上做 LVM RAID10，可以在這顆磁碟整個故障時保住資料。
+=F
+E> 所有鏡像都在同一顆碟上，那顆碟壞了全部一起消失。
+?mc 用 parted 切完分割區後，lsblk 還看不到 sdb1 等新分割區。最適合的下一步是？
++ 執行 partprobe /dev/sdb
+- 重新執行 mkfs 建立檔案系統
+- 執行 vgchange -ay 啟用 VG
+- 執行 update-grub 更新開機選單
+E> 執行 partprobe /dev/sdb，讓 kernel 重新讀取分割表。分割表寫入磁碟了，但 kernel 還沒有重新載入。
+
+@CARD lvm.p_shrink | 實作：安全縮小 ext4 的 LV
+A> 縮小 LV 像「把一大箱東西換到小箱子」：一定要先把東西（檔案系統）壓縮到比小箱子還小，再換箱子（lvreduce），最後讓東西重新撐滿箱子。順序反過來，等於直接把箱子切掉一角，裡面的資料就毀了。
+B> ext4 **不能在掛載中縮小**，root 檔案系統要在 rescue / Live 環境中、未掛載的狀態下操作
+B> 手動三步：**e2fsck -f** → **resize2fs 裝置 14G**（比目標小一點）→ **lvreduce -L 15G** → **resize2fs 裝置**（不帶大小 = 撐滿 LV）
+B> 一步到位：**lvreduce -r -L 15G /dev/debian-vg/root**（-r 會自動先 fsck 與縮小檔案系統），最不容易出錯
+B> 縮完後剩下的空間：`lvcreate -l 100%FREE -n new-part debian-vg` → `mkfs.ext4` → 掛載並寫進 fstab
+B> 動手前備份（VM 先做快照），縮完 `lvs` 確認大小、重開機確認能正常進系統
+X> e2fsck -f /dev/debian-vg/root
+X> lvreduce -r -L 15G /dev/debian-vg/root
+X> lvcreate -l 100%FREE -n new-part debian-vg
+X> mkfs.ext4 /dev/debian-vg/new-part
+?ord 手動把 ext4 的 LV 從 20G 縮到 15G 的正確順序：
+> 在未掛載的狀態下 e2fsck -f
+> resize2fs 把檔案系統縮到比 15G 小
+> lvreduce -L 15G 縮小 LV
+> resize2fs 不指定大小，讓檔案系統撐滿 LV
+E> 先縮內容，再縮容器；擴大時則相反：先擴容器，再擴內容。
+?cmd 把 /dev/debian-vg/root 縮小到 15G，並讓 LVM 自動一併處理檔案系統：
+= lvreduce -r -L 15G /dev/debian-vg/root
+= lvreduce -L 15G -r /dev/debian-vg/root
+= lvreduce --resizefs -L 15G /dev/debian-vg/root
+E> -r = --resizefs，會呼叫 fsadm 先縮檔案系統。
+?cmd 用 debian-vg 中剩下的全部空間建立名為 new-part 的 LV：
+= lvcreate -l 100%FREE -n new-part debian-vg
+= lvcreate -n new-part -l 100%FREE debian-vg
+E> 小寫 -l 是以 extent 或百分比指定，大寫 -L 是以大小指定。

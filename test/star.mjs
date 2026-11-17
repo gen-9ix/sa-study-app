@@ -1,0 +1,14 @@
+const { chromium } = await import(process.env.PW || 'playwright');
+const b = await chromium.launch({executablePath: process.env.CHROME || undefined});
+const ctx=await b.newContext({viewport:{width:390,height:844},deviceScaleFactor:2}); const p=await ctx.newPage(); const errs=[]; p.on('pageerror',e=>errs.push(e.message));
+await p.goto(process.env.SA_URL); await p.waitForTimeout(700);
+await p.fill('#pname','測'); await p.click('[data-act=profnew]'); await p.waitForTimeout(300);
+await p.evaluate(()=>{ home(); }); await p.click('[data-v=starred]'); console.log('empty:', (await p.textContent('.empty')).slice(0,20));
+await p.evaluate(()=>{ ['systemd.restart','hw2.p_acldesign','docker2.cache','shell.glob'].forEach((id,i)=>{ if(CARD[id]) S.bm[id]={on:true,t:now()+i}; }); save(); home(); });
+await p.click('[data-v=starred]'); console.log('rows', await p.locator('.star-row').count());
+await p.screenshot({path:'/tmp/star.png'});
+await p.click('[data-act=starsort][data-s=chapter]'); console.log('secs', await p.locator('.sec').count());
+await p.locator('.star-row [data-act=bm]').first().click(); console.log('after unstar', await p.locator('.star-row').count());
+await p.click('[data-act=flash][data-scope=starred]'); console.log('flash', await p.evaluate(()=>VIEW.name+' '+VIEW.cards.length));
+await p.evaluate(()=>{ go('starred'); }); await p.click('[data-act=starquiz]'); console.log('quiz', await p.evaluate(()=>RUN&&RUN.items.length));
+console.log(errs.length?'ERRORS '+errs.join('|'):'NO ERRORS'); await b.close();

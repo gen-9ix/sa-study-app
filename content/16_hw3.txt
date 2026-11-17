@@ -1,0 +1,1373 @@
+@CH hw3 | HW3 實戰觀念：Web 服務、PKI、OIDC、可觀測性 | 🔐 | hw3.pdf
+
+@CARD hw3.overview | HW3 全貌：LLM Sandbox Platform
+A> HW3 是在你的 VM 上開一間「AI 實驗室」：使用者開 sandbox（隔離的容器房間）讓 AI agent 做事，平台是房間唯一的門，所有網路流量都要經過它、被它記錄；agent 做危險動作時會發警報。周邊還要架好門口警衛（NGINX）、身分證中心（OIDC）、資料庫、Git 與 CI/CD、監控與日誌。
+B> 主角：**LLM Sandbox Platform**：建立 sandbox、在裡面執行指令或交給 agent，**控制所有網路流量並記錄 agent 每個動作**，危險行為**送出 alert**
+B> 周邊服務：**NGINX、OIDC provider、PostgreSQL、Forgejo、Forgejo runner、Prometheus**
+B> **NGINX 在 host 上**接 HTTP/HTTPS 再轉給 Docker Compose 裡的服務；**PostgreSQL 不經過 NGINX**，直接開 5432
+B> 平台是 sandbox 的 **gateway**：所有 sandbox 流量都經過它
+B> 七大部分：Environment、PKI、NGINX、Identity & Database、Git & CI/CD、LLM Sandbox Platform、Metrics / Logs / Traces / Alerts；Deadline **2026/12/21 23:59**，以**最後一次**提交計分
+?mc HW3 中，哪個服務「不」經過 host 上的 NGINX？
++ PostgreSQL（直接服務 5432）
+- Forgejo（Git 服務）
+- OIDC provider（登入服務）
+- Prometheus（監控服務）
+E> PostgreSQL also runs in Docker Compose, but it does not go through NGINX。
+?tf HW3 的 NGINX 要以 systemd service 的形式跑在 host 上，而不是容器裡。
+=T
+E> Install NGINX with apt on the host; runs as a systemd service, NOT in a container。
+
+@CARD hw3.stuid | {STU_ID} 與 Docker Compose 環境
+A> {STU_ID} 是你在這份作業的「座號」，從 WireGuard IP 算出來：192.168.A.B → A×16 + B/16（整數除法）。所有服務都用 Compose 管，除了 NGINX；只讓該開的門開著。
+B> **{STU_ID} = A × 16 + B / 16**（整數除法），IP 為 192.168.A.B；例：192.168.1.50 → 16 + 3 = **19**（不是學號）
+B> 除 NGINX 外都用 **Docker Compose**，compose 檔放 **/home/judge/hw3/compose.yml**
+B> 發布的 port：IP-Srv ×3 **127.0.0.1:8000–8002**、OIDC **8100**、Forgejo **8101**、Prometheus **8102**、Platform **8103**、**PostgreSQL 0.0.0.0:5432**；除了 PostgreSQL 都只綁 **127.0.0.1**
+B> host 只監聽 **TCP 22、80、443、5432**（用 ss -tlnp 檢查）
+B> **docker compose down + up -d** 或 **Docker 重啟**後所有服務都要恢復 → 資料放 volume、設定 restart policy；**重開機後也要自動恢復**
+?fill WireGuard IP 為 192.168.2.40 時，{STU_ID} = 2×16 + 40/16 = ＿＿
+= 34
+E> 40/16 整數除法 = 2，32 + 2 = 34。
+?fill WireGuard IP 為 192.168.0.200 時，{STU_ID} = ＿＿
+= 12
+E> 0×16 + 200/16 = 12（整數除法）。
+?cmd 列出 host 上所有正在監聽的 TCP port 與對應 process：
+= ss -tlnp
+= ss -ltnp
+= ss -tnlp
+= ss -lntp
+= ss -tulpn
+E> 用來確認只開了 22、80、443、5432。
+?mc 為什麼 IP-Srv、Forgejo 等容器的 port 要綁 127.0.0.1，而不是 0.0.0.0？
++ 外部只能經由 NGINX 存取
+- 因為 Docker 不支援 0.0.0.0
+- 為了讓容器之間可以互相連線
+- 0.0.0.0 只能用於 UDP
+E> 讓它們只能透過 host 上的 NGINX（HTTPS、header 處理）存取，外部無法繞過 NGINX 直接連。而且 Docker 發布的 port 會自己加 iptables 規則，容易繞過 host 防火牆。
+
+@CARD hw3.host | Host 設定：信任 CA、APT 來源、分流 DNS、/etc/hosts
+A> 讓 VM「認得助教的世界」：先信任助教的根憑證（才敢跟助教的 HTTPS 網站講話），再加入助教的套件倉庫並驗證它的簽章鑰匙，ta.cs.nycu 的名字交給助教的 DNS 查，自己的服務名稱則寫死在 /etc/hosts 指向自己。
+B> 信任 TA root CA：放到 **/usr/local/share/ca-certificates/xxx.crt**（副檔名要 .crt）→ **update-ca-certificates**（更新 /etc/ssl/certs/ca-certificates.crt）
+B> TA APT repo：https://apt.ta.cs.nycu/debian、suite **trixie**、component **main**；GPG key 放 **/etc/apt/keyrings/**，在來源檔用 **Signed-By=** 指定（apt-key 已淘汰）
+B> 分流 DNS：**ta.cs.nycu 與所有子網域**交給 **192.168.255.66**（systemd-resolved 的 routing domain **~ta.cs.nycu**，或 dnsmasq 的 server=/ta.cs.nycu/192.168.255.66）
+B> /etc/hosts：{STU_ID}.cs.nycu、auth.、pg.、git.、prom.、sandbox.{STU_ID}.cs.nycu 都指向自己的 VM
+B> NGINX 用 **apt** 裝在 host，以 **systemd service** 執行
+X> # /etc/apt/sources.list.d/ta.sources
+X> Types: deb
+X> URIs: https://apt.ta.cs.nycu/debian
+X> Suites: trixie
+X> Components: main
+X> Signed-By: /etc/apt/keyrings/ta.gpg
+?cmd 把 /usr/local/share/ca-certificates/ 下新放入的 CA 憑證加入系統信任清單：
+= update-ca-certificates
+= sudo update-ca-certificates
+E> 會更新 /etc/ssl/certs/ca-certificates.crt；憑證檔名必須以 .crt 結尾。
+?mc 為什麼新增 APT 來源時要用 Signed-By= 指定金鑰，而不是把金鑰加進全域信任？
++ 限制這把金鑰只能驗證這個 repo
+- Signed-By 可以讓下載速度變快
+- 全域信任的金鑰無法驗證 https 來源
+- Signed-By 會自動更新金鑰
+E> 限定這把金鑰只能驗證這個 repo，避免第三方金鑰被拿來替其他來源（如 Debian 官方套件）簽章。apt-key 的全域信任已被淘汰，原因就是任何一把金鑰都能替所有來源背書。
+?mc 想讓「只有 ta.cs.nycu 與其子網域」的查詢送到 192.168.255.66，其他照舊用原本的 DNS，這種設定叫做？
++ split DNS（依網域分流）
+- DNS round-robin
+- reverse DNS
+- DNSSEC
+E> systemd-resolved 用 ~ta.cs.nycu 表示「只用於路由這個網域」。
+?tf 加入 https 的 APT 來源前，必須先信任它所使用的 CA，否則 apt update 會因憑證驗證失敗而出錯。
+=T
+E> apt.ta.cs.nycu 的憑證由 TA root CA 簽發。
+
+@CARD hw3.pki | 自建 PKI：Root CA 與 Intermediate CA
+A> 自己開一間「發證中心」：Root CA 是總部的鋼印，平常鎖在保險箱；Intermediate CA 是分部的印章，日常發證都用它。分部印章被限制「只能發一般證件，不能再開分部」（pathlen:0）。客戶只要信任總部，就能沿著鏈條驗證所有證件。
+B> **Root CA**：自簽；Subject C=TW, O=National Yang Ming Chiao Tung University, CN=SA-{STU_ID} Root CA；**/home/judge/hw3/ca/root.crt**
+B> **Intermediate CA**：由 root 簽發；**不能再簽其他 CA 憑證** → **basicConstraints = critical, CA:TRUE, pathlen:0**；keyUsage keyCertSign, cRLSign
+B> **VM 要信任你的 root CA**；intermediate 簽發 Part 1 所有主機的 **TLS 憑證**與所有 **client 憑證**
+B> 伺服器憑證：主機名放在 **SAN（subjectAltName）**（現代用戶端不看 CN）、EKU **serverAuth**；client 憑證：EKU **clientAuth**
+B> 伺服器要送 **leaf + intermediate**（fullchain），用戶端用 root 驗證整條鏈
+X> openssl req -x509 -new -key root.key -days 3650 -subj "/C=TW/O=National Yang Ming Chiao Tung University/CN=SA-19 Root CA" -out root.crt
+X> # intermediate 的 extension
+X> basicConstraints = critical, CA:TRUE, pathlen:0
+X> keyUsage = critical, keyCertSign, cRLSign
+X> openssl verify -CAfile root.crt -untrusted intermediate.crt server.crt
+?mc 要讓 intermediate CA「可以簽發一般憑證，但不能再簽其他 CA」，應設定？
++ basicConstraints = CA:TRUE, pathlen:0
+- keyUsage = keyCertSign, digitalSignature
+- keyUsage = digitalSignature
+- extendedKeyUsage = serverAuth
+E> pathlen:0 表示它底下不能再有 CA；CA:FALSE 則連一般憑證都不能簽（它就不是 CA 了）。
+?mc 現代瀏覽器檢查憑證是否屬於 git.19.cs.nycu 時，看的是？
++ SAN（subjectAltName）中的 DNS 名稱
+- Subject 的 O（organization）
+- 憑證的序號
+- Issuer 的 CN
+E> 只看 SAN；沒有 SAN 的憑證會被拒絕。
+?cmd 用 root.crt 當信任根、intermediate.crt 當中繼，驗證 server.crt：
+= openssl verify -CAfile root.crt -untrusted intermediate.crt server.crt
+E> -untrusted 提供中繼憑證，但不把它當成信任根。
+?mt 配對憑證 extension：
+> basicConstraints CA:TRUE, pathlen:0 :: 只能簽發終端憑證的中繼 CA
+> subjectAltName DNS:pg.19.cs.nycu :: 憑證適用的主機名稱
+> extendedKeyUsage serverAuth :: 可用於 TLS 伺服器
+> extendedKeyUsage clientAuth :: 可用於 TLS 用戶端認證（mTLS）
+E> 伺服器憑證放 serverAuth 與 SAN；mTLS 的 client 憑證放 clientAuth。
+?sa 請說明為什麼實務上會用「Root CA + Intermediate CA」兩層架構，而不是直接用 Root CA 簽所有伺服器憑證？並說明用戶端如何驗證一張由 intermediate 簽發的伺服器憑證。
+R> 原因：Root CA 的私鑰是整個信任體系的根，一旦外洩所有憑證都失去意義，而且 root 已預先安裝在各用戶端的信任清單中，更換成本極高。因此 root 私鑰應離線保存、極少使用，只用來簽發 intermediate；日常簽發由 intermediate 負責。intermediate 若外洩，可以由 root 撤銷（CRL/OCSP）並重發新的 intermediate，不必更動所有用戶端的信任根；也可以為不同用途分出不同的 intermediate 並以 pathlen、name constraints 限制權限。
+R> 驗證：伺服器在 TLS handshake 送出 leaf 憑證與 intermediate 憑證。用戶端用 intermediate 的公鑰驗證 leaf 的簽章、用自己信任清單中的 root 公鑰驗證 intermediate 的簽章，建立 leaf → intermediate → root 的鏈；同時檢查每張憑證的有效期限、basicConstraints（中間節點必須是 CA 且符合 pathlen）、keyUsage/EKU（leaf 需 serverAuth）、leaf 的 SAN 是否符合連線的主機名，以及撤銷狀態。
+P> root 私鑰離線保存、降低外洩風險
+P> intermediate 外洩可撤銷並重發，不必更換用戶端信任根
+P> 伺服器送出 leaf + intermediate，用戶端逐層驗簽章直到信任的 root
+P> 檢查有效期、CA 限制、EKU、SAN 主機名、撤銷
+
+@CARD hw3.weakca | 有缺陷的 Intermediate CA：私鑰可被算出
+A> RSA 的安全性靠「兩個超大質數相乘很容易，反過來分解很難」。如果私鑰是用很小的數字產生的，壞人就能把公鑰的 n 分解掉、算出私鑰，等於偷到 CA 的印章，可以替任何網站發「合法」的假證件，瀏覽器也會相信。
+B> 背景：2026 年 10 月 Mozilla 發現 8 張 **eMudhra** intermediate CA 憑證的私鑰來自**非常小的數字** → 任何人都能算出私鑰
+B> 作業中 TA root CA 也替每位學生簽了一張**同樣有缺陷的 intermediate CA**，並用它簽發 https://{STU_ID}.vuln.ta.cs.nycu
+B> 要求：在 /etc/hosts 把 {STU_ID}.vuln.ta.cs.nycu 指向自己，用**算出私鑰的缺陷 CA** 簽一張 **SAN 只有該主機名**的憑證，能通過 **TA root CA** 驗證，回應原站內容並加上 header **X-Intercepted-By: {STU_ID}**
+B> 教訓：CA 私鑰外洩 = 可以冒充任何網站；所以需要**撤銷（CRL / OCSP）**、**Certificate Transparency**，以及正確的金鑰產生
+?mc 為什麼拿到一張 intermediate CA 的私鑰，就能冒充網站且瀏覽器不會警告？
++ 用它簽出的憑證可以串到瀏覽器信任的 root，整條鏈驗證都會通過
+- 因為瀏覽器不檢查 intermediate
+- 因為 intermediate 的私鑰也能解密所有 TLS 流量
+- 因為這種憑證不需要 SAN
+E> 信任是沿著鏈傳遞的，所以 CA 私鑰外洩後必須撤銷那張 intermediate。
+?mc RSA 私鑰若由「很小的數字」產生，為什麼不安全？
++ 公鑰的模數 n 可以被輕易分解成兩個質數，進而算出私鑰
+- 小數字產生的簽章長度太短，用戶端無法驗證
+- 公鑰的長度會變成 0，憑證被視為空白而直接被信任
+- 小數字產生的憑證無法放入 SAN 欄位
+E> RSA 的安全性建立在大整數分解的困難度上。
+?tf CA 私鑰外洩後，最主要的補救方式是把該 CA 憑證撤銷（例如列入上層 CA 的 CRL）。
+=T
+E> 撤銷後，檢查 CRL 的用戶端就會拒絕它簽出的所有憑證（這正是 tls_revoked 的情境）。
+
+@CARD hw3.nginxtls | NGINX：HTTPS、301、HSTS、隱藏 header
+A> NGINX 是大門口的警衛：所有 HTTP 訪客都被請到 HTTPS 門口（301 永久轉址）；HSTS 是「告訴瀏覽器以後一年內直接走 HTTPS，別再走 HTTP」；不要告訴外人裡面用的是什麼軟體、什麼版本（拿掉 Server、X-Powered-By、Via）。
+B> Part 1 所有主機（pg 除外）：**HTTPS**（你的 CA 簽的憑證）、**HTTP → HTTPS 用 301**、**HSTS max-age ≥ 31536000**
+B> 依主機轉發到 port 表中的服務（**reverse proxy**）
+B> 回應**不能有 Server、X-Powered-By、Via** header
+B> **server_tokens off** 只會拿掉版本號，Server: nginx 還在；完全移除要用 **headers-more** 模組（more_clear_headers Server）
+B> 後端送出的 header 用 **proxy_hide_header X-Powered-By;** 隱藏
+X> server { listen 80; server_name git.19.cs.nycu; return 301 https://$host$request_uri; }
+X> server {
+X>   listen 443 ssl; server_name git.19.cs.nycu;
+X>   ssl_certificate /etc/nginx/tls/git.fullchain.crt; ssl_certificate_key /etc/nginx/tls/git.key;
+X>   add_header Strict-Transport-Security "max-age=31536000" always;
+X>   proxy_hide_header X-Powered-By;
+X>   location / { proxy_pass http://127.0.0.1:8101; proxy_set_header Host $host;
+X>     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto https; }
+X> }
+?fill 把所有 HTTP 請求以 301 轉到 HTTPS：return 301 https://$host＿＿;
+= $request_uri
+E> $request_uri 包含原始路徑與 query string。
+?mc HSTS（Strict-Transport-Security）的作用是？
++ 要瀏覽器之後一律用 HTTPS
+- 讓伺服器的憑證有效期限延長
+- 加密 HTTP header
+- 防止 XSS 攻擊
+E> 告訴瀏覽器在 max-age 期間內，對這個網域一律直接使用 HTTPS。可避免使用者第一次打 http:// 時被中間人攔截降級（SSL stripping）。
+?mc 只設定 server_tokens off 後，回應的 Server header 會是？
++ Server: nginx（只是沒有版本號）
+- 完全沒有 Server header
+- Server: hidden（隱藏伺服器名稱）
+- Server: off（關閉標記）
+E> 要完全移除得用 headers-more 模組的 more_clear_headers。
+?tf ssl_certificate 應該指向「伺服器憑證 + intermediate 憑證」串在一起的檔案。
+=T
+E> 用戶端只信任 root，伺服器必須送出 intermediate 才能建立完整的鏈。
+?cmd 檢查 nginx 設定檔語法：
+= nginx -t
+= sudo nginx -t
+E> 通過後再 systemctl reload nginx。
+
+@CARD hw3.lb | NGINX 負載平衡：upstream 與 failover
+A> upstream 是「排班表」：三個 IP-Srv 分身輪流接客（round-robin）。其中一個倒了，NGINX 發現連不上就把這位客人改帶到下一位，客人完全不知道（passive health check + proxy_next_upstream）。
+B> TA 提供 **IP-Srv** image：容器內聽 **8000**，/ 回 JSON：**host_ip**（處理請求的 replica IP）、**client_ip**（取自 **X-Forwarded-For**）
+B> IP-Srv 環境變數：IP_SRV_METRICS_USER / IP_SRV_METRICS_PASSWORD（/metrics 的 basic auth）
+B> 3 個 replica 各發布 8000、8001、8002；https://{STU_ID}.cs.nycu/ 用 **round-robin** 分配
+B> **任一 replica 停掉，每個請求仍要成功** → 依賴 **proxy_next_upstream**（預設 error timeout：連線失敗就換下一台）與 max_fails / fail_timeout
+B> 要正確設定 **X-Forwarded-For**，IP-Srv 才回得出真正的 client IP
+X> upstream ipsrv {
+X>   server 127.0.0.1:8000 max_fails=1 fail_timeout=10s;
+X>   server 127.0.0.1:8001 max_fails=1 fail_timeout=10s;
+X>   server 127.0.0.1:8002 max_fails=1 fail_timeout=10s;
+X> }
+X> location / { proxy_pass http://ipsrv; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; }
+?mc NGINX upstream 沒有指定演算法時，預設的負載平衡方式是？
++ round-robin（輪流）
+- least_conn
+- ip_hash
+- least_conn（連線最少）
+E> 可改用 least_conn、ip_hash、hash 等；也可以用 weight= 調整比例。
+?mc 三個 replica 中一個被 docker stop 了，為什麼使用者的請求仍然能成功？
++ NGINX 連線失敗時會依 proxy_next_upstream 轉給下一台，並暫時標記失敗
+- Docker 偵測到容器停止後，會自動把該 port 的流量改導到其他同 image 的容器
+- 使用者的瀏覽器收到連線錯誤後會自動重送請求，而 Docker 也會自動重啟那個被停止的 replica，所以看起來沒有失敗
+- round-robin 本身會跳過沒有在監聽的 port，不需要任何額外設定或機制
+E> 預設 proxy_next_upstream error timeout；對非冪等請求（POST）預設不重試。
+?fill 把 client IP 附加到 X-Forwarded-For 的 NGINX 變數是 $＿＿
+= proxy_add_x_forwarded_for
+E> 若原本已有 X-Forwarded-For，會在後面附加 $remote_addr。
+?tf IP-Srv 回傳的 client_ip 取自 TCP 連線的來源 IP。
+=F
+E> 取自 X-Forwarded-For header；後端看到的連線來源永遠是 NGINX。
+
+@CARD hw3.oidc | OIDC provider：client credentials、discovery、introspection
+A> OIDC provider 是「身分證中心」。機器對機器時用 client credentials：程式拿自己的帳號密碼（client ID / secret）換一張通行證（access token），沒有真人參與。discovery 是中心門口的「服務說明牌」，寫好各窗口地址；introspection 是「打電話問中心這張證還有效嗎」，revocation 是「註銷這張證」。
+B> 在 https://auth.{STU_ID}.cs.nycu 提供 OIDC provider（推薦 **Keycloak、Authentik、kanidm**）
+B> 給 judge 的 **confidential client**：支援 **client credentials grant**；issuer = SA_OIDC_ISSUER，judge 用 **OIDC Discovery** 取得設定
+B> Discovery：**{issuer}/.well-known/openid-configuration** → token_endpoint、jwks_uri、introspection_endpoint、revocation_endpoint…
+B> access token 要能 **introspect**（RFC 7662，回 active: true/false）與 **revoke**（RFC 7009）
+B> Forgejo 與 Platform 都用它登入 / 驗證；Platform API **只接受這個 provider 發的 bearer token**
+X> $ curl -s "$SA_OIDC_ISSUER/.well-known/openid-configuration" | jq .token_endpoint
+X> $ curl -s -u "$SA_OIDC_CLIENT_ID:$SA_OIDC_CLIENT_SECRET" \
+X>     -d grant_type=client_credentials "$TOKEN_ENDPOINT" | jq -r .access_token
+X> $ curl -H "Authorization: Bearer $TOKEN" https://sandbox.19.cs.nycu/api/sandboxes
+?fill OIDC Discovery 文件的路徑是 {issuer}/＿＿
+= .well-known/openid-configuration
+= /.well-known/openid-configuration
+E> 用戶端只要知道 issuer，就能從這份 JSON 找到所有 endpoint。
+?mc client credentials grant 適用於哪種情境？
++ 沒有使用者參與的機器對機器（服務對服務）存取
+- 使用者在瀏覽器登入第三方網站
+- 手機 App 讓使用者輸入密碼
+- 單頁應用程式不保存 secret 的登入
+E> 只有 confidential client（能安全保存 secret）可以用。
+?mc 平台用 JWKS 在本機驗證 JWT 簽章與 exp，但 judge 把 token revoke 之後仍要拒絕它。平台應該怎麼做？
++ 呼叫 introspection 確認
+- 只檢查 JWT 簽章就足夠了
+- 檢查 token 字串的長度是否正確
+- 要求 judge 重新登入一次
+E> 呼叫 introspection endpoint 確認 token 是否仍 active（或縮短 token 有效期並搭配 introspection）自包含的 JWT 在 exp 之前簽章永遠有效，撤銷只有問 provider 才知道。
+?mt 配對 OAuth2 / OIDC endpoint：
+> token_endpoint :: 用 client ID / secret 換 access token
+> introspection_endpoint :: 查詢 token 是否仍有效
+> revocation_endpoint :: 撤銷 token
+> jwks_uri :: 取得驗證 JWT 簽章用的公鑰
+E> 這些網址都列在 discovery 文件中。
+
+@CARD hw3.pg | PostgreSQL：只接受 TLS 與 client 憑證登入
+A> 資料庫的門禁三層：只准走加密通道（hostssl）、伺服器要拿你 CA 簽的證件讓客戶驗明正身（verify-full 會核對主機名）、judge 進門不收密碼只看 client 證件，證件上的名字（CN）就是使用者名稱。
+B> **PostgreSQL 18** 在 pg.{STU_ID}.cs.nycu:5432；使用者 llm_sandbox_platform、forgejo **只能存取自己的資料庫**；**judge 是 superuser**
+B> **只接受 TLS**（Docker 網路內也是）→ pg_hba.conf 只用 **hostssl**（不要有 host / hostnossl 允許規則）
+B> 伺服器憑證由 intermediate 簽、SAN 含 pg.{STU_ID}.cs.nycu，能通過 **sslmode=verify-full**
+B> client 憑證由 intermediate 簽，**cert CN 對應 username**（auth method **cert**）；judge 透過網路**只能用 client 憑證**，密碼被拒
+B> postgresql.conf：**ssl = on**、ssl_cert_file、ssl_key_file、**ssl_ca_file**（用來驗證 client 憑證）；私鑰權限要 0600
+X> # pg_hba.conf
+X> hostssl all             judge                 all  cert
+X> hostssl forgejo         forgejo               all  scram-sha-256
+X> hostssl llm_sandbox_platform llm_sandbox_platform all scram-sha-256
+X> $ psql "host=pg.19.cs.nycu dbname=postgres user=judge sslmode=verify-full \
+X>   sslrootcert=root.crt sslcert=judge.crt sslkey=judge.key"
+?mt 配對 libpq 的 sslmode：
+> require :: 一定要加密，但不驗證伺服器憑證
+> verify-ca :: 驗證憑證由信任的 CA 簽發
+> verify-full :: 驗證 CA 且主機名要符合憑證的 SAN
+> disable :: 不使用 TLS
+E> 只有 verify-full 能防止中間人用「同一個 CA 簽的別台機器憑證」冒充。
+?mc pg_hba.conf 中 hostssl 與 host 的差別？
++ hostssl 只匹配使用 TLS 的 TCP 連線；host 匹配 TLS 與非 TLS 的 TCP 連線
+- hostssl 用於 Unix socket 連線；host 用於所有 TCP 連線
+- 兩者相同，hostssl 只是比較新版本的寫法，舊的 host 寫法在新版 PostgreSQL 中已被淘汰
+- host 規則會自動把連線升級成 TLS，hostssl 則強制使用 mTLS
+E> 要「只接受 TLS」就不能留下允許的 host 規則。
+?mc pg_hba.conf 中 judge 使用 auth method cert 時，PostgreSQL 如何決定是哪個使用者？
++ 驗證憑證並比對 CN 與使用者名稱
+- 讀取 client 憑證中的 email 欄位
+- 仍然要求輸入密碼
+- 依 client 的 IP 決定
+E> 驗證 client 憑證由信任的 CA 簽發，並要求憑證的 CN 等於登入的使用者名稱（或經 pg_ident.conf 對應）CN 不符就拒絕；這就是「CN maps to username」。
+?cmd 在 psql 中建立資料庫 forgejo 並指定擁有者為 forgejo（SQL）：
+= CREATE DATABASE forgejo OWNER forgejo;
+= create database forgejo owner forgejo;
+= CREATE DATABASE forgejo OWNER forgejo
+E> 再 REVOKE CONNECT ON DATABASE forgejo FROM PUBLIC; 讓其他使用者連不進來。
+?mc 要讓 forgejo 使用者「不能連到」llm_sandbox_platform 資料庫，下列哪個 SQL 是關鍵？
++ REVOKE CONNECT ON DATABASE llm_sandbox_platform FROM PUBLIC;
+- DROP USER forgejo; 接著再用 CREATE USER 重新建立一個全新、沒有任何權限的 forgejo 帳號
+- ALTER DATABASE llm_sandbox_platform OWNER TO forgejo;
+- GRANT ALL ON DATABASE llm_sandbox_platform TO PUBLIC;
+E> 預設 PUBLIC 有 CONNECT 權限；撤掉後只有擁有者與 superuser 能連（也可在 pg_hba.conf 依資料庫限制使用者）。
+
+@CARD hw3.forgejo | Forgejo、container registry 與受保護分支
+A> Forgejo 是自架的 GitHub：程式碼放這裡、image 也放在它附帶的倉庫（container registry），登入交給 OIDC。main 分支設成「受保護」，誰都不能 force push 改寫歷史。runner 是「工人」，用 Docker-in-Docker 在隔離環境裡幫你跑 CI。
+B> https://git.{STU_ID}.cs.nycu；資料存在 PostgreSQL 的 **forgejo** 資料庫；使用者用 **OIDC provider 登入**
+B> repo **hw3/llm-sandbox-platform** 存平台程式碼；image 推到 Forgejo **container registry**：**git.{STU_ID}.cs.nycu/hw3/llm-sandbox-platform:<tag>**
+B> **main 是預設分支，歷史不能被改寫** → 設定 **branch protection**、禁止 force push
+B> **Forgejo runner** 用 **Docker-in-Docker** 執行 job
+B> judge 的 SA_FORGEJO_TOKEN 需要 scope **write:repository、read:package**
+X> $ docker login git.19.cs.nycu
+X> $ docker tag lmsp:dev git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+X> $ docker push git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+?mc 「main 分支的歷史不能被改寫」主要是要阻止哪個操作？
++ git push --force
+- git pull
+- git push 推送新的 commit
+- 推送新的 commit
+E> git push --force（強制覆寫遠端歷史）用 branch protection 禁止 force push（以及刪除分支）。
+?cmd 把本地 image lmsp:dev 標記成要推到 Forgejo registry 的 v1.0.0（主機 git.19.cs.nycu）：
+= docker tag lmsp:dev git.19.cs.nycu/hw3/llm-sandbox-platform:v1.0.0
+E> image 名稱開頭的主機名決定要推到哪個 registry。
+?tf push image 到 git.19.cs.nycu 之前，Docker 必須信任該網站的 TLS 憑證（由你的 CA 簽發）。
+=T
+E> 否則 docker login / push 會出現 x509: certificate signed by unknown authority。
+
+@CARD hw3.cicd | CI/CD：推 tag 自動 build 與部署
+A> CI/CD 是自動化的生產線：你推一個版本標籤 v1.2.3，生產線就自動做出同名的 image、放進倉庫、透過 SSH 到 host 換上新版。只認「三段都是數字」的標籤，其他標籤或分支不開工。
+B> 推 tag **v<major>.<minor>.<patch>**（全數字）後 **5 分鐘內**：registry 有同 tag 的 image、host 上的平台容器用這個 image、**GET /api/version 回傳這個 tag**
+B> **其他 tag 或分支不能 build image** → workflow 只在符合 v數字.數字.數字 的 tag 觸發（並在 job 內用正規表示式再檢查）
+B> 部署後 **docker compose down + up -d 仍要用最新部署的 image** → 把 tag 寫進 host 上 compose 讀取的設定（例如 .env 的 LMSP_TAG），不要只靠臨時的 docker run
+B> pipeline 透過 **SSH key** 部署到 host（私鑰存成 CI secret；host 端可用 authorized_keys 的 command= / restrict 限制這把 key 只能做部署）
+X> # .forgejo/workflows/release.yml
+X> on:
+X>   push:
+X>     tags: ['v[0-9]+.[0-9]+.[0-9]+']
+X> # host 上的 compose.yml
+X>   platform:
+X>     image: git.19.cs.nycu/hw3/llm-sandbox-platform:${LMSP_TAG}
+?mc 下列哪個 tag 應該觸發 build？
++ v2.10.3
+- v2.10
+- v2.10.3-rc1
+- release-2.10.3
+E> 必須剛好是 v + 三段數字。
+?fill 檢查 tag 是否符合 v<數字>.<數字>.<數字> 的正規表示式：^v[0-9]+\.[0-9]+\.＿＿$
+= [0-9]+
+= \d+
+E> + 表示至少一位數字；^ 和 $ 確保整個字串完全符合。
+?mc 為什麼部署時要把新 tag 寫進 compose 讀取的 .env，而不是只在 host 上 docker run 新 image？
++ 這樣 docker compose down + up -d 之後仍會使用最新部署的 image，設定是持久的
+- 因為 docker run 無法拉取私有 registry 的 image，只有 compose 可以
+- 因為 .env 中的變數會被 BuildKit 快取，可以讓 image build 得比較快
+- 因為 Forgejo 的 runner 只支援用 .env 檔把變數傳遞給 host 上執行的 docker 指令
+E> HW3：After a deploy, docker compose down + up -d still uses the latest deployed image。
+?sa 請設計 HW3 的 CI/CD 流程：從開發者推送 git tag 到 host 上的平台換成新版本，列出各步驟與需要注意的安全措施。
+R> 1. 開發者推送 tag（如 v1.2.3）到 Forgejo；workflow 只在 tag 符合 v數字.數字.數字 時觸發，job 開頭再用 ^v[0-9]+\.[0-9]+\.[0-9]+$ 檢查一次，不符就結束。
+R> 2. Forgejo runner 以 Docker-in-Docker 執行 job：checkout 程式碼，docker build，並把 tag 寫進 image（例如 --build-arg VERSION=v1.2.3，讓 /api/version 回傳它）。
+R> 3. 用 registry 憑證（或 runner 提供的 token）docker login git.{STU_ID}.cs.nycu，push git.{STU_ID}.cs.nycu/hw3/llm-sandbox-platform:v1.2.3。
+R> 4. 用存在 CI secret 中的 SSH 私鑰連到 host，更新 compose 使用的 tag（例如改 .env 中的 LMSP_TAG），執行 docker compose pull platform && docker compose up -d platform。
+R> 安全：SSH key 專用於部署，在 host 的 authorized_keys 用 restrict、command= 限制只能執行部署腳本；私鑰只放在 secret 中、不進 repo；registry 與 host 的 TLS 憑證要被 runner 信任；main 分支受保護、禁止 force push；只有 tag 推送才部署，避免任何分支都能改動正式環境。
+P> tag 格式過濾（workflow 觸發條件與再次檢查）
+P> build 並 push 同名 tag 的 image 到 Forgejo registry
+P> 透過 SSH 更新 host 上持久的 compose 設定並 up -d
+P> 部署 key 權限限制、secret 不外洩、受保護分支
+
+@CARD hw3.sandbox | Sandbox 容器與 sallm-cli
+A> 每個 sandbox 是一間容器房間，agent 在裡面當 root（反正房間是隔離的）。agent 只有四樣工具：讀、寫、改檔、跑 bash；它的每個動作都以「一行一個 JSON 事件」的方式報告，平台就靠這些事件記錄與畫出 trace。
+B> **sallm-cli**：只有 4 個 tool：**read、write、edit、bash**；沒有 session、沒有 log
+B> 非互動模式：**sallm-cli run --json --task "<task>"** → stdout **每行一個 JSON event**；完成 exit 0、錯誤非 0；收到 **SIGTERM** 會停止
+B> 環境變數：**AGENT_BASE_URL**（https://llm.ta.cs.nycu/v1，OpenAI 相容）、**AGENT_API_KEY**、**AGENT_MODEL**（SA2026-LLM）；平台在**建立容器時設定**
+B> event：每個都有 **type、time（RFC 3339）**；**message**（content）、**tool_call**（call_id、tool、args）、**tool_result**（call_id 對應 tool_call、output、is_error）、**done**、**error**（message）
+B> sandbox image 從 TA 的 sandbox-base 建立，並**信任平台的攔截 root CA**
+X> {"type":"tool_call","time":"2026-12-01T10:00:01+08:00","call_id":"c1","tool":"bash","args":{"command":"ls /workspace"}}
+X> {"type":"tool_result","time":"2026-12-01T10:00:02+08:00","call_id":"c1","output":"README.md\n","is_error":false}
+?mc 平台要把 tool_call 與它的 tool_result 配對起來（例如畫出 tool call span），應該依據哪個欄位？
++ call_id
+- time
+- tool
+- type
+E> tool_result 的 call_id 與對應的 tool_call 相同。
+?mt 配對 sallm-cli event type：
+> message :: agent 的文字回應
+> tool_call :: agent 呼叫 read/write/edit/bash
+> tool_result :: 工具執行結果
+> done :: 任務完成
+> error :: 發生錯誤
+E> 每個 event 都有 type 與 time（RFC 3339）。
+?tf sandbox image 需要信任平台的 HTTPS 攔截 root CA，否則 agent 連 HTTPS 時會出現憑證錯誤。
+=T
+E> 平台會用這個 CA 即時簽發假憑證來解密流量。
+
+@CARD hw3.states | Sandbox 狀態與 Execution
+A> pause 不是把容器「凍結」，而是「把房間裡的工作桌（/workspace）收起來，整間房拆掉」；resume 是「蓋一間新房間，把工作桌搬回來」，所以 /workspace 以外的改動都會消失。這正好是 Docker 的 volume 概念：容器可丟、資料留在 volume。
+B> **Create**：建立並啟動容器 → running；**Pause**：停止所有執行中的 execution、保留 /workspace、**刪除容器** → paused
+B> **Resume**：**建立新容器**，/workspace 與 pause 前相同 → running；**Close**：刪除容器與保留的內容 → closed
+B> **/workspace 以外的變更在 resume 後會消失**（容器可寫層隨容器刪除）
+B> 平台停止時 **pause 所有 running sandbox**；平台重啟後它們**保持 paused，不自動 resume**
+B> Execution：type **command** → bash -c "<input>"，output = **stdout 與 stderr 依序（同 2>&1）**；type **agent** → sallm-cli run --json --task "<input>"
+B> status：**running**（exit_code、output 皆 null）、**succeeded**（0、完整輸出）、**failed**（實際 exit code、完整輸出）、**stopped**（被 stop API 或 sandbox pause/close，exit_code null、output 為停止前的輸出）
+?mc 在 sandbox 中執行 apt-get install vim（安裝到 /usr/bin），然後 pause 再 resume，vim 還在嗎？
++ 不在，/workspace 以外的變更在 resume 後消失
+- 在，因為 pause 會把整個容器的檔案系統狀態凍結保存下來
+- 在，因為 Docker 會保留 image layer
+- 要看 vim 的版本與 image 有沒有內建
+E> Resume 會建立新容器，只有 /workspace 被保留（例如用 volume）。
+?mt 配對 execution status：
+> running :: 還在執行，exit_code 與 output 都是 null
+> succeeded :: exit code 0，回傳完整輸出
+> failed :: exit code 非 0，回傳實際 exit code
+> stopped :: 被 stop 或 sandbox 被 pause/close
+E> stopped 的 exit_code 是 null，output 是停止前已產生的輸出。
+?fill command 類型的 execution 要讓 stdout 和 stderr 依序合併輸出，相當於在指令後加＿＿
+= 2>&1
+E> 先把 stderr 導向目前的 stdout，兩者就會依產生順序寫在一起。
+?mc 實作 pause 時，最適合用來保留 /workspace 的 Docker 機制是？
++ 把 /workspace 放在 volume
+- docker pause
+- docker commit 成新 image
+- 把檔案存在容器的可寫層
+E> 把 /workspace 放在 volume（或 bind mount），刪除容器後 volume 仍存在，resume 時掛到新容器。docker pause 只是凍結 process，容器沒被刪除，不符合規格；commit 會把 /workspace 外的變更也保留下來。
+
+@CARD hw3.netctl | Sandbox 網路控制：gateway、allowlist、SNI
+A> 平台是 sandbox 唯一的出口和電話簿：sandbox 的預設路由和 DNS 都指向平台。平台只放行「打給 ta.cs.nycu」的 HTTP/HTTPS 與 DNS；而且不信任客人自己報的地址，一律自己查電話簿後再撥，避免「嘴上說要去合法網站、實際上連到別的 IP」。
+B> sandbox 的 **default route 與 DNS resolver 都是平台容器 IP**；sandbox 內的程式**不能改路由或防火牆**（不給 **CAP_NET_ADMIN**）
+B> 只允許兩種流量：**TCP 80/443**（交給平台的 HTTP/HTTPS proxy）與**給平台的 DNS 查詢**；其他全部擋掉
+B> 只放行 **ta.cs.nycu 及其子網域**：HTTP 看 **Host header**、HTTPS 看 **SNI**（TLS ClientHello 中的主機名）
+B> **擋掉直接連 IP 位址**的連線
+B> proxy 用**平台的 DNS** 解析 Host / SNI，再連到該 IP；**不使用 sandbox 原本的目的 IP**
+?mc 為什麼 proxy 不能直接使用 sandbox 連線的原始目的 IP，而要自己解析 SNI？
++ 否則 SNI 與實際連線目標可以不一致
+- 因為原始目的 IP 一定是錯的
+- 因為 TLS 不允許轉送到原本的 IP
+- 為了讓連線速度變快
+E> 否則 sandbox 可以在 SNI 填允許的網域、實際連向任意 IP，繞過 allowlist。名稱與實際連線目標必須一致，allowlist 才有意義。
+?mc 平台在「還沒解密」的情況下，如何知道 sandbox 的 HTTPS 連線要去哪個網站？
++ 讀 ClientHello 中的 SNI
+- 讀取 HTTP Host header
+- 查詢目的 IP 的反向 DNS
+- 讀取憑證的 SAN
+E> 讀取 TLS ClientHello 中的 SNI（Server Name Indication）HTTP 才能直接看 Host header；HTTPS 的 Host 在加密層內。
+?tf 只要不給容器 CAP_NET_ADMIN，容器內即使是 root 也無法修改路由表與 iptables 規則。
+=T
+E> 修改網路設定需要 CAP_NET_ADMIN；Docker 預設不給。
+?mc sandbox 執行 curl http://1.2.3.4/，依規格平台應該？
++ 擋下並記錄 reason ip_address
+- 放行，因為是一般的 HTTP 連線
+- 反查 1.2.3.4 的網域名稱後再決定
+- 把請求轉送到 TA 的 DNS
+E> 擋下並記錄為 network event，reason 為 ip_address。Block connections to IP addresses。
+
+@CARD hw3.mitm | HTTPS 攔截、憑證驗證與 CRL
+A> 平台扮演「合法的中間人」：對 sandbox 出示自己 CA 臨時簽的假憑證（sandbox 被設定成信任它），解開流量記錄後，再以真正客戶的身分去連真網站，並且嚴格檢查真網站的證件與「黑名單」（CRL）。真網站有問題就拒絕，並回 TLS alert。
+B> 平台有專用的**攔截 root CA**，只用來攔截 sandbox 的 HTTPS；**不是** Part 2 的 root CA，**VM 不信任它**
+B> 平台解密 sandbox 的 HTTPS，再**連到真正的網站**；用 **VM 信任的 root CA** 驗證真網站憑證
+B> 用 **CRL** 檢查真網站憑證鏈的撤銷狀態：**每 60 秒內重新下載**；**POST /api/crl/refresh** 立即下載
+B> 驗證失敗 → **拒絕連線並送 tls alert**（tls_invalid / tls_revoked）
+B> 測試 tls_revoked：https://revoked.ta.cs.nycu（CRL 撤銷了它的 **intermediate CA**）
+?mc 為什麼攔截用的 root CA「不應該」被 VM（host）信任？
++ 它能替任何網域簽憑證
+- 因為 host 不需要上網
+- 因為一台機器只能信任一個 CA
+- 因為 CRL 不支援攔截 CA
+E> 這把 CA 可以替任何網域即時簽憑證，若 host 也信任它，私鑰外洩時 host 上所有 HTTPS 都可能被冒充。攔截 CA 的信任範圍應只限 sandbox。
+?mc revoked.ta.cs.nycu 的 leaf 憑證本身沒被撤銷，但它的 intermediate CA 在 CRL 中。平台應該？
++ 判定 tls_revoked 並拒絕
+- 放行，因為 leaf 沒被撤銷
+- 只記錄警告但放行
+- 改用 HTTP 連線
+E> 判定 tls_revoked 並拒絕連線，因為要檢查整條憑證鏈的撤銷狀態。checks revocation of the real site cert chain with CRLs。
+?mt 配對 TLS 驗證失敗原因與 network event 的 reason：
+> 憑證鏈無法串到信任的 root :: tls_invalid
+> 憑證或其 CA 在 CRL 中 :: tls_revoked
+> 網域不在 allowlist :: not_allowlisted
+> 直接連 IP 位址 :: ip_address
+E> blocked 的 network event 中，status 與 response_body 都是 null。
+?tf CRL 只要在平台啟動時下載一次就夠了。
+=F
+E> 規格要求至少每 60 秒重新下載，否則新撤銷的憑證會被放行。
+
+@CARD hw3.dnsevents | DNS 過濾與事件紀錄
+A> 平台的 DNS 是「只接特定號碼的總機」：問 ta.cs.nycu 家族就轉給 TA 的 DNS，問別的一律回「查無此號」（NXDOMAIN）。每通電話、每次上網、每次呼叫 LLM 都寫進資料庫的事件簿。
+B> DNS：allowlist 的名稱**轉送給 TA resolver 192.168.255.66**；其他名稱回 **NXDOMAIN**
+B> 事件類型：https://llm.ta.cs.nycu 的請求 → **llm**；其他 HTTP/HTTPS（**含被擋的連線**）→ **network**；DNS 查詢 → **dns**；syscall 監控 → **syscall**
+B> 資料表 **events**（資料庫 llm_sandbox_platform）：**id uuid、sandbox_id uuid（pause/resume 不變）、time timestamptz、type text、verdict text（allow / block，syscall 一律 allow）、detail jsonb**
+B> network：一組 request+response 一個 event（同連線多個 request 各一個）；body 用 **base64**、去掉 chunked 編碼、保留 Content-Encoding 的原始 bytes
+B> dns：qname（小寫、無結尾 .）、qtype、rcode、answers（name、type、ttl、data；data 用 dig 的 RDATA 格式）；被擋 → verdict block、NXDOMAIN、answers []
+B> llm：model、stream、status、request_body、response_body（串流時包含所有 data: 行與最後的 data: [DONE]）
+X> SELECT time, detail->>'host' AS host, detail->>'reason' AS reason
+X>   FROM events
+X>  WHERE type = 'network' AND verdict = 'block'
+X>  ORDER BY time DESC;
+?mc sandbox 查詢 example.com 的 DNS，平台應該？
++ 回 NXDOMAIN 並記錄 block
+- 轉送給 TA resolver 再回應
+- 不回應讓查詢逾時
+- 回應 127.0.0.1
+E> 回 NXDOMAIN，記錄 dns event，verdict 為 block、answers 為空陣列。只有 ta.cs.nycu 及其子網域會被轉送給 192.168.255.66。
+?fill 從 jsonb 欄位 detail 取出 host 的「文字」值，PostgreSQL 運算子是 detail＿＿'host'
+= ->>
+E> -> 取出 jsonb，->> 取出 text。
+?mc 為什麼 events 的 sandbox_id 要在 pause/resume 之後保持不變，而不是用 Docker 的 container ID？
++ resume 後 container ID 會變
+- container ID 太長無法存進 uuid
+- Docker 不提供 container ID
+- 為了讓查詢比較快
+E> resume 會建立新容器，container ID 會變；sandbox_id 才能把同一個 sandbox 的所有事件串起來。pause 會刪除容器、resume 建新容器，所以 container ID 會改變。
+?tf 被平台擋下、根本沒送出 HTTP request 的 HTTPS 連線不需要記錄 event。
+=F
+E> 規格：Other HTTP and HTTPS requests, including blocked connections → network event（method、url、body 為 null）。
+
+@CARD hw3.falco | Syscall 監控：偵測危險行為
+A> 只看 agent「說它要做什麼」不夠，換個寫法就能騙過；要直接看它向 kernel 要了什麼（syscall）。不管是 cat、python 還是 dd 讀 /etc/shadow，在 syscall 層都是「open 這個檔案來讀」，一個規則全部抓到。
+B> 在 **syscall 層**監控每個 sandbox（推薦 **Falco**）；6 種行為 → 記錄 syscall event 並送 alert；**同一行為的不同做法都要偵測**；符合多個類別就**每類各記一筆**（/tmp/nc 同時是 suspicious_command 與 tmp_script）
+B> **讀敏感檔**（read_sensitive_file）：/etc/shadow、/etc/gshadow、/etc/sudoers、/root/.bash_history、/proc/1/environ、/root/.ssh/id_*（非 .pub）、/run/secrets/、/etc/ssl/private/
+B> **改受保護檔**（modify_protected_file）：write、truncate、rename、delete、chmod、chown /etc/passwd、/etc/shadow、/etc/hosts、/etc/resolv.conf、authorized_keys、/etc/crontab、/etc/ld.so.preload…
+B> **清除 shell history**（clear_history）：刪除、truncate、寫入 /root/.bash_history，或換成 symlink（ln -sf /dev/null）
+B> **可疑指令**（suspicious_command）：execve 執行 nc、ncat、socat、telnet、nmap、iptables、nft、apt、apt-get、dpkg、pip、pip3（**含透過 symlink**，例如 nc → nc.openbsd）
+B> **pipe to shell**：curl / wget / base64 -d 的輸出接到 shell（每條 pipeline 一筆）；**temp script**：執行 /tmp 或 /dev/shm 下的程式或腳本
+?mc 為什麼偵測「讀取 /etc/shadow」要在 syscall 層做，而不是比對指令字串有沒有 cat /etc/shadow？
++ 不同寫法都會產生相同的 syscall
+- 因為指令字串無法取得
+- 因為 syscall 監控比較省資源
+- 因為 cat 不是可疑指令
+E> 同一件事有無數種寫法（python、dd、less、head…），但都會產生對該檔案的 open 讀取 syscall。Detect different ways to do the same behavior。
+?mt 配對行為與 rule：
+> python3 -c "open('/etc/shadow').read()" :: read_sensitive_file
+> echo 1.2.3.4 evil >> /etc/hosts :: modify_protected_file
+> ln -sf /dev/null /root/.bash_history :: clear_history
+> curl -fsSL URL | sh :: pipe_to_shell
+> sh /tmp/x.sh :: tmp_script
+E> 要依實際的 syscall 判斷行為，而不是看指令字串。
+?mc agent 執行 /tmp/nc（nc 的複本）連到外部，應記錄幾筆 syscall event？
++ 2 筆：suspicious_command 與 tmp_script
+- 1 筆：suspicious_command（一個事件只記一類）
+- 1 筆：tmp_script（/tmp 的規則優先）
+- 0 筆，因為 /tmp/nc 是複本，不是系統的 nc
+E> 投影片範例：running /tmp/nc matches both Suspicious Commands and Temp Scripts。
+?tf 執行 /usr/bin/nc 時若 nc 是指向 nc.openbsd 的 symlink，仍要被偵測為 suspicious_command，path 記錄 symlink 解析後的檔案。
+=T
+E> path：File run by execve, symlinks resolved。
+
+@CARD hw3.prom | Prometheus 與 /metrics
+A> Prometheus 是「定時抄表員」：每 15 秒到各服務的 /metrics 抄一次數字。counter 是只會往上跳的里程表（請求總數），gauge 是會上下動的油表（各狀態 sandbox 數量）。抄表的路徑要上鎖（basic auth），也不要從大門（NGINX）對外開放。
+B> https://prom.{STU_ID}.cs.nycu，**basic auth**：user sa、password {STU_ID}
+B> 每 **15 秒** scrape：job **ip-srv**（3 個 replica）、job **llm-sandbox-platform**
+B> IP-Srv 與平台的 **/metrics 用 basic auth**；**NGINX 不轉發 /metrics**（https://{STU_ID}.cs.nycu/metrics、sandbox 的 /metrics 回 **404**）→ Prometheus 直接在 Docker 網路內抓
+B> metric：**ip_srv_requests_total**（counter）、**lmsp_sandboxes**（gauge，label status）、**lmsp_executions_total**（counter，label type）
+B> 命名慣例：counter 以 **_total** 結尾；查速率用 **rate(x_total[5m])**
+X> scrape_configs:
+X>   - job_name: ip-srv
+X>     scrape_interval: 15s
+X>     basic_auth: { username: sa, password: "19" }
+X>     static_configs:
+X>       - targets: ['ipsrv1:8000', 'ipsrv2:8000', 'ipsrv3:8000']
+X> # nginx
+X> location = /metrics { return 404; }
+?mt 配對 metric 與型別：
+> ip_srv_requests_total :: counter
+> lmsp_sandboxes{status="running"} :: gauge
+> lmsp_executions_total{type="agent"} :: counter
+E> 數量會減少的（sandbox 數）用 gauge；只增不減的累計數用 counter。
+?mc counter 與 gauge 的差別？
++ counter 只會增加（重啟時歸零）；gauge 可以上升也可以下降
+- counter 可以上下變動；gauge 只會增加
+- counter 只能是整數；gauge 只能是小數
+- 兩者相同，只是 Go 與 Python 的 client 命名習慣不同
+E> counter 要用 rate() / increase() 看變化速度；gauge 直接看當下的值。
+?fill 計算 ip_srv_requests_total 最近 5 分鐘每秒的平均請求數：＿＿(ip_srv_requests_total[5m])
+= rate
+E> rate() 會自動處理 counter 重啟歸零的情況。
+?tf /metrics 應該透過 NGINX 對外公開，讓 Prometheus 經由 HTTPS 抓取。
+=F
+E> 規格要求 NGINX 對 /metrics 回 404；Prometheus 在內部網路直接 scrape。
+
+@CARD hw3.otel | OpenTelemetry：Logs、Traces 與 mTLS
+A> 可觀測性三兄弟：metrics 是「數字儀表板」，logs 是「流水帳」，traces 是「一次請求的完整行程表」。每段行程（span）有父子關係：API 請求是起點（SERVER），途中呼叫 Docker（CLIENT），執行任務（INTERNAL），工具呼叫又是它底下的小行程。log 帶上 trace ID，就能從流水帳跳回行程表。
+B> TA **OTLP** collector：https://otel.ta.cs.nycu:**4318**（**OTLP/HTTP**；gRPC 慣例是 4317）
+B> 用 **client 憑證**認證（**mTLS**）：由 intermediate 簽、**CN = {STU_ID}**、EKU 含 **clientAuth**；handshake 時送出 **client 憑證 + intermediate**
+B> NGINX access log：所有主機寫到 /home/judge/hw3/logs/access.log（每請求一行），每行送成一筆 log record：**service.name=nginx**、body = 該行、sa.uri、sa.host、sa.method、sa.user_agent、sa.status（integer）；**User-Agent 為 sa-probe/{STU_ID} 的請求不記錄也不送**
+B> 平台 log：service.name **llm-sandbox-platform**；事件 api_request、sandbox_status、execution_start、execution_end（INFO）、error（ERROR）；帶 **trace ID / span ID**
+B> Traces：每個 API 請求一條 trace；span kind：**API request = SERVER（root）**、**Docker API call = CLIENT**、**execution = INTERNAL**（parent 是 API span，可以比它晚結束）、**tool call = INTERNAL**（parent 是 execution，從 tool_call 到同 call_id 的 tool_result）；失敗 → span status **ERROR**
+X> # nginx：不記錄特定 User-Agent
+X> map $http_user_agent $loggable { "sa-probe/19" 0; default 1; }
+X> access_log /home/judge/hw3/logs/access.log combined if=$loggable;
+?mt 配對 span 與 span kind：
+> 平台收到的 API 請求 :: SERVER
+> 平台呼叫 Docker API :: CLIENT
+> 一次 execution :: INTERNAL
+> agent 的一次 tool call :: INTERNAL
+E> SERVER 處理進來的請求、CLIENT 發出對外的呼叫、INTERNAL 是內部工作。
+?mc 為什麼平台的 log record 要帶上 trace ID 與 span ID？
++ 讓 log 能對到產生它的 trace / span，從錯誤 log 直接追到整個請求
+- 為了讓 collector 用 trace ID 當金鑰，把 log 內容加密後再儲存
+- 因為 OTLP collector 要求每一筆 log 都必須帶一個全域唯一的 ID
+- 用 ID 取代重複的文字內容，可以大幅減少 log 的傳輸與儲存大小，也比較方便壓縮
+E> 這叫 log 與 trace 的關聯（correlation），OTLP log record 本身就有 trace_id、span_id 欄位。
+?mc 用 client 憑證連 OTLP collector 時，為什麼要連 intermediate 憑證一起送出？
++ collector 沒有你的 intermediate
+- 因為 client 憑證太短，需要湊足長度
+- intermediate 憑證用來加密傳送的資料
+- OTLP 協定規定一定要送兩張憑證
+E> collector 需要從 client 憑證建立到它信任的 root 的完整鏈；它沒有你的 intermediate。跟伺服器送 fullchain 是同一個道理。
+?fill OTLP/HTTP 的慣用 port 是＿＿
+= 4318
+E> OTLP/gRPC 是 4317。
+?fill nginx 依變數決定是否記錄：access_log /path/access.log combined ＿＿=$loggable;
+= if
+E> $loggable 為 0 或空字串時，這筆請求就不會被記錄。
+
+@CARD hw3.alerts | Alerts：規則、DNS 異常與 Alert API
+A> alert 是「打電話報警」：每個符合規則的事件都要打一通（符合多條規則就打多通）。DNS 的三條規則都在抓「把資料偷偷塞在 DNS 查詢裡送出去」（DNS tunneling）：超長的子網域標籤、TXT 查詢、短時間大量查詢。
+B> 每個符合的事件送一個 alert；**符合多條規則就每條各送一個**
+B> syscall 規則（read_sensitive_file、modify_protected_file、clear_history、suspicious_command、tmp_script → detail 是 **path**；pipe_to_shell → detail 是 **command**）
+B> tls 規則：**tls_invalid、tls_revoked** → detail 是真網站的 host
+B> dns 規則：**dns_long_label**（qname 中某個 label **超過 40 字元**）、**dns_txt**（查詢類型 **TXT**）、**dns_burst**（同一 sandbox **任意 10 秒內超過 20 次**查詢，含被擋的；**第 21 次時送一次，之後 10 秒內不重複**）
+B> Alert API：**POST https://alert.ta.cs.nycu/api/alerts**、**Authorization: Bearer <token>**、成功回 **201**；JSON 欄位 sandbox_id、type、rule、time（RFC 3339）、detail
+X> {"sandbox_id":"3f2b8c1e-...","type":"file_read","rule":"read_sensitive_file",
+X>  "time":"2026-12-01T10:00:05+08:00","detail":"/etc/shadow"}
+?mc dns_long_label、dns_txt、dns_burst 這三條規則，主要想偵測哪種攻擊手法？
++ DNS tunneling
+- DNS cache poisoning
+- DDoS 攻擊 DNS 伺服器
+- 釣魚網站
+E> DNS tunneling：把資料編碼在 DNS 查詢或 TXT 回應中偷偷傳出或接收指令。長 label 可以塞編碼後的資料；TXT 記錄可以攜帶任意文字。
+?mc 某 sandbox 在 10 秒內送出 25 次 DNS 查詢，依 dns_burst 規則會送出幾個 alert？
++ 1 個（在第 21 次時），之後 10 秒內不重複
+- 5 個（第 21–25 次各一個）
+- 25 個，每一次超過門檻的查詢都送一個
+- 0 個，因為被擋下的 DNS 查詢不會被計入次數裡
+E> 被擋的查詢也算；第 21 次送一次後冷卻 10 秒。
+?fill Alert API 成功建立 alert 時回傳的 HTTP 狀態碼是＿＿
+= 201
+E> 201 Created。
+?tf 一個 DNS 查詢若同時是 TXT 類型且有超過 40 字元的 label，只需要送一個 alert。
+=F
+E> 每條符合的規則各送一個。
+
+@CARD hw3.judgeenv | Judge 設定與作業注意事項
+A> 評分機器人會用非互動式 SSH 登入、讀環境變數、甚至故意關容器、推 tag、改檔案。所以每個設定都要「自動復原」，環境變數要放在非互動式 shell 也讀得到的地方；提交前先拍快照。
+B> judge 能讀 /home/judge/hw3/ 下所有檔案
+B> 環境變數要在 **judge 的非互動式 SSH session** 生效：SA_OIDC_ISSUER、SA_OIDC_CLIENT_ID、SA_OIDC_CLIENT_SECRET、SA_FORGEJO_TOKEN
+B> Debian 的 ~/.bashrc 開頭會在「非互動式」時直接 return → export 要寫在那段**之前**（ssh 執行指令時 bash 會讀 ~/.bashrc）
+B> judge 會**改變你的系統**（停容器、推 git tag、改檔案）→ **重開機後所有服務要自動恢復**；**每次提交前拍 VM snapshot**
+B> 提醒：確認服務**聽在哪個 IP**、容器與應用**信任哪些憑證**、**檔案權限**；**用官方文件驗證 LLM 的輸出**；必要時讀原始碼；用自動化工具（如 **Ansible**）
+?mc 在 ~/.bashrc 最後一行加了 export SA_OIDC_ISSUER=…，但 judge 用 ssh judge@vm 'echo $SA_OIDC_ISSUER' 卻是空的。最可能的原因？
++ 非互動式時 .bashrc 提早 return
+- ssh 執行指令時不支援任何環境變數
+- 環境變數名稱不能包含底線
+- 修改 .bashrc 之後需要重開機才生效
+E> Debian 預設 .bashrc 開頭在非互動式 shell 時就 return，後面的 export 沒有執行。把 export 移到 .bashrc 中「case $- in *i*) …」那段之前。
+?mc 作業規格要求服務「重開機後自動恢復」。下列何者「不是」必要的？
++ 把所有容器 docker commit 成 image
+- nginx.service 與 docker.service 已 enable
+- Compose 服務設定 restart: always 或 unless-stopped
+- 資料存放在 volume 或 bind mount
+E> commit 不需要；重點是 daemon 會自動啟動、容器會被重新拉起、資料不在容器可寫層。
+?tf HW3 的評分只看最後一次提交，遲交不被接受。
+=T
+E> 所以每次提交前都要確認全部功能，並先拍 VM snapshot。
+
+@CARD hw3.p_openssl | 實作：用 openssl 建立 CA 與簽發憑證
+A> 簽憑證的流程像辦證件：先做一把私鑰（印章）；拿私鑰填一張申請書（CSR），寫上名字與主機名；發證中心（CA）審核後蓋章，加上「用途限制」（extension），就是一張憑證。最常見的錯誤是 extension 沒帶進去，例如 SAN 不見了。
+B> 私鑰：**openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out x.key**（或 -algorithm RSA -pkeyopt rsa_keygen_bits:3072）；**chmod 600**
+B> CSR：**openssl req -new -key x.key -subj "/CN=git.19.cs.nycu" -addext "subjectAltName=DNS:git.19.cs.nycu" -out x.csr**
+B> 簽發：**openssl x509 -req -in x.csr -CA intermediate.crt -CAkey intermediate.key -CAcreateserial -days 365 -extfile ext.cnf -out x.crt**（**-extfile** 才會加入 SAN、EKU；CSR 裡的 extension 預設**不會**自動複製，可用 -copy_extensions copy）
+B> 檢查：**openssl x509 -in x.crt -noout -text**、**-noout -ext subjectAltName,basicConstraints,extendedKeyUsage**
+B> fullchain：**cat x.crt intermediate.crt > x.fullchain.crt**（**leaf 在前**，intermediate 在後；root 不必放）
+X> # ext.cnf（伺服器憑證）
+X> basicConstraints = critical, CA:FALSE
+X> keyUsage = critical, digitalSignature
+X> extendedKeyUsage = serverAuth
+X> subjectAltName = DNS:git.19.cs.nycu
+X> $ openssl x509 -req -in git.csr -CA intermediate.crt -CAkey intermediate.key -CAcreateserial -days 365 -extfile ext.cnf -out git.crt
+X> $ cat git.crt intermediate.crt > git.fullchain.crt
+?mc 用 openssl x509 -req 簽完的伺服器憑證，瀏覽器說沒有 SAN，但 CSR 裡明明有 -addext subjectAltName。原因？
++ 簽發時沒有帶入 extension
+- SAN 只能寫在 CN 裡
+- 必須使用 RSA 金鑰才有 SAN
+- 瀏覽器不支援 EC 憑證
+E> x509 -req 預設不會複製 CSR 的 extension，要用 -extfile 指定或加 -copy_extensions copy。簽發時由 CA 決定要放哪些 extension，這也是 CA 審核的意義。
+?mc fullchain 檔中憑證的正確順序是？
++ 伺服器（leaf）憑證在最前面，接著 intermediate
+- root 在最前面，接著 intermediate，最後是伺服器憑證
+- root、intermediate、伺服器憑證
+- 順序無所謂，用戶端會依 issuer 欄位自己排序
+E> TLS 規定伺服器送出的第一張必須是自己的憑證，之後每張簽發前一張。
+?cmd 顯示 git.crt 的 subjectAltName extension：
+= openssl x509 -in git.crt -noout -ext subjectAltName
+= openssl x509 -noout -ext subjectAltName -in git.crt
+= openssl x509 -in git.crt -noout -text
+E> -text 會印出全部內容，-ext 只印指定的 extension。
+?fill 簽發憑證時若希望 openssl 自動產生並記錄序號檔，加上選項 -CA＿＿
+= createserial
+E> 會建立 intermediate.srl，之後用 -CAserial 沿用。
+
+@CARD hw3.p_tlsdebug | 實作：TLS 連不上怎麼查
+A> 用 openssl s_client 扮演「最挑剔的客人」去敲門：它會把伺服器出示的整條憑證鏈印出來、告訴你驗證結果和錯誤代碼。curl -v 則是「一般客人」的視角。兩個一起看，問題幾乎都能找到。
+B> **openssl s_client -connect git.19.cs.nycu:443 -servername git.19.cs.nycu -CAfile root.crt -showcerts**：看伺服器送了哪些憑證、**Verify return code**
+B> **curl -v --cacert root.crt https://git.19.cs.nycu/**：看 TLS 握手與 HTTP 回應；**curl --resolve 主機:443:127.0.0.1** 不改 hosts 也能指定 IP
+B> 常見錯誤：**unable to get local issuer certificate**（沒送 intermediate 或不信任 root）、**hostname mismatch**（SAN 不符）、**certificate has expired**、**self-signed certificate in certificate chain**（客戶端沒信任你的 root）
+B> 確認系統信任：**openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt 憑證**（需搭配 -untrusted intermediate）
+B> 只看到 nginx 預設站？檢查 **SNI**：沒帶 -servername 時 nginx 回 default_server 的憑證
+X> openssl s_client -connect git.19.cs.nycu:443 -servername git.19.cs.nycu -CAfile root.crt </dev/null | grep -E 'subject=|issuer=|Verify return'
+X> curl -v --cacert root.crt https://git.19.cs.nycu/
+X> curl --resolve git.19.cs.nycu:443:127.0.0.1 https://git.19.cs.nycu/
+?mc curl 回報 unable to get local issuer certificate，但 root CA 確定已被信任。最可能的原因？
++ 伺服器沒送 intermediate
+- 伺服器憑證已經過期
+- 憑證的 SAN 與主機名不符
+- 伺服器沒有開 443 port
+E> 伺服器沒有送出 intermediate 憑證，客戶端無法串到 root。把 ssl_certificate 改成 fullchain（leaf + intermediate）。
+?mc openssl s_client 不加 -servername 時，拿到的憑證跟瀏覽器看到的不同。原因？
++ 沒送 SNI，拿到預設站的憑證
+- s_client 不支援 TLS 1.3
+- 瀏覽器有快取
+- s_client 會自動忽略 SAN
+E> 沒有送 SNI，nginx 不知道要哪個虛擬主機，就回 default_server 的憑證。同一個 IP:443 上有多個 server_name 時，nginx 靠 SNI 選憑證。
+?cmd 不修改 /etc/hosts，讓 curl 把 git.19.cs.nycu:443 直接連到 127.0.0.1：
+= curl --resolve git.19.cs.nycu:443:127.0.0.1 https://git.19.cs.nycu/
+= curl --resolve git.19.cs.nycu:443:127.0.0.1 https://git.19.cs.nycu
+= curl -v --resolve git.19.cs.nycu:443:127.0.0.1 https://git.19.cs.nycu/
+E> --resolve 也會讓 SNI 與 Host 保持正確的主機名，比直接連 IP 更準確。
+
+@CARD hw3.p_nginxlayout | 實作：NGINX 設定檔架構與虛擬主機
+A> Debian 的 nginx 把設定拆成積木：nginx.conf 是總表，sites-available 放每個網站的設定、sites-enabled 放「啟用的」symlink。同一個 443 port 上有好幾個網站，nginx 靠請求裡的主機名（SNI 與 Host）決定由哪個 server 區塊接待。
+B> 主設定 **/etc/nginx/nginx.conf** → include **conf.d/*.conf** 與 **sites-enabled/***（sites-available 的 symlink）
+B> 一個 **server { }** = 一個虛擬主機；用 **server_name** 比對；都不符時用 **default_server**
+B> 建議加一個 default_server 對未知主機回 **444**（直接斷線）或 404，避免用 IP 就能連到某個服務
+B> 共用設定（TLS 參數、proxy header）抽成 **snippets/*.conf** 再 include
+B> 檢查：**nginx -t**（語法）、**nginx -T**（印出合併後的完整設定）；**systemctl reload nginx** 不中斷連線；log：**/var/log/nginx/error.log**
+X> server { listen 443 ssl default_server; server_name _; ssl_certificate /etc/nginx/tls/default.fullchain.crt; ssl_certificate_key /etc/nginx/tls/default.key; return 444; }
+X> sudo ln -s /etc/nginx/sites-available/hw3.conf /etc/nginx/sites-enabled/
+X> sudo nginx -t && sudo systemctl reload nginx
+?mc 請求的 Host 不符合任何 server_name 時，nginx 會交給誰處理？
++ default_server
+- 回 500 錯誤
+- 隨機一個 server
+- 第一個在 conf.d 中的檔案
+E> 該 listen 位址上標記為 default_server 的 server（沒有標記時是第一個）建議明確寫一個 default_server，避免順序改變時意外由別的網站接手。
+?cmd 印出 nginx 合併所有 include 之後的完整設定：
+= nginx -T
+= sudo nginx -T
+E> 找不到某個設定從哪來時很好用。
+?fill nginx 中「直接關閉連線、不回應任何內容」的特殊狀態碼是 return ＿＿;
+= 444
+E> 444 是 nginx 專用的非標準代碼。
+
+@CARD hw3.p_proxyhdr | 實作：反向代理的 header 與後端設定
+A> 後端服務躲在 NGINX 後面，看到的連線都是「從 127.0.0.1 來的 HTTP」。如果沒有把原本的主機名、協定、client IP 用 header 告訴它，它產生的連結、轉址、OIDC 的 issuer 都會變成 http://localhost:8100 這種錯誤網址。
+B> 一定要傳：**Host $host**、**X-Forwarded-For $proxy_add_x_forwarded_for**、**X-Forwarded-Proto $scheme**（或 https）、X-Real-IP $remote_addr
+B> 後端也要設定**對外網址**：Forgejo **ROOT_URL = https://git.19.cs.nycu/**；Keycloak **KC_HOSTNAME=https://auth.19.cs.nycu**、**KC_PROXY_HEADERS=xforwarded**
+B> container registry push 很大：**client_max_body_size 0;**（不限制，否則 **413 Request Entity Too Large**）
+B> SSE / 串流回應：**proxy_buffering off;**；WebSocket：**proxy_http_version 1.1** + Upgrade / Connection header
+B> 隱藏後端 header：**proxy_hide_header X-Powered-By;**、proxy_hide_header Via;
+X> location / {
+X>     proxy_pass http://127.0.0.1:8101;
+X>     proxy_set_header Host $host;
+X>     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+X>     proxy_set_header X-Forwarded-Proto https;
+X>     client_max_body_size 0;
+X> }
+?mc docker push 到 git.19.cs.nycu 時，大的 layer 一直回 413。最可能要改哪個設定？
++ nginx 的 client_max_body_size（預設只有 1m）
+- Forgejo 的 ROOT_URL 與 LFS_MAX_FILE_SIZE
+- Docker 的 max-concurrent-uploads
+- PostgreSQL 的 max_connections
+E> 設成 0 代表不限制大小。
+?mc Keycloak 放在 nginx 後面，discovery 文件中的 issuer 卻是 http://127.0.0.1:8100/realms/sa。會造成什麼問題，該怎麼修？
++ issuer 不符；要設定對外網址
+- 沒有問題，issuer 只是顯示用
+- 改成 HTTP/2 就好
+- 要把 Keycloak 改聽 443
+E> token 的 iss 與 judge 預期的 https://auth.19.cs.nycu/realms/sa 不符；設定 KC_HOSTNAME 與 proxy headers 讓 Keycloak 知道對外網址。OIDC 用戶端會嚴格比對 issuer 字串。
+?mc 平台的串流 LLM 回應（SSE）經過 nginx 後，要等全部結束才一次出現。該調整？
++ 在該 location 設 proxy_buffering off;
+- 加大 client_max_body_size 的上限
+- 開啟 gzip 壓縮，讓回應更快傳到用戶端
+- 改用 HTTP/1.0 連到後端，避免使用 chunked 編碼
+E> nginx 預設會先把後端回應緩衝起來。
+
+@CARD hw3.p_containerdns | 實作：容器裡的名稱解析與信任 CA
+A> 容器是另一個世界：它看不到 host 的 /etc/hosts，也不信任你裝在 host 上的 CA。所以 Forgejo 要連 auth.19.cs.nycu 做 OIDC、平台要驗證 OIDC token、Forgejo 要用 verify-full 連 pg.19.cs.nycu，都得在容器裡「另外教一次」：名字指去哪、要相信哪個 CA。
+B> 容器**不讀 host 的 /etc/hosts**；用 Docker 內建 DNS（**127.0.0.11**）解析服務名稱，其他轉給 host 的上游 DNS
+B> 讓容器把 *.cs.nycu 指向 host 的 NGINX：**extra_hosts: ["auth.19.cs.nycu:host-gateway"]**
+B> 讓 pg.19.cs.nycu 在 Docker 網路內解析到 DB 容器（TLS verify-full 的主機名才對得上）：**networks.<net>.aliases: [pg.19.cs.nycu]**
+B> 容器信任你的 CA：image 內 **update-ca-certificates**，或掛載 CA 並設 **SSL_CERT_FILE**、**REQUESTS_CA_BUNDLE**（Python requests）、**NODE_EXTRA_CA_CERTS**（Node）；Java（Keycloak）有自己的 truststore（**KC_TRUSTSTORE_PATHS**）
+B> 測試：**docker compose exec forgejo getent hosts auth.19.cs.nycu**、在容器內 curl https://auth.19.cs.nycu/
+X>   forgejo:
+X>     extra_hosts:
+X>       - "auth.19.cs.nycu:host-gateway"
+X>     volumes:
+X>       - ./ca/root.crt:/usr/local/share/ca-certificates/sa-root.crt:ro
+X>   db:
+X>     networks:
+X>       backend:
+X>         aliases: [pg.19.cs.nycu]
+?mc host 的 /etc/hosts 已把 auth.19.cs.nycu 指向自己，Forgejo 容器卻解析不到。原因？
++ 容器不會讀取 host 的 /etc/hosts，需用 extra_hosts 或 DNS 設定
+- Forgejo 不支援 OIDC，要另外安裝外掛才會去解析 auth 網址
+- 需要重開 nginx，容器才會讀到 host 更新後的 /etc/hosts
+- extra_hosts 的 host-gateway 只能在 Windows 版 Docker 使用
+E> extra_hosts 會寫進容器自己的 /etc/hosts。
+?mc Forgejo 以 sslmode=verify-full 連 db:5432 失敗，錯誤是主機名與憑證不符。最好的修法？
++ 給 db 網路別名 pg.19.cs.nycu
+- 改用 sslmode=disable
+- 把伺服器憑證的 CN 改成 db 之後重新簽發
+- 用 IP 位址連線，略過主機名檢查
+E> 給 db 容器一個網路別名 pg.19.cs.nycu，Forgejo 改連 pg.19.cs.nycu。verify-full 會比對連線時用的主機名與 SAN；規格要求容器內也只能 TLS。
+?fill extra_hosts 中代表「host 本機 IP」的特殊值是＿＿
+= host-gateway
+E> Docker 20.10 起支援，會解析成 host 在預設 bridge 上的 IP。
+
+@CARD hw3.p_keycloak | 實作：Keycloak 的 realm 與 client credentials client
+A> Keycloak 裡的 realm 是「一個獨立的身分王國」，issuer 網址就是 https://auth…/realms/王國名。要給 judge 一個機器用的 client：打開 client authentication（有 secret 的 confidential client）並啟用 service accounts（允許 client credentials），judge 才能用 ID + secret 換 token。
+B> issuer：**https://auth.{STU_ID}.cs.nycu/realms/<realm>**；discovery 在其後加 **/.well-known/openid-configuration**
+B> confidential client：**Client authentication ON**；client credentials：**Service accounts roles 啟用**
+B> endpoints（Keycloak）：token **…/protocol/openid-connect/token**、introspect **…/token/introspect**、revoke **…/revoke**、JWKS **…/certs**
+B> 平台驗 token：檢查 **iss**、**exp**、簽章（JWKS），必要時檢查 **aud** / **azp**；要支援撤銷就呼叫 introspection
+B> Forgejo / 平台的使用者登入用同一個 realm 的另一個 client（authorization code flow）
+X> $ ISS=https://auth.19.cs.nycu/realms/sa
+X> $ TOKEN_EP=$(curl -s $ISS/.well-known/openid-configuration | jq -r .token_endpoint)
+X> $ curl -s -u "$CID:$SECRET" -d grant_type=client_credentials $TOKEN_EP | jq -r .access_token
+X> $ curl -s -u "$CID:$SECRET" -d token=$TOKEN $ISS/protocol/openid-connect/token/introspect | jq .active
+?mc 在 Keycloak 建立給 judge 使用的 client，要支援 client credentials grant，必須打開哪個設定？
++ Client authentication（confidential）與 Service accounts roles
+- 打開 Standard flow 與 Implicit flow，讓 client 可以直接拿到 token
+- 只要打開 Direct access grants 與 Implicit flow，client 就能用帳號密碼換到 token
+- Front channel logout 與 Consent required，讓 judge 登入時確認授權
+E> Service account 讓 client 能以自己的身分取得 token。
+?fill Keycloak realm 為 sa 時，issuer 是 https://auth.19.cs.nycu/＿＿/sa
+= realms
+E> discovery 就在 https://auth.19.cs.nycu/realms/sa/.well-known/openid-configuration。
+?mc introspection 回應 {"active": false} 代表？
++ token 無效：已過期、已被撤銷或不是這個 provider 發的
+- token 有效，但權限（scope）不足以存取資源
+- introspection endpoint 本身故障
+- 用戶端需要重新做一次 OIDC discovery 才能繼續正常使用
+E> RFC 7662：active=false 時不提供其他資訊。
+
+@CARD hw3.p_jwt | 實作：驗證 JWT access token
+A> JWT 是一張「自帶防偽標記的通行證」：header 說明用哪把鑰匙簽（kid、alg），payload 寫著發給誰、誰發的、何時過期，signature 是發證單位的簽章。驗證時不能只看內容，一定要用 provider 公布的公鑰（JWKS）驗簽，並檢查發行者與期限。
+B> 格式：**header.payload.signature**（各段 base64url）；payload 常見 claim：**iss**、**sub**、**aud**、**exp**、**iat**、**azp**、**scope**
+B> 驗證步驟：依 header 的 **kid** 從 **jwks_uri** 取公鑰 → 驗簽章 → **iss** 等於設定的 issuer → **exp** 未過（容許少量時鐘誤差）→（需要時）**aud**
+B> **alg 要固定**（例如只接受 RS256），不能相信 token 自己說的 alg（避免 alg=none 攻擊）
+B> JWKS 要快取並在找不到 kid 時重新抓（provider 會輪換金鑰）
+B> HTTP 慣例：沒帶或無效 token 回 **401**（WWW-Authenticate: Bearer）；token 有效但權限不夠回 **403**
+X> Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6Ij...
+?mc 平台驗證 JWT 時，下列哪個做法是錯的？
++ 依 token header 中的 alg 決定用什麼演算法驗證，包括 none
+- 依 header 中的 kid，從 provider 的 JWKS 找出對應的公鑰
+- 檢查 payload 的 iss 是否等於平台設定的 issuer 網址
+- 檢查 exp 是否已過期，並容許少量的時鐘誤差
+E> 驗證端要事先固定允許的演算法。
+?mt 配對 HTTP 狀態碼：
+> 401 :: 沒有 token 或 token 無效
+> 403 :: token 有效但沒有權限
+> 201 :: 成功建立資源
+> 404 :: 資源不存在
+E> WWW-Authenticate: Bearer error="invalid_token" 是 RFC 6750 定義的回應方式。
+?mc JWT 的 payload 可以被任何人 base64 解碼讀出來。這代表？
++ JWT 只防竄改、不防偷看，不應該放機密資料
+- JWT 沒有任何安全性，不應該使用
+- 必須透過 HTTPS 才能解碼 payload
+- 簽章也可以被解碼，算出私鑰
+E> 安全性來自簽章；內容是公開的。
+
+@CARD hw3.p_pgdocker | 實作：PostgreSQL 容器的 TLS 與權限設定
+A> 在容器裡跑 PostgreSQL 要注意三件事：憑證私鑰的擁有者與權限（postgres 很挑剔）、設定要用 -c 參數或掛設定檔傳進去、初始化腳本只在「第一次、資料目錄是空的時候」執行一次。
+B> 啟動參數：**command: ["postgres","-c","ssl=on","-c","ssl_cert_file=…","-c","ssl_key_file=…","-c","ssl_ca_file=…","-c","hba_file=…"]**
+B> 私鑰權限：擁有者 **postgres（容器內 UID 999）且 0600**（或 root 擁有、0640 且群組為 postgres），否則拒絕啟動
+B> **ssl_cert_file** 放伺服器憑證 **+ intermediate**；**ssl_ca_file** 放用來驗證 client 憑證的 CA（root 與 intermediate）
+B> pg_hba：只寫 **hostssl**，最後加 **host all all all reject** 明確拒絕非 TLS；judge 用 **cert**
+B> 帳號與資料庫：**/docker-entrypoint-initdb.d/*.sql** 只在**資料目錄為空**時執行；之後要改就直接連進去下 SQL
+B> PostgreSQL 18 的官方 image 調整過資料目錄位置，掛 volume 前先看 image 說明確認正確路徑
+X> -- init.sql
+X> CREATE ROLE forgejo LOGIN PASSWORD 'xxx';
+X> CREATE DATABASE forgejo OWNER forgejo;
+X> REVOKE ALL ON DATABASE forgejo FROM PUBLIC;
+X> CREATE ROLE judge LOGIN SUPERUSER;
+X> # pg_hba.conf
+X> local   all  all  peer
+X> hostssl all  judge  all  cert
+X> hostssl forgejo forgejo all scram-sha-256
+X> host    all  all  all  reject
+?mc PostgreSQL 容器啟動失敗，log 顯示 private key file has group or world access。應該怎麼修？
++ 讓私鑰的擁有者是容器內的 postgres 使用者，權限改成 0600
+- 把私鑰權限改成 0777，確保容器內的任何使用者都讀得到
+- 把私鑰放進 ssl_ca_file 而不是 ssl_key_file，就不會檢查權限
+- 關閉 ssl 再重新開啟，PostgreSQL 會自動修正私鑰權限
+E> postgres 拒絕使用其他人可讀的私鑰。
+?mc 在 /docker-entrypoint-initdb.d/ 新增了 SQL 檔，重啟容器後沒有執行。原因？
++ 初始化腳本只在資料目錄為空、第一次初始化時執行
+- 檔名必須以 .sh 結尾
+- 要先 docker compose build
+- PostgreSQL 18 不支援初始化腳本
+E> 已有資料時要手動 psql 執行，或清空 volume 重新初始化。
+?mc pg_hba.conf 最後加 host all all all reject 的作用？
++ 拒絕其餘所有 TCP 連線
+- 拒絕所有本機 socket 連線
+- 拒絕 judge 登入
+- 讓所有連線改用 TLS
+E> 明確拒絕任何沒有被前面 hostssl 規則接受的 TCP 連線（包括非 TLS 連線）pg_hba 由上而下比對，第一條符合的規則決定結果。
+
+@CARD hw3.p_forgejo2 | 實作：Forgejo 的設定重點
+A> Forgejo 的設定集中在 app.ini（容器中也能用 FORGEJO__區段__鍵 這種環境變數）。重點是讓它知道自己的對外網址、用 TLS 連 PostgreSQL、把登入交給 OIDC、開啟 container registry 與 Actions。
+B> **[server]**：ROOT_URL = https://git.{STU_ID}.cs.nycu/、DOMAIN、HTTP_PORT；SSH 不對外時 DISABLE_SSH
+B> **[database]**：DB_TYPE=postgres、HOST=pg.{STU_ID}.cs.nycu:5432、NAME=forgejo、USER=forgejo、**SSL_MODE=verify-full**（容器要信任你的 CA）
+B> OIDC 登入：新增 authentication source，provider **OpenID Connect**，**auto-discover URL = issuer/.well-known/openid-configuration**（CLI：forgejo admin auth add-oauth）
+B> **[packages] ENABLED=true**（container registry）；**[actions] ENABLED=true**
+B> main 保護：repo 設定的 **Branch protection**，禁止 force push 與刪除；預設分支 main
+B> 環境變數寫法：**FORGEJO__database__SSL_MODE=verify-full**、FORGEJO__server__ROOT_URL=…
+X>   forgejo:
+X>     image: codeberg.org/forgejo/forgejo:11
+X>     environment:
+X>       - FORGEJO__server__ROOT_URL=https://git.19.cs.nycu/
+X>       - FORGEJO__database__DB_TYPE=postgres
+X>       - FORGEJO__database__HOST=pg.19.cs.nycu:5432
+X>       - FORGEJO__database__SSL_MODE=verify-full
+X>     ports: ["127.0.0.1:8101:3000"]
+?fill 用環境變數設定 Forgejo 的 [server] ROOT_URL：FORGEJO__＿＿__ROOT_URL=https://git.19.cs.nycu/
+= server
+E> 格式是 FORGEJO__區段__鍵，兩個底線分隔。
+?mc 讓 Forgejo 用 OIDC provider 登入，auto-discover URL 應填？
++ issuer 加上 /.well-known/openid-configuration
+- issuer 加上 /token，Forgejo 會自動從 token endpoint 推出其他設定
+- OIDC provider 的首頁網址，Forgejo 會自動爬出需要的設定
+- Forgejo 自己的 ROOT_URL，因為回呼網址必須和它一樣
+E> Forgejo 會從 discovery 文件取得 authorization、token、userinfo endpoint。
+?tf Forgejo 的 ROOT_URL 設錯（例如 http://localhost:3000/），會讓 clone 網址、OAuth 回呼網址都變成錯誤的位址。
+=T
+E> OIDC 的 redirect URI 由 ROOT_URL 組成，必須與 provider 中登記的一致。
+
+@CARD hw3.p_runner | 實作：Forgejo runner 與 Docker-in-Docker
+A> runner 是「派工的工人」：先拿 Forgejo 發的報到碼（registration token）報到，之後不斷問「有沒有工作」；每個 job 開一個新容器執行。用 Docker-in-Docker 時，工人旁邊還有一台「專屬的小 Docker 主機」（docker:dind），job 裡的 docker build 都在那台上進行，不會碰到 host 的 Docker。
+B> 註冊：在 Forgejo 取得 runner token → **forgejo-runner register --no-interactive --instance https://git.19.cs.nycu --token … --labels docker:docker://…** → **forgejo-runner daemon**
+B> DinD：另開 **docker:dind** 服務（需要 **privileged: true**），runner 用 **DOCKER_HOST=tcp://dind:2376**（TLS）連它
+B> job 容器要**信任你的 CA**（clone、docker login、push 都走 HTTPS），也要能解析 git.{STU_ID}.cs.nycu（extra_hosts 或 DNS）
+B> dind 推 image 到你的 registry 也要信任 CA：把 CA 放進 dind 的 **/etc/docker/certs.d/git.{STU_ID}.cs.nycu/ca.crt**
+B> secrets 在 repo 的 Actions 設定中新增（部署用 SSH 私鑰、registry 密碼），在 workflow 用 **${{ secrets.NAME }}**
+X>   dind:
+X>     image: docker:dind
+X>     privileged: true
+X>     environment: [DOCKER_TLS_CERTDIR=/certs]
+X>     volumes: [dind-certs:/certs]
+X>   runner:
+X>     image: code.forgejo.org/forgejo/runner:6
+X>     environment:
+X>       - DOCKER_HOST=tcp://dind:2376
+X>       - DOCKER_TLS_VERIFY=1
+X>       - DOCKER_CERT_PATH=/certs/client
+?mc 為什麼 docker:dind 服務需要 privileged: true？
++ 容器內跑 dockerd 需要完整權限
+- 為了讓它能存取網路
+- 為了讀取 host 的 /etc/hosts
+- 為了使用 GPU
+E> 在容器內執行完整的 dockerd 需要建立 namespace、cgroup、掛載等，必須有完整權限。這也是 DinD 要和其他服務隔離、不要給不信任工作的原因。
+?mc job 中 docker push git.19.cs.nycu/... 出現 x509 錯誤，但 host 上 push 正常。原因？
++ dind 的 dockerd 沒信任你的 CA
+- runner 容器沒有對外的網路連線
+- registry 的帳號或密碼錯誤
+- job 沒有先執行 checkout 步驟
+E> 實際執行 push 的是 dind 裡的 dockerd，它沒有信任你的 CA。host 的 /etc/docker/certs.d 不會自動出現在 dind 容器中。
+?fill workflow 中取用名為 DEPLOY_KEY 的 secret：${{ ＿＿.DEPLOY_KEY }}
+= secrets
+E> secrets 不會出現在 workflow 的 log 中（會被遮蔽）。
+
+@CARD hw3.p_workflow | 實作：Forgejo Actions workflow
+A> workflow 是「生產線的作業說明書」：什麼事件觸發（推 tag）、在哪種工人上跑（runs-on 標籤）、照順序做哪些步驟（檢查 tag → build → push → 部署）。tag 名稱從 github.ref_name 拿到，一路傳給 image tag 和 /api/version。
+B> 位置：**.forgejo/workflows/*.yml**（也讀 .github/workflows）
+B> 觸發：**on: push: tags: ['v[0-9]+.[0-9]+.[0-9]+']**（只寫 tags 時，推 branch 不會觸發）
+B> 取得 tag：**${{ github.ref_name }}**（例如 v1.2.3）；在 job 開頭再用正規表示式檢查
+B> 版本寫進 image：**docker build --build-arg VERSION=$TAG**，Dockerfile 用 **ARG VERSION → ENV APP_VERSION=$VERSION**，/api/version 讀它
+B> 步驟：checkout → **docker login -u … --password-stdin** → build → push → SSH 部署
+X> on:
+X>   push:
+X>     tags: ['v[0-9]+.[0-9]+.[0-9]+']
+X> jobs:
+X>   release:
+X>     runs-on: docker
+X>     steps:
+X>       - uses: actions/checkout@v4
+X>       - run: |
+X>           TAG=${{ github.ref_name }}
+X>           echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || exit 1
+X>           echo "${{ secrets.REGISTRY_TOKEN }}" | docker login git.19.cs.nycu -u ci --password-stdin
+X>           docker build --build-arg VERSION=$TAG -t git.19.cs.nycu/hw3/llm-sandbox-platform:$TAG .
+X>           docker push git.19.cs.nycu/hw3/llm-sandbox-platform:$TAG
+?mc workflow 只寫了 on.push.tags，沒有寫 branches。推送 main 分支會觸發嗎？
++ 不會，只有符合 tags 的 tag 推送會觸發
+- 會，branches 沒寫的時候預設就是全部的分支
+- 只有 main 分支會觸發，其他分支不會
+- 會觸發，但不會 push image
+E> 符合規格「其他 tag 或分支不能 build image」。
+?mc 為什麼 docker login 要用 --password-stdin 而不是 -p 密碼？
++ 避免密碼出現在指令列參數中（process 列表、log 都看得到）
+- -p 不支援 token，只能用來傳一般密碼
+- --password-stdin 會把密碼快取起來，下次登入比較快
+- Forgejo registry 規定只能用 stdin 傳入密碼
+E> --password-stdin 從標準輸入讀取密碼，不會留在 shell history 或 process 列表。
+?mc 如何讓 GET /api/version 回傳 CI 正在建置的 tag？
++ build 時用 build-arg 注入
+- 程式啟動時執行 git describe
+- 從 Forgejo API 查詢最新 tag
+- 寫死在程式碼中，每次手動改
+E> build 時用 --build-arg 傳入 tag，Dockerfile 中轉成 ENV，程式讀這個環境變數。容器裡通常沒有 .git 目錄，build 時注入最可靠。
+
+@CARD hw3.p_sshdeploy | 實作：用 SSH key 安全地部署
+A> CI 要「遙控」host 換版本，最安全的作法是發給它一把「只能開一扇門的鑰匙」：這把 SSH key 在 host 的 authorized_keys 裡被限制成只能執行部署腳本，連 shell 都拿不到。就算 CI 的 secret 外洩，攻擊者也只能做「部署某個合法版本」這一件事。
+B> 專用的部署 key：私鑰存成 CI secret，公鑰放 host 部署帳號的 authorized_keys
+B> 限制：**restrict,command="/usr/local/bin/deploy-lmsp"**：不管對方要求執行什麼，都只跑這支腳本；原本的要求放在 **$SSH_ORIGINAL_COMMAND**
+B> 部署腳本**驗證參數**（只接受 ^v[0-9]+\.[0-9]+\.[0-9]+$），把 tag 寫進 compose 的 **.env**，再 **docker compose pull && up -d**
+B> CI 端：**known_hosts 預先放 host 的公鑰**，用 StrictHostKeyChecking=yes，避免被中間人冒充
+B> 能執行 docker 等於 root：部署帳號的能力要靠 forced command 限縮
+X> # ~deploy/.ssh/authorized_keys
+X> restrict,command="/usr/local/bin/deploy-lmsp" ssh-ed25519 AAAA... ci-deploy
+X> # /usr/local/bin/deploy-lmsp
+X> tag=$SSH_ORIGINAL_COMMAND
+X> echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo bad tag >&2; exit 1; }
+X> cd /home/judge/hw3 && sed -i "s/^LMSP_TAG=.*/LMSP_TAG=$tag/" .env
+X> docker compose pull platform && docker compose up -d platform
+?mc authorized_keys 中的 command="/usr/local/bin/deploy-lmsp" 有什麼效果？
++ 這把 key 只能執行指定的腳本
+- 登入後自動執行一次腳本，再給 shell
+- 只允許從某個 IP 登入
+- 讓 key 不需要密碼
+E> 用這把 key 登入時，不論要求執行什麼，sshd 都只執行指定的腳本，原本的指令放在 SSH_ORIGINAL_COMMAND。這叫 forced command，常用於備份、部署這類只需要做一件事的金鑰。
+?mc 為什麼部署腳本要用正規表示式檢查 SSH_ORIGINAL_COMMAND？
++ 它是不可信的遠端輸入
+- 為了讓 log 好看
+- sshd 要求一定要檢查
+- 為了加快部署
+E> 它來自遠端，必須當成不可信的輸入，避免被注入其他指令或任意字串。永遠假設遠端輸入可能是惡意的：白名單驗證，再使用。
+?fill authorized_keys 選項中，一次關閉 port forwarding、agent forwarding、PTY 等所有額外功能的是＿＿
+= restrict
+E> restrict 之後可以再個別打開需要的功能，例如 restrict,pty。
+
+@CARD hw3.p_dockerapi | 實作：平台透過 Docker API 管理 sandbox
+A> 平台跟 Docker 溝通不是打 docker 指令，而是對 /var/run/docker.sock 送 HTTP 請求（Docker Engine API），或用 SDK 包好的函式。建立、啟動、執行指令、查結果、刪除，都有對應的 API。
+B> 以 HTTP over unix socket：**curl --unix-socket /var/run/docker.sock http://localhost/containers/json**
+B> 生命週期：**POST /containers/create**（Image、Env、HostConfig：Binds/Mounts、NetworkMode、Dns、CapDrop、Memory、PidsLimit）→ **POST /containers/{id}/start** → **POST /containers/{id}/stop** → **DELETE /containers/{id}?force=true**
+B> 執行指令：**POST /containers/{id}/exec**（Cmd、WorkingDir=/workspace、AttachStdout/Stderr）→ **POST /exec/{id}/start**（串流輸出）→ **GET /exec/{id}/json**（Running、**ExitCode**）
+B> Tty=false 時輸出是**多工串流**：每段前面 8 bytes header（第 1 byte 1=stdout、2=stderr，最後 4 bytes 為長度）；要「依序合併」就讓指令自己 **2>&1**
+B> exec **沒有 stop API**：要停止 execution，得找出它的 process 再送訊號（例如記下 PID、用另一個 exec 對 process group 送 SIGTERM）
+B> Docker API 呼叫會形成 CLIENT span，名稱如 **POST /containers/create**
+X> curl -s --unix-socket /var/run/docker.sock -X POST -H 'Content-Type: application/json' \
+X>   -d '{"Image":"sandbox:latest","HostConfig":{"Binds":["sbx-123-ws:/workspace"],"PidsLimit":256}}' \
+X>   'http://localhost/containers/create?name=sbx-123'
+X> # 依序合併 stdout/stderr，並避免引號問題
+X> ["sh","-c","exec bash -c \"$1\" 2>&1","_","<使用者的 input>"]
+?mc 用 exec API（Tty=false）讀到的原始輸出開頭有奇怪的位元組。原因？
++ 輸出帶有 8-byte 多工 header
+- 輸出被 Docker 用 gzip 壓縮過
+- 容器的語系設定與 host 不同
+- 需要改用 HTTP/2 才能正確讀取
+E> Docker 用 8-byte header 多工 stdout 與 stderr，需要解析 header 才是真正內容。SDK（如 docker-py 的 demux）會幫你處理；Tty=true 不會多工，但會把 \n 轉成 \r\n。
+?mc 要取得某次 execution 的 exit code，應該呼叫？
++ GET /exec/{id}/json，讀 ExitCode（Running 為 false 時）
+- GET /containers/{id}/logs，從最後一行輸出解析 exit code
+- POST /exec/{id}/stop 停止 exec，回應中會包含它的 exit code
+- GET /containers/json 列出容器時，每個 exec 的結果都在裡面
+E> Running 為 true 時 ExitCode 還沒有意義（execution 狀態應為 running、exit_code 為 null）。
+?mc 為什麼把使用者的 input 當成 sh -c 'exec bash -c "$1" 2>&1' _ "<input>" 的參數，而不是字串拼接成指令？
++ 以參數傳遞不需要處理引號跳脫，input 中的引號或特殊字元不會破壞外層指令
+- 這樣執行比較快，因為 bash 不需要重新解析整個指令字串
+- bash 的 -c 參數不接受超過 100 個字的字串，所以要用位置參數
+- Docker 的 exec API 規定指令一定要用這種格式傳入
+E> $1 是第一個位置參數；_ 佔住 $0。
+
+@CARD hw3.p_lifecycle | 實作：pause / resume 與平台的優雅關機
+A> 平台關機時要「先幫每個房客收拾工作桌」：停掉正在跑的 execution、保留 /workspace、刪掉容器、狀態改成 paused。這些動作需要時間，所以 compose 給平台的關機寬限期要夠長，平台也要接住 SIGTERM 才有機會做事。
+B> /workspace 放在**每個 sandbox 一個 volume**（例如 sbx-<id>-ws）；容器名稱帶 sandbox_id，ID 本身存資料庫、pause/resume 不變
+B> pause：stop 執行中的 execution（狀態 **stopped**，保留已產生的輸出）→ 刪除容器（**不刪 volume**）→ paused
+B> resume：用同一個 image 與 volume **建立新容器**、套用相同的網路與環境變數 → running
+B> close：刪除容器**與 volume** → closed
+B> 平台收到 **SIGTERM** 時 pause 所有 running sandbox；compose 設 **stop_grace_period: 60s**（預設 10 秒可能不夠）；重啟後**不自動 resume**
+B> 啟動時對帳：資料庫說 running、但容器不存在的 sandbox 要修正狀態
+X>   platform:
+X>     stop_grace_period: 60s
+X>     volumes:
+X>       - /var/run/docker.sock:/var/run/docker.sock
+X> # Python：接住 SIGTERM
+X> signal.signal(signal.SIGTERM, lambda *_: pause_all_and_exit())
+?mc docker compose down 時，平台來不及 pause 所有 sandbox 就被殺掉。最可能的原因？
++ 預設寬限期只有 10 秒
+- 平台沒有掛 docker.sock
+- volume 太大
+- 平台用的是 alpine image
+E> 預設只等 10 秒就送 SIGKILL，要調高 stop_grace_period，並確保程式有處理 SIGTERM。若 CMD 是 shell form，平台甚至收不到 SIGTERM（PID 1 問題）。
+?mc resume 時為什麼不用 docker start 重新啟動原本的容器？
++ pause 時容器已被刪除；規格要求 resume 建立新容器，只有 /workspace 保留
+- docker start 不能用在掛了 volume 的容器，否則 /workspace 會被清空
+- 原本的容器 ID 會和新的 sandbox_id 衝突，資料庫寫不進去
+- docker start 需要 root 權限，而平台容器裡沒有 root
+E> 新容器會有新的 container ID，所以資料庫要用自己的 sandbox_id 追蹤。
+?tf close 一個 sandbox 時，應該連 /workspace 的 volume 一起刪除。
+=T
+E> Close：Delete the container and the kept content。
+
+@CARD hw3.p_sbxnet | 實作：怎麼讓 sandbox 的流量只能走平台
+A> 讓 sandbox 住在一座「只有一座橋的島」上：島（internal 網路）本身不通外面，唯一的橋就是平台容器。sandbox 的預設路由和 DNS 都指向平台；平台不幫忙轉送封包，只把 80、443、53 的連線「攔下來交給自己的 proxy 和 DNS」，其他封包自然就到不了任何地方。
+B> sandbox 只接 **internal 網路**（沒有對外路由）；平台同時接 internal 網路與一般網路
+B> DNS：建立容器時 **Dns=[平台 IP]**；預設路由：由有 NET_ADMIN 的輔助容器 **--network container:<sbx>** 執行 **ip route replace default via 平台 IP**（sandbox 本身沒有 NET_ADMIN 改不回來）
+B> 平台容器（需 **NET_ADMIN**）：**ip_forward 關閉**（不轉送）；iptables **REDIRECT** 把 tcp/80、tcp/443 導到 HTTP / HTTPS proxy，udp+tcp/53 導到 DNS
+B> 其他流量：沒有被 REDIRECT、也不轉送 → 被丟棄（也可明確 DROP）
+B> proxy 依 Host / SNI 自己用平台 DNS 解析再連線；用來源 IP 對應到 sandbox_id 以記錄事件
+X> # 平台容器內
+X> sysctl -w net.ipv4.ip_forward=0
+X> iptables -t nat -A PREROUTING -i eth1 -p tcp --dport 80  -j REDIRECT --to-ports 8080
+X> iptables -t nat -A PREROUTING -i eth1 -p tcp --dport 443 -j REDIRECT --to-ports 8443
+X> iptables -t nat -A PREROUTING -i eth1 -p udp --dport 53  -j REDIRECT --to-ports 5353
+?mc 平台容器把 ip_forward 關閉的目的？
++ 不替 sandbox 轉送封包
+- 讓 DNS 查詢變快
+- 防止平台被 OOM kill
+- 讓 sandbox 可以直接上網
+E> 平台不會替 sandbox 轉送任何封包，只有被 REDIRECT 給 proxy / DNS 的連線能出去。所有對外連線都必須由平台的程式代為發出，才能檢查與記錄。
+?mc iptables 的 REDIRECT 目標做了什麼？
++ 把連線導到本機的 port
+- 把封包丟棄
+- 把封包轉送到另一台主機
+- 加密封包
+E> 把封包的目的地改成本機的指定 port，讓本機程式（proxy）接手這條連線。透明代理的常見做法，用戶端不需要設定 proxy。
+?mc 平台如何知道某個連線來自哪個 sandbox？
++ 依連線的來源 IP
+- 依 HTTP User-Agent
+- 依 TLS 的 SNI
+- 依 DNS 查詢的內容
+E> 依連線的來源 IP，對照每個 sandbox 容器在 internal 網路上的 IP。建立容器後用 inspect 取得 IP，存進對照表。
+
+@CARD hw3.p_mitmimpl | 實作：HTTPS 攔截 proxy 的流程
+A> 攔截 HTTPS 的順序很重要：先偷看信封上的收件人（ClientHello 的 SNI），檢查名單、去真正的網站驗證身分與黑名單；確認沒問題，才用自己的印章臨時做一張該網站的證件給 sandbox。上游驗證失敗，就直接在握手時回一個 TLS alert 拒絕。
+B> ① 讀 **ClientHello 的 SNI**（還沒解密）→ 不在 allowlist、或是 IP → 記錄 block event 並斷線
+B> ② 用平台 DNS 解析 SNI、連到真網站，以 **VM 信任的 CA**（例如掛入 host 的 /etc/ssl/certs/ca-certificates.crt）驗證憑證鏈與主機名
+B> ③ 檢查撤銷：從憑證的 **CRL Distribution Points** 下載 CRL、**每 60 秒內更新**、檢查**整條鏈**（Python：**ssl.VERIFY_CRL_CHECK_CHAIN** 並載入 CRL）
+B> ④ 通過後，以**攔截 CA** 即時簽一張 **SAN = SNI** 的憑證（依 SNI 快取），完成與 sandbox 的握手；失敗則送 **TLS alert** 並記錄 tls_invalid / tls_revoked
+B> ⑤ 解密後逐一轉送 request：同一條連線上的**每個 request 各記一筆 event**；body 去掉 chunked、保留 Content-Encoding、base64
+?ord 攔截一條 sandbox 的 HTTPS 連線，合理的處理順序：
+> 讀取 ClientHello 中的 SNI 並檢查 allowlist
+> 解析 SNI、連到真網站並驗證憑證與 CRL
+> 以攔截 CA 簽發 SAN 為該網域的憑證，完成與 sandbox 的握手
+> 轉送並記錄每一個 HTTP request 與 response
+E> 先驗上游，才能在上游有問題時，用 TLS alert 拒絕 sandbox。
+?mc 為什麼平台要用「VM 信任的 CA」來驗證真網站，而不是 sandbox 裡的 CA？
++ sandbox 的信任清單可被竄改
+- sandbox 裡沒有任何 CA
+- VM 的 CA 比較新
+- 規格沒有理由
+E> sandbox 可以被 agent 任意修改（例如加入惡意 CA），平台的判斷不能依賴它。平台是信任邊界，要用自己可控的信任清單。
+?mc CRL 是什麼？
++ 已撤銷憑證的清單
+- 憑證的申請檔
+- 加密用的對稱金鑰
+- DNS 的記錄類型
+E> CA 定期發布的「已撤銷憑證序號清單」，用來判斷憑證是否被撤銷。另一種機制是 OCSP（即時詢問 CA）；HW3 指定用 CRL。
+
+@CARD hw3.p_dnsimpl | 實作：平台 DNS 伺服器
+A> 平台的 DNS 是「只轉接特定號碼的總機」：收到查詢先看名字是不是 ta.cs.nycu 家族，是就轉給 TA 的 DNS 並原封不動回覆，不是就回 NXDOMAIN。每通電話都要記錄成 event，並且即時檢查三條告警規則。
+B> 判斷 allowlist：qname **轉小寫、去掉結尾的 .**，等於 ta.cs.nycu 或以 **.ta.cs.nycu** 結尾（注意 evilta.cs.nycu 不算）
+B> 轉送到 **192.168.255.66**，把回應（含 rcode）原樣回給 sandbox；不在名單 → **NXDOMAIN**、verdict block、answers []
+B> event detail：qname、**qtype**（A、AAAA、TXT…）、**rcode**（NOERROR、NXDOMAIN、SERVFAIL）、answers（name、type、ttl、data 用 **dig 的 RDATA 格式**）
+B> RDATA 例：A → 192.168.255.10；CNAME → target.example.；TXT → "text"；MX → 10 mail.example.
+B> 告警：label > 40 字元 → dns_long_label；qtype TXT → dns_txt；同 sandbox 10 秒內第 21 次 → dns_burst（之後冷卻 10 秒）
+B> 實作工具：Python dnslib、Go miekg/dns，或 CoreDNS 加外掛
+X> def allowed(q):
+X>     q = q.lower().rstrip('.')
+X>     return q == 'ta.cs.nycu' or q.endswith('.ta.cs.nycu')
+?mc 用 q.endswith('ta.cs.nycu') 判斷 allowlist 有什麼漏洞？
++ evilta.cs.nycu 也會通過
+- 沒有漏洞，endswith 是正確的寫法
+- 結尾有 . 的名稱會被放行
+- 沒有漏洞，這樣寫是正確的
+E> evilta.cs.nycu 這種名稱也會通過；應檢查等於 ta.cs.nycu 或以 .ta.cs.nycu 結尾。網域比對要以 label 為單位。
+?mc dns event 中 qname 應記錄成？
++ 小寫、去掉結尾的點
+- 原樣保留大小寫與結尾的點
+- 只記錄第一個 label
+- 轉成 IP
+E> 小寫、去掉結尾的點，例如 llm.ta.cs.nycu。規格：qname (lowercase, no trailing .)。
+?mc 某個 allowlist 中的名稱，TA DNS 回應 NXDOMAIN。這筆 dns event 的 verdict 應該是？
++ allow
+- block
+- 不需要記錄
+- error
+E> allow（轉送的查詢一律 allow，不論 rcode）規格：Forwarded queries: verdict is allow, whatever the rcode。
+
+@CARD hw3.p_falcoimpl | 實作：用 Falco 寫 syscall 規則
+A> Falco 在 kernel 裡裝了「監視器」（eBPF），每個 syscall 都會被看到。規則就是「什麼條件要報警」：哪個 syscall、開了哪個檔、是誰（哪個容器、哪個指令）。平台再把 Falco 的警報對應到 sandbox，寫成 syscall event 並轉發 alert。
+B> 部署：在 host 上或特權容器中執行，driver 用 **modern eBPF**；輸出 **JSON**，用 **http_output**（或 program_output、falcosidekick）送給平台
+B> 規則結構：**rule、desc、condition、output、priority**；常用 macro：**open_read**、**open_write**、**spawned_process**
+B> 常用欄位：**evt.type**（openat、unlinkat、renameat2、fchmodat、truncate…）、**fd.name**、**proc.exepath**（實際執行檔，已解析 symlink）、**proc.cmdline**、**proc.pcmdline**、**container.id**
+B> 只監看 sandbox：condition 加 **container.name startswith "sbx-"** 或對照 container.id
+B> 用 syscall 層判斷，才能抓到 cat、python、dd、重導向（> 會以 O_TRUNC 開檔）等各種做法
+X> - rule: sandbox read sensitive file
+X>   condition: >
+X>     open_read and container.name startswith "sbx-" and
+X>     (fd.name in (/etc/shadow, /etc/gshadow, /etc/sudoers, /root/.bash_history, /proc/1/environ)
+X>      or fd.name startswith /run/secrets/ or fd.name startswith /etc/ssl/private/)
+X>   output: "path=%fd.name cmd=%proc.cmdline container=%container.id"
+X>   priority: WARNING
+?mc 執行 /usr/bin/nc（是指向 nc.openbsd 的 symlink），要記錄「symlink 解析後」的執行檔路徑，應該用哪個 Falco 欄位？
++ proc.exepath
+- proc.name
+- fd.name
+- evt.type
+E> 規格：path 是 File run by execve, symlinks resolved。
+?mc 用 echo > /root/.bash_history 清除歷史，在 syscall 層看起來是什麼？
++ 以寫入並截斷（O_TRUNC）的方式 open 該檔案
+- execve 一個名為 echo 的執行檔
+- unlink 刪除該檔案，再重新建立一個空檔
+- 不會產生任何 syscall，echo 是 shell built-in
+E> shell 的重導向由 shell 自己 open 檔案，echo 是 builtin。
+?mt 配對 Falco 規則欄位：
+> condition :: 觸發條件
+> output :: 警報訊息格式（可帶 %欄位）
+> priority :: 嚴重程度
+> macro :: 可重用的條件片段（如 open_read）
+E> Falco 內建規則檔定義了很多 macro 與 list，自訂規則可以直接引用。
+
+@CARD hw3.p_eventsql | 實作：events 資料表與查詢
+A> events 表是平台的「黑盒子」，所有網路、DNS、LLM、syscall 事件都寫在這裡。固定欄位放查詢常用的（誰、何時、哪類、結果），各類型的細節放在 jsonb 的 detail 中，彈性又能查。
+B> 建表：**id uuid PRIMARY KEY DEFAULT gen_random_uuid()**、sandbox_id uuid、**time timestamptz**、type text、verdict text、**detail jsonb**
+B> **timestamptz**：帶時區、存成 UTC，輸出可轉成 RFC 3339；不要用不帶時區的 timestamp
+B> 加 CHECK：type IN ('network','llm','dns','syscall')、verdict IN ('allow','block')
+B> 索引：**(sandbox_id, time)**；常查 detail 的欄位可建 **GIN 索引**
+B> jsonb 查詢：**detail->>'host'**（文字）、**detail->'answers'**（jsonb）、**detail @> '{"rule":"pipe_to_shell"}'**（包含）
+X> CREATE TABLE events (
+X>   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+X>   sandbox_id uuid NOT NULL,
+X>   time timestamptz NOT NULL,
+X>   type text NOT NULL CHECK (type IN ('network','llm','dns','syscall')),
+X>   verdict text NOT NULL CHECK (verdict IN ('allow','block')),
+X>   detail jsonb NOT NULL
+X> );
+X> CREATE INDEX ON events (sandbox_id, time);
+X> SELECT count(*) FROM events WHERE type='syscall' AND detail @> '{"rule":"tmp_script"}';
+?mc 為什麼 time 欄位建議用 timestamptz 而不是 timestamp？
++ timestamptz 會正確處理時區（內部存 UTC），不受伺服器時區設定影響
+- timestamptz 只佔 4 bytes，比 timestamp 省空間，事件量大時差很多
+- timestamp 欄位無法建立索引，所以依時間排序或做範圍查詢的時候會非常非常慢
+- PostgreSQL 18 已經把不帶時區的 timestamp 型別標記為移除
+E> 輸出時用 to_char 或在程式中格式化成 2026-12-01T10:00:05+08:00 的 RFC 3339 格式。
+?fill 查詢 detail 中包含 {"rule":"dns_txt"} 的事件，jsonb 的「包含」運算子是 detail ＿＿ '{"rule":"dns_txt"}'
+= @>
+E> @> 可以搭配 GIN 索引加速。
+?cmd 在 PostgreSQL 中產生一個隨機 UUID（SQL）：
+= SELECT gen_random_uuid();
+= select gen_random_uuid();
+= SELECT gen_random_uuid()
+E> PostgreSQL 13 起內建，不需要擴充套件。
+
+@CARD hw3.p_promimpl | 實作：Prometheus 設定與 /metrics 格式
+A> Prometheus 抄表時是「在 Docker 網路裡直接走到每台機器旁邊」，用服務名稱當地址，而不是繞到大門（NGINX）。它自己的網頁也要上鎖：用 web.config.file 設 basic auth，密碼存 bcrypt 雜湊。
+B> **prometheus.yml**：global **scrape_interval: 15s**；scrape_configs 每個 job 寫 **basic_auth**（username sa、password {STU_ID}）與 **targets**（用 compose 服務名稱，例如 ipsrv1:8000）
+B> Prometheus 網頁的 basic auth：**--web.config.file=web.yml**，內容 **basic_auth_users: { sa: <bcrypt 雜湊> }**（用 htpasswd -nBC 10 sa 產生）
+B> 暴露格式：**# HELP**、**# TYPE x counter**、**x_total{label="v"} 123**；每個 target 會自動有 **up** 指標（1=抓得到）
+B> 平台：**lmsp_sandboxes{status="running"}**（gauge，各狀態都輸出，0 也輸出）、**lmsp_executions_total{type="agent"}**（counter）
+B> 檢查：Prometheus 網頁的 **Status → Targets**、或查詢 **up{job="ip-srv"}**
+X> global: { scrape_interval: 15s }
+X> scrape_configs:
+X>   - job_name: llm-sandbox-platform
+X>     basic_auth: { username: sa, password: "19" }
+X>     static_configs: [ { targets: ['platform:8103'] } ]
+X> # web.yml
+X> basic_auth_users:
+X>   sa: $2y$10$...
+?mc Prometheus 的 target 寫成 127.0.0.1:8000，但 Prometheus 跑在容器裡，結果全部 down。原因？
++ 127.0.0.1 是容器自己
+- IP-Srv 沒有 /metrics
+- 15 秒太短
+- 需要用 HTTPS
+E> 容器內的 127.0.0.1 是 Prometheus 容器自己，不是 host；應改用 compose 服務名稱。compose 網路中的服務名稱由 Docker 內建 DNS 解析。
+?mc 查詢 up{job="ip-srv"} 得到三筆，其中一筆值為 0，代表？
++ 該 replica 這次沒有被成功 scrape（掛了、網路不通或認證失敗）
+- 該 replica 輸出的 metric 型別宣告錯誤，被 Prometheus 忽略
+- Prometheus 本身故障，這次抓到的所有資料都不可信
+- 該 replica 輸出的 metric 型別宣告錯誤
+E> up 是 Prometheus 自動產生的指標，不是服務自己輸出的。
+?mc /metrics 輸出的這行代表什麼：ip_srv_requests_total 42
++ counter 型別的指標，目前累計值是 42
+- 每秒 42 個請求（目前的速率）
+- 目前有 42 個 replica 在運作
+- 錯誤次數累計為 42 次
+E> 要看速率得用 rate(ip_srv_requests_total[1m])。
+
+@CARD hw3.p_otelimpl | 實作：把 log 與 trace 送到 OTLP collector
+A> 兩條管線：NGINX 的 access log 交給 OpenTelemetry Collector「讀檔、拆欄位、加上 service.name、用 client 憑證送出」；平台則直接在程式裡用 OpenTelemetry SDK 產生 log 和 span，透過環境變數設定送去哪裡、用哪張憑證。
+B> NGINX：**log_format … escape=json** 輸出 JSON（status 不加引號就是數字），或用一般格式再以 regex 解析；只寫入 access.log 的請求才會被送出（sa-probe 已被 if= 排除）
+B> Collector（contrib 版）：**filelog** receiver 讀 /home/judge/hw3/logs/access.log → 解析出 sa.uri、sa.host、sa.method、sa.user_agent、**sa.status（整數）**，**body 保留原始那一行** → resource 加 **service.name=nginx** → **otlphttp** exporter
+B> exporter TLS：**cert_file**（client 憑證 + intermediate）、**key_file**、**ca_file**（驗證 collector 的 CA）
+B> 平台 SDK 環境變數：**OTEL_SERVICE_NAME=llm-sandbox-platform**、**OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.ta.cs.nycu:4318**、**OTEL_EXPORTER_OTLP_CERTIFICATE**、**OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE**、**OTEL_EXPORTER_OTLP_CLIENT_KEY**
+B> OTLP/HTTP 路徑：**/v1/logs**、**/v1/traces**、/v1/metrics；用 **batch** processor / BatchSpanProcessor 減少請求數
+X> log_format sajson escape=json '{"uri":"$request_uri","host":"$host","method":"$request_method","ua":"$http_user_agent","status":$status}';
+X> # otel collector
+X> exporters:
+X>   otlphttp:
+X>     endpoint: https://otel.ta.cs.nycu:4318
+X>     tls: { cert_file: /certs/otel-client.fullchain.crt, key_file: /certs/otel-client.key, ca_file: /certs/ta-root.crt }
+?mc nginx 的 log_format 用 escape=json 並讓 "status":$status 不加引號，好處是？
++ 輸出合法 JSON，解析後 status 直接是數字，符合 sa.status 要求的整數型別
+- JSON 格式的 log 會被 nginx 自動壓縮，檔案比一般格式小很多
+- 用 escape=json 之後，nginx 會自動把 log 用 OTLP 送到 collector
+- JSON 格式會自動寫入 access log，所以不需要再寫 access_log 指令
+E> escape=json 會把變數中的特殊字元正確跳脫，避免產生不合法的 JSON。
+?fill OTLP/HTTP 上傳 trace 的路徑是 https://otel.ta.cs.nycu:4318/v1/＿＿
+= traces
+E> log 是 /v1/logs，metrics 是 /v1/metrics。
+?mc 平台的 OpenTelemetry SDK 要用 client 憑證連 collector，應設定哪兩個環境變數？
++ OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE 與 OTEL_EXPORTER_OTLP_CLIENT_KEY
+- OTEL_SERVICE_NAME 與 OTEL_RESOURCE_ATTRIBUTES_CERTIFICATE_AND_PRIVATE_KEY
+- SSL_CERT_FILE 與 SSL_KEY_FILE（Python 與 OpenSSL 共用的通用憑證設定）
+- OTEL_EXPORTER_OTLP_CERTIFICATE 與 OTEL_EXPORTER_OTLP_HEADERS
+E> OTEL_EXPORTER_OTLP_CERTIFICATE 則是用來驗證 collector 的 CA。
+
+@CARD hw3.p_spans | 實作：span 的父子關係與時間
+A> 一條 trace 是一次 API 請求的「行程表」。API 請求是起點（root span），途中每個 Docker 呼叫是它的子行程；execution 是背景任務，雖然是 API 請求派出去的（所以是它的子 span），但可以比 API 請求晚很多才結束；tool call 的起訖時間則來自 sallm-cli 事件裡的 time。
+B> 每個 API 請求一條 trace：root span 名稱 = **方法 + route 樣板**（POST /api/sandboxes/{id}/executions，**不要**放實際 ID，避免基數爆炸）
+B> Docker 呼叫：**CLIENT** span，名稱 **POST /containers/create** 等，parent 是發出呼叫的 span
+B> execution：**INTERNAL** span，parent 是 API span，**可以比 parent 晚結束**（背景執行時要把 context 傳到背景工作）
+B> tool call：從 tool_call 到相同 **call_id** 的 tool_result，**用事件中的 time 設定 start / end time**
+B> 失敗：span status **ERROR**（並記錄例外）；log 帶 trace_id / span_id 對應產生它的 span
+?mc root span 名稱為什麼用 /api/sandboxes/{id}/executions，而不是 /api/sandboxes/3f2b…/executions？
++ 用 route 樣板讓同類請求聚合在一起；放實際 ID 會讓名稱數量無限增加
+- 因為實際的 sandbox ID 是機密，不能出現在 trace 中
+- 因為 OpenTelemetry 規定 span 名稱不能包含數字或連字號
+- 為了讓 trace 比較短，放 ID 會讓每個 span 名稱超過長度上限
+E> 實際 ID 放在 lmsp.sandbox_id attribute。
+?mc API 請求很快回應，但 execution 在背景跑了 5 分鐘。execution span 應該？
++ 等 execution 結束才結束
+- 跟 API span 一起結束
+- 另開一條新的 trace
+- 不需要 span
+E> 仍以 API span 為 parent，在 execution 真正結束時才結束。規格：The execution span lasts from start to end and can end after the API request span。
+?tf tool call span 的開始與結束時間，應該用 sallm-cli 事件中的 time，而不是平台讀到事件的時間。
+=T
+E> 這樣 span 的時間才反映 agent 實際呼叫工具的時刻。
+
+@CARD hw3.p_alertimpl | 實作：告警的去重、冷卻與重送
+A> 告警系統要拿捏「不漏報也不洗版」：每個符合的事件、每條規則各報一次；dns_burst 這種「流量型」規則要有冷卻時間；送 Alert API 失敗要重試，但不能因此卡住整個平台。
+B> 一個事件符合多條規則 → **每條規則各送一個 alert**；JSON 的 **time 用事件發生的時間**（RFC 3339），不是送出的時間
+B> dns_burst：每個 sandbox 用**滑動視窗**（例如 deque 存最近 10 秒的查詢時間）；第 21 次送出後進入 **10 秒冷卻**
+B> 送出：**POST https://alert.ta.cs.nycu/api/alerts**，**Bearer token**，成功 **201**；失敗（網路錯誤、5xx）用**背景佇列 + 重試**，不要阻塞 proxy 或 DNS
+B> token 從 files.ta.cs.nycu 取得後存成 secret，不要寫進 git
+X> from collections import deque
+X> win = {}           # sandbox_id -> deque of timestamps
+X> def on_dns(sid, t):
+X>     q = win.setdefault(sid, deque())
+X>     q.append(t)
+X>     while q and q[0] <= t - 10: q.popleft()
+X>     if len(q) > 20 and t >= cooldown.get(sid, 0):
+X>         send_alert(sid, 'dns', 'dns_burst', t); cooldown[sid] = t + 10
+?mc 為什麼送 Alert API 應該放進背景佇列，而不是在處理 DNS 查詢時同步呼叫？
++ 避免外部 API 拖慢 DNS 與網路
+- Alert API 不接受同步請求
+- 背景佇列可以讓 alert 變少
+- 為了省記憶體
+E> 外部 API 變慢或失敗時，同步呼叫會拖慢甚至卡住 sandbox 的 DNS 與網路。把可能失敗或變慢的外部呼叫和主要的資料路徑分開，是常見的可靠性設計。
+?mc alert JSON 中的 time 應該填？
++ 觸發 alert 的事件發生時間
+- 送出 alert 的時間
+- sandbox 建立時間
+- 平台啟動或重新載入規則的時間
+E> 規格：time is the event time in RFC 3339。
+
+@CARD hw3.p_recovery | 實作：「什麼都會自己回來」的檢查清單
+A> judge 會關容器、重啟 Docker、重開機。要做到「什麼都會自己回來」，每一層都要有人負責拉起來：systemd 拉 nginx 和 docker，docker 依 restart policy 拉容器，容器靠 volume 找回資料，服務之間靠 healthcheck 與重試等待彼此。
+B> host 層：**systemctl enable nginx docker**；/etc/hosts、DNS、信任 CA 都是**持久設定**
+B> 容器層：每個服務 **restart: unless-stopped**（或 always）；需要等待的用 **depends_on + condition: service_healthy**
+B> 資料層：DB、Forgejo、Keycloak、Prometheus、平台的狀態都在 **volume / bind mount**；目前部署的版本 tag 寫在 **.env**
+B> 程式層：連不上依賴時**重試**而不是直接結束；啟動時與資料庫**對帳**（例如 sandbox 狀態）
+B> 實測：**docker compose down && docker compose up -d**、**systemctl restart docker**、**reboot** 三種都要測；用 **Ansible** 或腳本讓整套環境可重建
+?mc 執行 systemctl restart docker 後，哪個設定讓容器自動回來？
++ 容器的 restart policy（always 或 unless-stopped）
+- depends_on，Docker 會依照服務之間的依賴順序把容器重新啟動
+- healthcheck，容器在檢查失敗或 daemon 重啟時會被 Docker 自動重啟
+- docker compose up 時用的 -d 選項，讓容器在背景持續存活
+E> unless-stopped 時，若容器在重啟前是手動停止的，則不會自動回來。
+?mc 平台啟動時 PostgreSQL 還沒準備好，平台直接 exit 1，之後也沒再起來。最合適的修正組合？
++ 加入重試並等依賴 healthy
+- 把平台改成 Type=oneshot
+- 拿掉 PostgreSQL 的 TLS
+- 把兩個服務合併成一個容器
+E> 平台內加入連線重試，並在 compose 用 depends_on condition: service_healthy 與 restart policy。依賴可能暫時不可用，服務要能自己等待並重試。
+?tf 每次修改後只用 docker compose restart 測試，就能保證 down + up 之後也能正常運作。
+=F
+E> restart 不會重建容器；down + up 會刪除並重建，只有寫在 volume 和設定檔中的東西會留下。

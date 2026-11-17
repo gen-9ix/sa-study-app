@@ -1,0 +1,248 @@
+@CH cron | 週期性工作 cron / at / periodic | ⏰ | 09_Periodic_Processes.pdf
+
+@CARD cron.daemon | cron daemon 與 crontab 位置
+A> cron 是「永不睡覺的鬧鐘管家」：它讀每個人的鬧鐘表（crontab），時間一到就幫你執行指令。每個人最多一張自己的表，檔名就是你的帳號名。
+B> **cron daemon** 負責週期性執行：讀設定檔，準時執行指令
+B> 設定檔叫 **crontab**（cron table）；每個使用者**最多一個**，**以登入名稱命名**，用 crontab(1) 編輯
+B> 使用者 crontab 位置：**FreeBSD /var/cron/tabs**、**Debian /var/spool/cron/crontabs**、Red Hat /var/spool/cron
+B> 系統 crontab：**/etc/crontab**
+B> 相關 man：cron(8)、crontab(1)、crontab(5)
+?mt 配對系統與使用者 crontab 目錄：
+> FreeBSD :: /var/cron/tabs
+> Debian :: /var/spool/cron/crontabs
+> Red Hat :: /var/spool/cron
+E> 系統層都是 /etc/crontab。
+?tf 一個使用者可以擁有多個自己的 crontab 檔案。
+=F
+E> 每個使用者最多一個，以登入名稱命名。
+?sa 一台筆電每天凌晨 3 點用 cron 執行備份，但使用者晚上都會關機，結果備份從來沒跑過。請說明原因，並提出兩種解法。
+R> 原因：cron 只在排定的時間點檢查並執行工作，如果那個時刻機器是關機或睡眠狀態，這次工作就直接被跳過，開機後不會補跑。
+R> 解法一：使用 anacron（或 /etc/cron.daily 搭配 anacron）。anacron 以「天」為單位記錄每個工作上次執行的日期，開機後發現超過週期沒跑就會補執行，適合不是 24 小時開機的機器。
+R> 解法二：改用 systemd timer 並設定 Persistent=true，systemd 會記錄上次觸發時間，開機後若錯過排程就立刻補跑一次。
+R> 也可以把排程時間改到機器通常開著的時段，但不如前兩種可靠。
+P> cron 不會補跑關機期間錯過的工作
+P> anacron 會記錄上次執行日期並在開機後補跑
+P> systemd timer 的 Persistent=true 也能補跑
+
+@CARD cron.format | crontab 格式：分 時 日 月 週
+A> 五個欄位口訣「分時日月週」（像寫日期從小到大，最後補星期幾）。* 是「每個」、- 是「從…到…」、, 是「這幾個」、/ 是「每隔幾個」。星期 0 是星期日。
+B> 格式：**minute hour day month weekday command**
+B> minute **0-59**、hour **0-23**、day **1-31**、month **1-12**、weekday **0-6（0 = 星期日；Linux 7 也是週日）**
+B> **\*** 全部、**-** 範圍、**,** 列舉、**/** 間隔（1-59/2 = 1,3,5…59）
+B> 空行與行首空白忽略；# 開頭是註解；可設 name = value 環境變數（LOGNAME、SHELL、PATH、HOME、**MAILTO**）
+B> ⚠ 如果 day 和 weekday 都有指定（非 *），**符合任一個**就執行
+X> # minute hour day month weekday command
+X> 33 7 * * * /usr/local/bin/rsync -al --delete /home/ backup:/raid/home/
+M> 分時日月週（0 是禮拜天）
+?mt 配對 crontab 時間表示：
+> 45 10 * * 1-5 :: 週一到週五 10:45
+> */3 * * * * :: 每 3 分鐘
+> 0 0 14 2 * :: 2 月 14 日午夜
+> 5 0-6 * * * :: 0 點到 6 點的每個第 5 分
+> 30 15 5 * * :: 每月 5 日 15:30
+E> 欄位順序：分 時 日 月 週。
+?fill 每週日凌晨 3:15 執行，時間欄位寫成＿＿
+= 15 3 * * 0
+= 15 3 * * 7
+= 15 3 * * sun
+E> 分=15、時=3、週=0（星期日）。
+?fill 每天早上 8 點到下午 6 點之間每整點執行，時間欄位寫成＿＿
+= 0 8-18 * * *
+E> 分=0、時=8-18。
+?mc 0,30 * 13 * 5 代表什麼時候執行？
++ 每月 13 日以及每個星期五，每小時的 0 分與 30 分
+- 只有「13 號剛好是星期五」那天，每半小時
+- 每週五 13:00 與 13:30
+- 每月 13 日的 0 分和 30 分，星期五則全天不執行
+E> day 與 weekday 都指定時是「或」的關係。
+?fill 1-59/2 在分鐘欄位代表 1, 3, 5 …，最後一個是＿＿
+= 59
+E> 從 1 開始每隔 2。
+
+@CARD cron.special | 特殊時間字串 @reboot 等
+A> 懶人簡寫：@reboot 開機時一次、@hourly 每小時整點、@daily（= @midnight）每天午夜、@weekly 每週日午夜、@monthly 每月 1 日午夜、@yearly（= @annually）每年 1/1 午夜。
+B> **@reboot**：開機時執行一次
+B> **@yearly / @annually** = 0 0 1 1 *
+B> **@monthly** = 0 0 1 * *
+B> **@weekly** = 0 0 * * 0
+B> **@daily / @midnight** = 0 0 * * *
+B> **@hourly** = 0 * * * *
+B> （投影片另列 @every_minute、@every_second，屬於特定實作）
+?mt 配對特殊字串與五欄格式：
+> @hourly :: 0 * * * *
+> @daily :: 0 0 * * *
+> @weekly :: 0 0 * * 0
+> @monthly :: 0 0 1 * *
+> @yearly :: 0 0 1 1 *
+E> @midnight 同 @daily、@annually 同 @yearly。
+?mc 想讓腳本在每次開機時執行一次，crontab 可寫？
++ @reboot /path/to/script.sh
+- @boot /path/to/script.sh
+- 0 0 * * * /path/to/script.sh
+- @startup /path/to/script.sh
+E> @reboot。
+
+@CARD cron.cmd | crontab 指令
+A> crontab -e 是「打開我的鬧鐘表來改」、-l 是「念出來給我聽」、-r 是「整張撕掉」（小心！和 -e 只差一個鍵）、crontab file 是「用這張新表取代舊的」。
+B> **crontab -e [-u user]**：用編輯器編輯（某使用者的）crontab
+B> **crontab -l**：列出內容
+B> **crontab -r**：**刪除**目前的 crontab
+B> **crontab filename**：把檔案安裝成你的 crontab
+?cmd 編輯自己的 crontab：
+= crontab -e
+E> -e edit。
+?cmd 以 root 身分列出使用者 alice 的 crontab：
+= crontab -l -u alice
+= crontab -u alice -l
+E> -u 指定使用者。
+?mc crontab -r 會做什麼？
++ 刪除目前使用者的整個 crontab
+- 重新載入 crontab
+- 清空 crontab，但保留一份備份可還原
+- 還原上一版 crontab
+E> -r remove，而且通常不會確認！
+
+@CARD cron.allow | cron.allow / cron.deny 與 log
+A> allow 是「白名單：只有名單上的人能用」；deny 是「黑名單：名單上的人不能用」。預設所有人都能有自己的 crontab。
+B> 預設**所有使用者**都可以有 crontab
+B> **allow 檔**：只有列出的使用者可以用 crontab
+B> **deny 檔**：列出的使用者不能用
+B> FreeBSD：/var/cron/{allow,deny}，log 由 syslogd
+B> Debian / Red Hat：**/etc/cron.{allow,deny}**，log /var/log/cron
+?tf cron.allow 存在時，只有列在其中的使用者可以使用 crontab。
+=T
+E> allow 是白名單。
+?mc cron.allow 與 cron.deny 都不存在時（預設），誰可以使用 crontab？
++ 所有使用者
+- 只有 root
+- 沒有人
+- 只有 wheel 群組
+E> 預設所有使用者都可以有自己的 crontab。
+?fill Debian 上限制「只有哪些使用者能用 crontab」的檔案是 /etc/cron.＿＿
+= allow
+E> cron.allow 存在時就只看它；不存在才看 cron.deny。
+
+@CARD cron.system | 系統 crontab：/etc/crontab
+A> 系統 crontab 比個人的多一欄「以誰的身分執行」（who）。Linux 用 run-parts 執行 /etc/cron.daily 等目錄裡的所有腳本；如果有 anacron（筆電用，不假設一直開機）就交給它。
+B> /etc/crontab 格式多一欄 **user**：minute hour mday month wday **who** command
+B> FreeBSD：*/5 … root **/usr/libexec/atrun**、0 * … root **newsyslog**、1 3 * * * root **periodic daily**、15 4 * * 6 root **periodic weekly**、30 5 1 * * root **periodic monthly**
+B> Linux：17 * * * * root cd / && **run-parts --report /etc/cron.hourly**；daily / weekly / monthly 若有 anacron 則交給 anacron
+B> **anacron**：給筆電用，不假設系統一直開機的週期排程
+X> 25 6 * * * root test -x /usr/sbin/anacron || { cd / && run-parts --report /etc/cron.daily; }
+?mc /etc/crontab 和使用者 crontab 格式上的主要差異？
++ /etc/crontab 多了一欄指定要以哪個使用者執行
+- /etc/crontab 沒有分鐘欄位
+- /etc/crontab 只能用 @daily 這類字串
+- 完全相同
+E> 系統 crontab 有 who 欄位。
+?mc 筆電常常關機，想確保每日工作「錯過了也會補做」，適合用？
++ anacron
+- at
+- @reboot
+- run-parts
+E> anacron 不假設系統持續運作。
+
+@CARD cron.periodic | FreeBSD periodic
+A> periodic 是 FreeBSD 的「定期保養套餐」：/etc/periodic/daily、weekly、monthly、security 目錄裡放好編號的保養腳本，由 cron 定時叫 periodic 去執行整個目錄。檔名前面的數字決定順序；是否真正動作由 periodic.conf 的 YES 開關控制。
+B> **periodic(8)**：執行 /etc/periodic 下的週期系統功能（daily、weekly、monthly、security）
+B> 第三方/自訂：**/usr/local/etc/periodic**
+B> 設定：**/etc/periodic.conf**（覆寫 /etc/defaults/periodic.conf），如 daily_clean_tmps_enable="YES"
+B> **執行順序依檔名**（數字前綴，如 100.clean-disks）
+B> 目錄下**所有腳本都會被執行**（不像 rc.conf 需要 YES 才跑），腳本內再依 periodic.conf 決定要不要做事
+B> **由 crontab 驅動**（/etc/crontab 的 periodic daily 等行）
+?mc FreeBSD 的 periodic 是被什麼觸發執行的？
++ cron（/etc/crontab）
+- systemd timer
+- rc.conf 中的 periodic_enable
+- rc.conf
+E> cron（/etc/crontab 中的 periodic daily/weekly/monthly）periodic 本身不是 daemon。
+?tf periodic 目錄下的腳本執行順序由檔名的數字前綴決定。
+=T
+E> 例如 100.clean-disks 先於 200.backup-passwd。
+
+@CARD cron.at | at：一次性延後執行
+A> cron 是「每天都響的鬧鐘」，at 是「只響一次的便利貼提醒」。atq 看還有哪些便利貼、atrm 撕掉一張。
+B> **at**：在指定時間執行指令（一次性）；at [-q queue] [-f file] [-mldbv] time，或 -t [[CC]YY]MMDDhhmm[.SS]
+B> **atq**：查看 job 佇列；**atrm**：移除 job
+B> 權限：FreeBSD **/var/at/at.{allow,deny}**、Linux **/etc/at.{allow,deny}**
+B> 預設：**FreeBSD 只有 root** 能用 at；**Linux 預設每個使用者**都能用
+B> 驅動：**FreeBSD 由 cron 每 5 分鐘呼叫 /usr/libexec/atrun**；**Linux 由 atd.service** 驅動（systemctl status atd）
+B> 指令預設用 /bin/sh 執行
+?sa 試說明 periodic 以及 at 分別與 cron 的關係，以及 periodic 和 at 之間的差異。
+S> 2023 期末 Q7
+R> 與 cron 的關係：FreeBSD 的 periodic 由 cron 驅動，/etc/crontab 中有 periodic daily / weekly / monthly 的排程，cron 時間到就呼叫 periodic 去執行對應目錄的腳本。at 在 FreeBSD 也依賴 cron：/etc/crontab 每 5 分鐘執行 /usr/libexec/atrun 檢查並執行到期的 at job（Linux 則改由 atd daemon 負責）。
+R> 差異：periodic 是「週期性、重複執行」的系統維護框架，執行 /etc/periodic/{daily,weekly,monthly,security} 中依編號排序的一組腳本，行為由 /etc/periodic.conf 控制；at 是「一次性」的延後執行，使用者指定某個時間執行一次指令，執行完就從佇列移除（可用 atq / atrm 管理）。
+P> periodic 由 cron 定期呼叫
+P> at 由 cron 每 5 分鐘跑 atrun（FreeBSD）/ Linux 為 atd
+P> periodic 週期性系統維護腳本 vs at 一次性使用者指令
+?cmd 列出目前的 at job 佇列：
+= atq
+= at -l
+E> atrm <job> 刪除。
+?cmd 刪除編號 23 的 at job：
+= atrm 23
+= at -r 23
+= at -d 23
+E> atrm 後接 job 編號。
+?mt 配對：at 在不同系統由誰驅動
+> FreeBSD :: cron 每 5 分鐘執行 /usr/libexec/atrun
+> Linux :: atd.service daemon
+E> 所以在 Linux 上 at 沒反應時，要檢查 atd 是否 active。
+?tf 在 FreeBSD 預設設定下，一般使用者就可以使用 at 指令。
+=F
+E> FreeBSD 預設只有 root；Linux 預設每個人都可以。
+
+@CARD cron.p_debug | 實作：cron 工作沒跑怎麼查
+A> 手動執行好好的腳本，放進 cron 就不動，這是 SA 最經典的謎題。答案幾乎都是「cron 的環境跟你的 shell 不一樣」：PATH 很短、沒有讀你的 .bashrc、工作目錄是家目錄、% 是特殊字元。
+B> 看 cron 有沒有觸發：**journalctl -u cron**（Debian 的服務名是 cron）或 `grep CRON /var/log/syslog`
+B> cron 的 **PATH 只有 /usr/bin:/bin**：指令寫絕對路徑，或在 crontab 開頭設定 PATH=
+B> 把輸出存下來才看得到錯誤：`... >> /tmp/job.log 2>&1`（沒有 MTA 時，cron 想寄給你的錯誤信就消失了）
+B> crontab 裡的 **% 會被當成換行**：`date +%F` 要寫成 `date +\%F`
+B> 系統 crontab（/etc/crontab、/etc/cron.d/）**多一個使用者欄位**；/etc/cron.d/ 的檔名不能含 .
+B> 先用 `* * * * *` 每分鐘跑一次驗證，成功後再改成真正的時間
+X> PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+X> */5 * * * * /usr/local/bin/SnApper snapshot pool1 >> /var/log/snap.log 2>&1
+X> 0 3 * * * tar czf /backup/etc-$(date +\%F).tgz /etc
+?mc 腳本在終端機執行正常，放進 crontab 後顯示 command not found。最可能的原因？
++ cron 的 PATH 很短，腳本用到的指令所在目錄不在裡面
+- crontab 不支援執行 shell script
+- cron 只能以 root 身分執行工作
+- cron 以 sh 執行，不支援腳本中的 bash 語法
+E> 在 crontab 設 PATH，或腳本中一律使用絕對路徑。
+?mc crontab 中寫 `0 1 * * * tar czf /b/$(date +%F).tgz /etc`，結果一直失敗。問題在？
++ crontab 裡的 % 會被轉成換行，需要寫成 \%
+- $( ) 指令替換在 crontab 中不能使用
+- tar 在 cron 中不能使用相對路徑
+- 0 1 代表每分鐘執行一次
+E> 第一個 % 之後的內容會變成指令的 stdin。
+?cmd （Debian）查看 cron 這個 service 的 log：
+= journalctl -u cron
+= journalctl -u cron.service
+E> 可以看到每次觸發時執行的指令（CMD）。
+
+@CARD cron.p_timer | 實作：systemd timer（cron 的替代品）
+A> systemd timer 是「附在 service 上的鬧鐘」：.timer 決定什麼時候響，同名的 .service 決定響了要做什麼。比 cron 多的好處是：log 自動進 journal、錯過的工作開機後可以補跑、可以用 systemctl 查下次何時觸發。
+B> 兩個檔：**backup.service**（Type=oneshot，做事）與 **backup.timer**（[Timer] 設時間，[Install] WantedBy=timers.target）
+B> 時間：**OnCalendar=daily**、`OnCalendar=*-*-* 03:00:00`、`OnCalendar=Mon *-*-* 09:00`；相對時間：**OnBootSec=5min**、**OnUnitActiveSec=1h**
+B> **Persistent=true**：關機時錯過的那次，開機後補跑
+B> 啟用的是 timer 而不是 service：**systemctl enable --now backup.timer**
+B> **systemctl list-timers** 看所有 timer 與下次觸發時間；**systemd-analyze calendar '表達式'** 驗證時間寫得對不對
+X> # /etc/systemd/system/snap.timer
+X> [Timer]
+X> OnCalendar=*-*-* 03:00:00
+X> Persistent=true
+X> [Install]
+X> WantedBy=timers.target
+?cmd 列出系統所有 timer，以及它們下次與上次觸發的時間：
+= systemctl list-timers
+= systemctl list-timers --all
+E> --all 會連同未啟用的也列出來。
+?mc 寫好 snap.timer 與 snap.service 之後，要讓它開機自動生效，應該 enable 哪一個？
++ snap.timer
+- snap.service
+- 兩個都要
+- 都不用，放進目錄就生效
+E> timer 觸發同名的 service，service 本身通常沒有 [Install]。
+?fill 希望 timer 在關機期間錯過的觸發，開機後補跑一次，要在 [Timer] 加上 ＿＿=true
+= Persistent
+E> 類似 anacron 的行為。

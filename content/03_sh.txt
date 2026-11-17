@@ -1,0 +1,818 @@
+@CH sh | Shell Programming | 📜 | 04_ShellProgramming.pdf、hw1.pdf
+
+@CARD sh.why | 為什麼寫 Shell Script
+A> Shell script 是「膠水」：真正的重活交給現成工具（grep、awk、curl…），script 負責把它們黏在一起、照順序跑、看結果做決定。
+B> 自動化重複的指令工作，不用寫完整應用程式
+B> 用 pipe、redirection、exit status 把現有工具黏起來
+B> 適合系統管理、部署、監控、批次工作
+B> shell 是**直譯器**：腳本被逐行讀入、當作指令執行
+B> 原則：**大部分實際工作由現有指令完成**時，shell 最強
+?tf Shell 是直譯器，腳本內容會被讀入並當作指令執行。
+=T
+E> 不需編譯，逐行解析執行。
+?mc 下列哪種工作最「不」適合用 shell script 完成？
++ 需要複雜資料結構與大量數值運算的程式
+- 每天把 log 壓縮並搬到備份目錄
+- 依序呼叫幾個指令完成部署
+- 檢查服務是否存活並回報
+E> shell 擅長把現有指令黏起來；複雜邏輯改用 Python 等語言。
+
+@CARD sh.shebang | Shebang 與執行方式
+A> Shebang (#!) 是腳本第一行的「指定翻譯員」：kernel 看到 #!/bin/sh，就叫 /bin/sh 來念這份稿子。如果沒寫，就看「誰拿到稿子」，你用哪個 shell 去跑，它就用自己的口音念，可能念錯。
+B> **#!/bin/sh**：第一行指定直譯器；系統腳本的可攜預設
+B> **chmod +x hello.sh; ./hello.sh**：直接執行需要執行權限，kernel 依 shebang 啟動直譯器
+B> **sh hello.sh**：明確指定直譯器，**不需要執行權限**，shebang 只是註解
+B> **#!/usr/bin/env bash**：透過 PATH 找 bash（但 PATH 會影響到底跑哪個直譯器）
+B> 重視可重現性時，用**絕對路徑**指定直譯器
+B> 沒有 shebang 用 ./script 執行：execve 失敗（ENOEXEC），**呼叫它的 shell** 會自己接手用自己的語法執行 → 結果取決於你當下的 shell（bash、tcsh…）
+?sa 請說明 hw1.sh 第一行的 #!/bin/sh 是什麼並解釋其功能；若腳本中沒有該行，程式還可以正常執行並得出相同結果嗎？
+S> 2025 期末 Q7
+R> #!/bin/sh 稱為 shebang。直接執行腳本（./hw1.sh）時，kernel 的 execve 會讀到檔案開頭的 #!，改用後面指定的直譯器 /bin/sh 來執行這個檔案（等同 /bin/sh ./hw1.sh），確保用 POSIX sh 的語法解譯。
+R> 沒有這行時「不一定」得到相同結果：若用 sh hw1.sh 明確指定直譯器，結果相同（此時 shebang 本來就只是註解）。若用 ./hw1.sh，execve 會因不是可辨識的執行檔格式而失敗（ENOEXEC），由「目前呼叫它的 shell」自行接手執行，若當下是 bash 可能剛好能跑（但語法行為可能與 sh 不同），若是 tcsh 等語法不同的 shell 就會出錯；judge 透過 ssh 呼叫時使用的 shell 也不確定。所以應保留 shebang。
+P> shebang 指定直譯器路徑，kernel 依此啟動 /bin/sh
+P> sh hw1.sh 方式仍可執行
+P> ./hw1.sh 時由當下 shell 接手，結果依 shell 而定（如 tcsh 會失敗）
+?sa a. 什麼是 shebang？ b. 若沒有 shebang，是否就無法執行 shell script？（若是，請解釋原因；若否，請舉反例）
+S> 2023 期中 Q9
+R> a. shebang 是腳本第一行以 #! 開頭、後接直譯器絕對路徑的指示（例如 #!/bin/sh），讓 kernel 在直接執行該檔時知道要用哪個程式來解譯。
+R> b. 否。反例：sh script.sh 直接把檔案交給 sh 解譯即可執行，不需 shebang（也不需執行權限）；或在 shell 中用 . script.sh / source 讀入；甚至 ./script.sh 時目前的 shell 也會接手執行。
+P> a. #! + 直譯器路徑，指定解譯程式
+P> b. 否，舉出 sh script.sh 等反例
+?mc 檔案 a.sh 權限為 -rw-------，下列哪個指令「可以」執行它？
++ sh a.sh
+- ./a.sh
+- exec ./a.sh
+- a.sh（在 PATH 目錄中）
+E> sh a.sh 只需要讀取權限，因為是 sh 去讀檔案內容；直接執行需要 x 權限。
+?tf 用 #!/usr/bin/env bash 時，實際執行的 bash 由 PATH 決定。
+=T
+E> env 會在 PATH 中找 bash，所以 PATH 會影響結果。
+
+@CARD sh.perm | Permission denied 與執行權限
+A> 檔案像一道門，r 是能看、w 是能改、x 是「能當成程式啟動」。沒有 x 就像拿著劇本卻不能上台演，但你可以請別人（sh）念出來。
+B> 直接執行（./a.sh）需要 **x 權限**
+B> 解法：**chmod u+x a.sh**（或 chmod 700 / 755），或改用 **sh a.sh**
+B> 若檔案系統以 **noexec** 掛載，即使有 x 也不能直接執行
+?sa 為何執行 a.sh 會發生 Permission denied？如何解決，讓使用者可正常執行該 script？
+QX> $ ls -l a.sh
+QX> -rw------- 1 tsaimh users 21 Nov 27 14:40 a.sh
+QX> $ ./a.sh
+QX> ./a.sh: Permission denied
+S> 2023 期中 Q5
+R> 原因：a.sh 的權限是 rw-------，擁有者只有讀寫、沒有執行（x）權限，直接以 ./a.sh 執行時 kernel 檢查 x 位元失敗，所以 Permission denied。
+R> 解法：chmod u+x a.sh（或 chmod 700 a.sh）加上執行權限後再 ./a.sh；或不改權限，用 sh a.sh 讓直譯器讀取執行（只需讀取權限）。另外確認檔案系統沒有以 noexec 掛載，且腳本有正確的 shebang。
+P> 缺少 x（執行）權限
+P> chmod u+x a.sh 或 sh a.sh
+?cmd 只替檔案擁有者加上 deploy.sh 的執行權限：
+= chmod u+x deploy.sh
+= chmod u+x ./deploy.sh
+E> u = user（擁有者），+x 加上執行權。
+
+@CARD sh.var | 變數與參數展開（預設值）
+A> ${var:-預設} 是「你沒填我就先借你用一下」（不寫回）；${var:=預設} 是「你沒填我就幫你填上」（寫回）；${var:?訊息} 是「你沒填我就罷工並報錯」；${var:+替代} 是「你有填我才換成替代品」。
+B> name=value 當前 shell；export name=value 讓 child 繼承；讀取 "$name" 或 "${name}"
+B> **${var:-default}**：var 未設或空 → 用 default，**不賦值**
+B> **${var:=default}**：未設或空 → **賦值**再使用
+B> **${var:?message}**：未設或空 → 印訊息到 stderr 並**中止**
+B> **${var:+alternate}**：var **有值**時才用 alternate
+X> config=${CONFIG_FILE:-/etc/myapp.conf}
+X> : "${HOME:?HOME must be set}"
+?mt 配對（當 var 未設定或為空時）：
+> ${var:-x} :: 結果為 x，但不改 var
+> ${var:=x} :: 把 x 指定給 var 再使用
+> ${var:?msg} :: 印出 msg 並中止
+> ${var:+x} :: 結果為空（因為 var 沒有值）
+E> :+ 剛好相反，有值才替換。
+?mc unset A; echo "${A:-hi}"; echo "${A}" 會輸出？
++ hi 和一行空白
+- hi 和 hi
+- 兩行空白
+- 錯誤訊息
+E> :- 不會把預設值寫回 A。
+
+@CARD sh.strop | 參數展開：字串操作
+A> # 從「頭」砍、% 從「尾」砍（鍵盤上 # 在 $ 左邊、% 在 $ 右邊）；一個符號砍最短、兩個符號砍最長（貪心）。
+B> **${#var}**：字串長度
+B> **${var#pattern}**：移除**最短**符合的**前綴**；**${var##pattern}**：移除**最長**前綴
+B> **${var%pattern}**：移除**最短**後綴；**${var%%pattern}**：移除**最長**後綴
+X> path=/var/log/system.log
+X> base=${path##*/}   # system.log
+X> stem=${base%.log}  # system
+X> dir=${path%/*}     # /var/log
+M> # 在 $ 左邊砍頭、% 在 $ 右邊砍尾；雙寫 = 貪心
+?fill path=/var/log/system.log，${path##*/} 的結果是＿＿
+= system.log
+E> ##*/ 移除最長的「任意字元 + /」前綴，只剩檔名（等同 basename）。
+?fill f=archive.tar.gz，${f%.*} 的結果是＿＿
+= archive.tar
+E> % 移除最短的「.任意字元」後綴，只拿掉 .gz；${f%%.*} 才會變成 archive。
+?fill s=hello，${#s} 的結果是＿＿
+= 5
+E> ${#var} 是長度。
+
+@CARD sh.pos | 位置參數與特殊參數
+A> 把腳本想成一場比賽：$0 是比賽名稱（腳本名）、$1 $2 是選手、$# 是選手人數、$? 是上一場的比分、$$ 是自己的身分證號、$! 是最近一個「放到背景」的選手的號碼。
+B> **$0** 腳本名稱；**$1, $2…** 位置參數（從 $1 開始）
+B> **$#** 參數個數；**$?** 最近一個指令的 exit status
+B> **$$** 目前 shell 的 PID；**$!** 最近背景 pipeline 的 PID
+X> ./my_web_server &
+X> echo $! > /var/run/my_server.pid
+?mt 配對特殊參數：
+> $# :: 位置參數個數
+> $? :: 上一個指令的 exit status
+> $$ :: 目前 shell 的 PID
+> $! :: 最近背景 process 的 PID
+> $0 :: 腳本名稱
+E> 常考，務必背熟。
+?fill 執行 ./arg.sh abc 時，$# 的值是＿＿
+= 1
+E> 只有一個參數 abc；$0 不算。
+
+@CARD sh.atstar | "$@" vs "$*"
+A> "$@" 是「每位客人各自一張椅子」，即使客人名字有空白也不會被拆開；"$*" 是「把所有客人塞進同一張長椅」，變成一個字串。
+B> **"$@"**：每個參數保持獨立（保留原本的邊界）→ 轉傳參數用這個
+B> **"$*"**：所有參數合成**一個**字串（以 IFS 第一個字元連接）
+X> # 參數：one "two words" three
+X> for x in "$@"; do printf '<%s>\n' "$x"; done
+X> # <one> <two words> <three>
+X> printf '<%s>\n' "$*"
+X> # <one two words three>
+?mc 腳本收到三個參數 one "two words" three，for x in "$@" 會跑幾次迴圈？
++ 3 次
+- 4 次
+- 1 次
+- 0 次
+E> "$@" 保留邊界，"two words" 是一個參數。
+?mc 同樣的參數，printf '<%s>\n' "$*" 會印出幾行？
++ 1 行
+- 3 行
+- 4 行
+- 0 行
+E> "$*" 合成一個字串。
+
+@CARD sh.exit | Exit Status 是 Shell 的布林值
+A> Shell 沒有 true/false 型別，if 看的是指令的「成績」：0 = 成功 = 真。
+B> 每個指令都回傳整數 exit status；**0 成功**，非 0 失敗或其他狀況
+B> $? 是最近一個指令的狀態
+B> if、while、&&、|| 都是根據 exit status 做決定
+X> grep -q '^root:' /etc/passwd
+X> printf 'status = %s\n' "$?"
+?tf 在 shell 中，if 判斷的是指令的 exit status，而不是布林型別的值。
+=T
+E> exit status 0 視為真。
+?fill 取得「上一個指令」exit status 的特殊變數是＿＿
+= $?
+E> 0 代表成功，非 0 代表失敗。
+?mc 執行 false && echo A || echo B 會印出什麼？
++ B
+- A
+- A 和 B
+- 什麼都不印
+E> false 的 exit status 非 0，&& 後面不執行；整體失敗所以執行 || 後面的 echo B。
+
+@CARD sh.test | test 與 [ ]
+A> [ 其實是一個「指令」（就是 test），所以它和參數之間一定要空白；結尾的 ] 是它要求的最後一個參數。把 [ 想成一個人名，你不會把名字和下一個字黏在一起。
+B> **[ 是一個指令**，結尾 ] 是必要的參數
+B> [ 、運算子、] 前後**都要有空白**
+B> 測試裡的變數要加引號：[ "$mode" = production ] 在 $mode 為空時也安全
+B> ⚠ test 裡的 > < 會被 shell 當成 **redirection**！
+X> test -f /etc/passwd; echo $?
+X> [ -f /etc/passwd ]; echo $?
+?sa a. 下面這個指令會輸出什麼？ b. 若要把比較改成數值比較，應該怎麼改？改完後會輸出什麼？
+QX> $ test 14 > 123 ; echo $?
+S> 2023 期中 Q10
+R> a. 輸出 0。因為 > 被 shell 當成 output redirection，實際執行的是 test 14（stdout 導向到名為 123 的檔案，並建立該檔案）。test 只有一個非空字串參數時為真，所以 exit status 為 0。
+R> b. 改成 test 14 -gt 123 ; echo $?（或 [ 14 -gt 123 ]），數值比較 14 > 123 為假，輸出 1。
+P> a. 輸出 0
+P> a. > 是 redirection，建立檔案 123，test 14 為真
+P> b. 用 -gt，輸出 1
+?mc [ "$a"="$b" ] 這樣寫（等號兩旁沒空白）會怎樣？
++ 被當成單一非空字串，永遠為真
+- 正確比較兩個字串是否相等
+- 語法錯誤，test 會回報錯誤
+- 永遠為假，因為沒有運算子
+E> 沒空白就變成一個參數 "x=y"，test 單一非空字串為真。
+
+@CARD sh.ftest | 檔案測試
+A> 檢查檔案的「健康檢查表」：-e 存在嗎、-f 是一般檔嗎、-d 是目錄嗎、-L 是捷徑嗎、-r/-w/-x 能讀/寫/執行嗎、-s 有內容嗎。
+B> **-e** 存在；**-f** 一般檔案；**-d** 目錄；**-L** symbolic link
+B> **-r / -w / -x** 可讀 / 可寫 / 可執行
+B> **-s** 存在且大小 > 0
+B> **f1 -nt f2**：f1 比 f2 新
+?mt 配對 file test：
+> -d :: 是目錄
+> -f :: 是一般檔案
+> -s :: 存在且大小大於 0
+> -L :: 是 symbolic link
+> -x :: 可執行
+E> -e 只檢查存在。
+?cmd 若目錄 $dir 不存在就建立它（用 [ ] 與 ||）：
+= [ -d "$dir" ] || mkdir -p "$dir"
+= [ -d "$dir" ] || mkdir "$dir"
+E> 前面失敗（不存在）才執行 mkdir。
+
+@CARD sh.stest | 字串與整數比較
+A> 字串比較用符號（= !=），整數比較用「英文縮寫」（-eq -ne -gt -ge -lt -le）：equal、not equal、greater than、greater or equal、less than、less or equal。
+B> 字串：**-z** 長度為 0、**-n** 長度非 0、**=** 相等、**!=** 不等
+B> POSIX sh 用 **=** 不用 ==；[ ] 中避免用 < > 做字串排序
+B> 整數：**-eq -ne -gt -ge -lt -le**
+B> 組合條件用 shell 的 **&& ||**，不要用 [ ] 裡的 -a -o（歷史上有歧義）
+X> if [ "$count" -gt 10 ]; then printf 'large\n'; fi
+X> if [ -r "$file" ] && [ -s "$file" ]; then process "$file"; fi
+?mt 配對整數比較：
+> -eq :: 等於
+> -ne :: 不等於
+> -gt :: 大於
+> -le :: 小於或等於
+E> 字串用 = 和 !=。
+?fill 判斷字串 $s 長度為 0：[ ＿＿ "$s" ]
+= -z
+E> -z zero length；-n non-zero。
+?tf 在 POSIX sh 的 [ ] 中，建議用 == 比較字串。
+=F
+E> POSIX 是 =；== 是 bash 擴充。
+
+@CARD sh.arith | 算術展開 $(( ))
+A> $(( )) 是 shell 內建的計算機，只會整數，而且裡面的變數不用加 $。
+B> **$(( ... ))** 做整數運算
+B> 裡面的變數名通常不需要 $
+B> 比呼叫 expr 清楚
+X> count=8
+X> count=$((count + 9))
+X> count=$((count * 2))   # 34
+?fill count=8; count=$((count + 9)); count=$((count * 2)); 最後 count = ＿＿
+= 34
+E> (8+9)×2 = 34。
+?fill echo $((7 / 2)) 的輸出是＿＿
+= 3
+E> 整數運算，小數捨去。
+
+@CARD sh.if | if / elif / else 與 case
+A> case 是「依照外觀分類」：用 glob pattern 比對（不是 regex），每一類用 ;; 收尾，*) 是「其他全部」。
+B> if 根據 exit status 選分支（沒有內建布林型別）
+B> **case "$x" in pattern) … ;; esac**
+B> case 的 pattern 是 **shell glob**，不是 regex；可用 | 列多個
+B> 每個分支以 **;;** 結尾；*) 當預設
+X> case "$answer" in
+X>   [Yy]|[Yy][Ee][Ss]) printf 'yes\n' ;;
+X>   [Nn]|[Nn][Oo])     printf 'no\n' ;;
+X>   *) printf 'invalid input\n' >&2 ;;
+X> esac
+?tf case 的 pattern 使用的是正規表達式 (regex)。
+=F
+E> 是 shell glob pattern。
+?fill case 中每個分支結尾要用＿＿
+= ;;
+E> 兩個分號。
+
+@CARD sh.for | for 迴圈
+A> for 是「點名」：把清單上的名字一個一個叫出來。用 *.log 讓 shell 幫你點檔名是安全的；用 $(ls) 會把含空白的檔名拆成兩個人。
+B> 明確值：for x in red green blue; do …; done
+B> 安全處理檔案：for f in *.log; do …; done（處理沒有符合時的情況）
+B> **避免 for f in $(ls)**：檔名有空白、tab、換行、glob 字元時會壞掉
+B> 使用時記得 "$x" 加引號
+?sa 下面 shell script 的執行結果為何？
+QX> #!/bin/sh
+QX> for i in `seq 1 5`; do
+QX>     echo "Homework $i is easy!"
+QX> done
+S> 2023 期中 Q12
+R> 輸出五行：
+R> Homework 1 is easy!
+R> Homework 2 is easy!
+R> Homework 3 is easy!
+R> Homework 4 is easy!
+R> Homework 5 is easy!
+R> `seq 1 5` 經指令替換得到 1 2 3 4 5（換行被當成分隔），迴圈跑五次；雙引號中的 $i 會展開。在 sh 腳本中 ! 不會觸發歷史展開，所以原樣印出。
+P> 正確五行輸出
+P> 說明 seq 產生 1~5、$i 在雙引號中展開
+?mc 為什麼不建議寫 for f in $(ls)？
++ 檔名含空白或特殊字元時會被拆開或被展開
+- 因為 ls 不能用在腳本裡
+- 因為 for 不能接指令替換
+- $(ls) 的輸出包含顏色控制碼，檔名會比對失敗
+E> 用 for f in * 或 for f in *.log。
+
+@CARD sh.while | while 與 read
+A> while read 是「一行一行讀信」。IFS= 是「不要幫我修剪頭尾空白」，-r 是「反斜線照抄不要當跳脫」。重點陷阱：cat file | while … 的 while 跑在 subshell（另一個房間），在裡面數的數字，出了房間就消失。
+B> **while IFS= read -r line; do …; done < input.txt**
+B> **IFS=** 保留行首行尾空白；**read -r** 不解讀反斜線
+B> 需要迴圈後的變數值時，用 **redirect（< file）** 而不是 pipe 進 while
+B> pipe 進 while 會在 subshell 執行，變數改變不會傳回
+X> count=0
+X> cat data.txt | while read -r line; do count=$((count+1)); done
+X> echo "Total lines: $count"   # 常常是 0！
+?mc 上面範例的 count 最後為什麼是 0？
+QX> count=0
+QX> cat data.txt | while read -r line; do count=$((count+1)); done
+QX> echo "Total lines: $count"
++ while 在 subshell 中執行
+- read -r 讀不到資料
+- $((...)) 在迴圈中無效
+- cat 沒有輸出，因為 data.txt 被 read 鎖住了
+E> while 在 pipeline 的 subshell 中執行，變數改變不會傳回父 shell。改成 while …; done < data.txt。
+?mt 配對 read 寫法的作用：
+> IFS= :: 保留行首與行尾的空白
+> -r :: 不把反斜線當成跳脫字元
+> done < file :: 迴圈在目前 shell 執行，變數能保留
+E> 三件套：while IFS= read -r line; do …; done < file。
+
+@CARD sh.input | 安全讀取互動輸入
+A> 問使用者「確定要刪除嗎？[y/N]」，大寫的 N 代表預設；輸入奇怪的東西時，選比較安全的動作（不刪）。
+B> 用 **printf** 做提示（不用 echo -n，可攜性差）
+B> 輸入不預期時預設**安全**動作
+B> 指令支援時，在檔名前加 **--**（避免檔名以 - 開頭被當選項）
+X> printf "Delete temporary files? [y/N] "
+X> IFS= read -r answer
+X> case "$answer" in
+X>   [Yy]|[Yy][Ee][Ss]) rm -f -- "$tmpfile" ;;
+X>   *) printf 'Cancelled\n' ;;
+X> esac
+?mc rm -f -- "$f" 中的 -- 用途是？
++ 選項到此結束
+- 強制刪除
+- 遞迴刪除
+- 註解
+E> 表示選項結束，之後的參數一律當檔名（即使以 - 開頭）防止名為 -rf 之類的檔案被當成選項。
+?mc 腳本詢問「確定要刪除嗎？[y/N]」，使用者直接按 Enter 或輸入看不懂的內容時，應該怎麼處理？
++ 當成「否」，採取安全的預設動作
+- 當成「是」，繼續執行刪除
+- 重新詢問直到輸入正確為止才停
+- 忽略輸入，只刪除一半的檔案
+E> 輸入不預期時預設安全動作。
+?tf 用 printf 顯示提示文字比 echo -n 可攜性更好。
+=T
+E> echo 對 -n 與跳脫字元的處理在不同 shell 不一致。
+
+@CARD sh.tmp | 暫存檔與 trap 清理
+A> mktemp 是「抽號碼牌拿一個保證不會撞名的私人置物櫃」；trap 是「出門前設好鬧鐘：不管怎麼離開（正常結束、Ctrl-C、被 TERM），都記得清空置物櫃」。
+B> **tmpdir=$(mktemp -d) || exit 1**：讓 mktemp 決定唯一名稱
+B> 所有暫存檔放在同一個私有暫存目錄
+B> 建立後**立刻**註冊清理：**trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM**
+B> **EXIT** 適合腳本結束時的正常清理；用訊號**名稱**比數字好讀
+B> **SIGKILL 與 SIGSTOP 無法被 catch 或 ignore**
+?cmd 建立一個私有暫存目錄並把路徑存進變數 tmpdir：
+= tmpdir=$(mktemp -d)
+= tmpdir="$(mktemp -d)"
+= tmpdir=`mktemp -d`
+E> -d 建立目錄；名稱由 mktemp 保證唯一。
+?cmd 註冊清理：腳本結束、或收到 HUP、INT、TERM 時刪除 "$tmpdir"：
+= trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+H> trap '指令' 訊號列表
+E> 單引號讓 $tmpdir 在觸發時才展開。
+?tf trap 可以攔截 SIGKILL 來做清理。
+=F
+E> SIGKILL 與 SIGSTOP 不能被 catch、block 或 ignore。
+
+@CARD sh.func | Functions 與作用域
+A> function 和呼叫它的地方住同一間房（同一個 shell），所以在 function 裡改變數，外面也看得到；但 subshell / child process 是「另一間房子」，只拿到影本。
+B> 定義在使用之前；function 有**自己的位置參數** $1 $2…
+B> 預設**共享** shell 變數（除非用非 POSIX 的 local）
+B> **return** 設定 exit status（0-255），**不是**一般的回傳值
+B> 要「回傳文字」→ 印到 **stdout**，呼叫端用 $(...) 接
+B> 使用 $1 $2 前先驗證參數個數
+B> Subshell / child process 拿到 export 變數的**副本**，改變不會傳回 parent
+X> log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+X> copy_if_readable() {
+X>   [ "$#" -eq 2 ] || return 2
+X>   [ -r "$1" ] || return 3
+X>   cp -- "$1" "$2"
+X> }
+?tf function 中的 return 100 可以用來回傳任意整數或字串結果給呼叫者。
+=F
+E> return 只設定 0-255 的 exit status；要回傳資料請印到 stdout。
+?mc POSIX sh 中，在 function 內執行 x=5（沒有 local），呼叫完 function 後外面的 x 是？
++ 5
+- 原本的值
+- 空字串
+- 語法錯誤
+E> function 在同一個 shell 執行，共享變數。
+
+@CARD sh.getopts | getopts 解析選項
+A> getopts 是「選項掃描器」：'vf:' 的冒號代表「f 後面要帶一個東西」。每掃到一個，就把字母放進 opt、帶的值放進 OPTARG；OPTIND 是「下一個要看的位置」，最後 shift 掉已處理的選項。
+B> **getopts 'vf:' opt**：冒號表示該選項**需要參數**
+B> **$OPTARG**：目前選項的參數值
+B> **$OPTIND**：下一個要處理的參數索引
+B> 處理完 **shift $((OPTIND - 1))** 去掉已解析的選項
+B> 遇到無效選項 opt 會是 ?
+B> hw1：hw1.sh -t TASK_TYPE [-i TASK_ID] [-h]；無效參數要回非 0 exit code 並把 help 印到 **stderr**；參數順序任意
+X> while getopts 'vf:' opt; do
+X>   case "$opt" in
+X>     v) verbose=1 ;;
+X>     f) file=$OPTARG ;;
+X>     ?) exit 2 ;;
+X>   esac
+X> done
+X> shift $((OPTIND - 1))
+?fill 要讓 getopts 解析 -t（需帶值）、-i（需帶值）、-h（不帶值），optstring 可寫成＿＿
+= t:i:h
+= ht:i:
+= i:t:h
+= hi:t:
+= t:hi:
+= i:ht:
+E> 需要參數的字母後面加冒號。
+?mt 配對 getopts 相關變數：
+> OPTARG :: 目前選項所帶的參數值
+> OPTIND :: 下一個要處理的參數索引
+> shift $((OPTIND - 1)) :: 移除已解析過的選項
+E> getopts 是 POSIX 內建，取代舊的 getopt(1)。
+?mc hw1 規定「無效參數要回非 0 的 exit code，並輸出 help 訊息」。help 訊息應印到哪裡？
++ stderr
+- stdout
+- /dev/null
+- 一個 log 檔
+E> 規格要求印到 stderr；在 sh 中用 >&2。
+
+@CARD sh.robust | 錯誤處理與 set 選項
+A> set -u 是「打錯變數名就大叫」；set -x 是「邊做邊大聲念出每個步驟」（小心連密碼都念出來）。它們是工具，不是護身符。
+B> 檢查重要的失敗；診斷訊息送 **stderr**（printf … >&2）；用有意義的非 0 exit code
+B> 不要用長 pipeline 或沒檢查的指令替換把錯誤藏起來
+B> **set -u**：展開未設定的參數會變成錯誤 → 選用變數用預設值 ${PORT:-8080}
+B> **set -x**：展開後、執行前印出指令（trace），**可能洩漏密碼**；set +x 關閉
+B> **sh -x script.sh**：從外部開啟追蹤
+X> if ! cp -- "$src" "$dst"; then
+X>   printf 'copy failed: %s -> %s\n' "$src" "$dst" >&2
+X>   exit 1
+X> fi
+?mc 腳本開頭 set -u，之後 APP_PORT=${PORT} 而 PORT 沒設定，會發生什麼？
++ 出現 unbound variable 錯誤
+- APP_PORT 變成空字串並繼續
+- APP_PORT 變成字串 "${PORT}" 原樣保留
+- APP_PORT 變成 8080
+E> 用 ${PORT:-8080} 給預設值即可避免。
+?cmd 用 sh 以追蹤模式執行 script.sh（印出每個展開後的指令）：
+= sh -x script.sh
+= sh -x ./script.sh
+E> -x 追蹤；也可在腳本內 set -x / set +x。
+
+@CARD sh.signals | 常見訊號（腳本視角）
+A> 訊號是「敲門暗號」：HUP 是「電話斷了」、INT 是 Ctrl-C「喂停一下」、QUIT 是 Ctrl-\、TERM 是「請你下班」（可以先收拾）、KILL 是「直接斷電」（沒辦法攔）、STOP 是「定格」（也攔不住）。
+B> **SIGHUP**：terminal/session 結束，或「重新載入設定」的慣例，可 catch
+B> **SIGINT**：Ctrl+C，可 catch
+B> **SIGQUIT**：從 terminal quit，可 catch
+B> **SIGTERM**：禮貌的終止請求，可 catch
+B> **SIGKILL**：立即終止，**不可** catch
+B> **SIGSTOP**：停止 process，**不可** catch
+?mc 下列哪個訊號「無法」被程式 catch？
++ SIGSTOP
+- SIGINT
+- SIGHUP
+- SIGTERM
+E> SIGKILL 與 SIGSTOP 不可攔截。
+?mt 配對訊號與典型來源：
+> SIGINT :: 按 Ctrl+C
+> SIGHUP :: terminal / session 結束
+> SIGTERM :: kill 預設送出的禮貌終止
+> SIGKILL :: kill -9，立即終止
+E> 名稱比數字好，因為數字可能因平台而異。
+
+@CARD sh.regex | 正規表達式 (ERE)
+A> Regex 是「描述一群字串的語言」，跟檔名用的 glob 是兩種不同的語言：glob 挑「檔名」，regex 比對「資料內容」。讀 regex 從左到右：錨點定位置、字元類別定一個字元、量詞修飾前一個東西。
+B> **.** 任意單一字元；**[abc]** 列出的一個字元；**[^abc]** 不在其中的一個字元
+B> **^ / $** 行首 / 行尾
+B> **\*** 零或多次；**+** 一或多次；**?** 零或一次；**{m,n}** 次數範圍
+B> 例：^John（John 開頭）、[Ee][Nn][Dd]$（end 結尾不分大小寫）、^[A-Za-z0-9_]+$
+B> 預設：**grep = BRE**（-E 才是 ERE）、**sed = BRE**（-E 延伸）、**awk = ERE**
+?mt 配對 ERE 運算子：
+> + :: 一次或多次
+> ? :: 零次或一次
+> * :: 零次或多次
+> {2,4} :: 2 到 4 次
+> ^ :: 行首
+E> 量詞都是修飾「前一個」atom。
+?mc 下列哪個字串符合 regex colou?r？
++ color
+- colouur
+- colr
+- colouor
+E> u? 表示 u 出現 0 或 1 次：color 或 colour。
+?mt 配對工具的預設 regex 方言：
+> grep :: BRE（加 -E 為 ERE）
+> sed :: BRE（加 -E 為 ERE）
+> awk :: ERE
+E> 說明 pattern 時要講清楚用哪個工具和方言。
+?tf Shell 的 *.log 和 regex 的 .*\.log$ 是同一種 pattern 語言。
+=F
+E> 前者是 glob（選路徑名），後者是 regex（比對文字內容）。
+
+@CARD sh.sed | sed：串流編輯器
+A> sed 是一台「逐行加工機」：一行一行讀進「工作台」(pattern space)，照指令加工後吐出來。-n 是「預設不吐，除非我說 p」。原檔不會被改，除非用 in-place（-i）。
+B> 一次讀一行，對 pattern space 套用指令；預設印出結果，**-n** 抑制自動輸出
+B> 位址：**10**（第 10 行）、**/error/**（符合 regex 的行）、**10,20**（範圍）、**10,/END/**（第 10 行到下一個符合 END 的行）
+B> **p** 印出、**d** 刪除（原檔不變，除非 in-place）
+B> 替換：**s/old/new/**（每行第一個）、**/g** 全部、**/p** 替換成功才印、**/N** 第 N 個
+B> **i\** 在前面插入、**a\** 在後面附加、**c\** 取代整行
+X> sed -e '1,10d' -e 's/yellow/black/g' input.txt
+X> sed -n '/^root:/p' /etc/passwd
+?cmd 刪除 file.txt 中所有以 # 開頭的行（輸出到 stdout）：
+= sed '/^#/d' file.txt
+= sed -e '/^#/d' file.txt
+= sed "/^#/d" file.txt
+E> /regex/d。
+?cmd 只印出 /etc/passwd 中以 root: 開頭的行（用 sed）：
+= sed -n '/^root:/p' /etc/passwd
+= sed -n "/^root:/p" /etc/passwd
+E> -n 關掉自動輸出，p 只印符合的。
+?cmd 把 input.txt 中所有的 yellow 換成 black：
+= sed 's/yellow/black/g' input.txt
+= sed -e 's/yellow/black/g' input.txt
+= sed "s/yellow/black/g" input.txt
+E> 加 g 才會替換整行所有出現處。
+?mt 配對 sed 指令：
+> i\ :: 在選取行之前插入
+> a\ :: 在選取行之後附加
+> c\ :: 取代選取的行
+> d :: 刪除選取的行
+E> i = insert、a = append、c = change。
+
+@CARD sh.awk | awk：pattern { action }
+A> awk 的世界觀：輸入被切成一筆筆紀錄（通常是行），每筆再切成欄位 $1 $2…。每條規則是「看到符合 pattern 的紀錄，就做 action」。沒寫 pattern = 每筆都做；沒寫 action = 印出整筆。
+B> 語法：**awk 'pattern { action }'**
+B> pattern：**/regex/**、**BEGIN**（讀任何輸入前）、**END**（全部處理完後）、**運算式**（如 $3 > 1000）
+B> 內建變數：**$0** 整筆、**$1…** 欄位、**NF** 欄位數、**NR** 紀錄編號、FILENAME、**FS** 輸入分隔、**OFS** 輸出分隔
+B> **-F:** 設定分隔符
+X> awk 'BEGIN { print "start" } /error/ { count++ } END { print count }' log.txt
+X> awk -F: '$1 == "root" { print "uid=" $3, "home=" $6 }' /etc/passwd
+?mt 配對 awk 內建變數：
+> NF :: 目前紀錄的欄位數
+> NR :: 目前紀錄編號（第幾行）
+> $0 :: 整筆紀錄
+> FS :: 輸入欄位分隔符
+> OFS :: 輸出欄位分隔符
+E> 用 $NF 可取最後一欄。
+?cmd 用 awk 印出 file.txt 中第 3 欄大於 1000 的行的第 1 欄：
+= awk '$3 > 1000 {print $1}' file.txt
+= awk '$3>1000{print $1}' file.txt
+= awk '$3 > 1000 { print $1 }' file.txt
+E> 運算式當 pattern。
+?mc awk 中 END { … } 何時執行？
++ 所有輸入處理完之後
+- 讀入任何輸入之前
+- 每一行處理完之後
+- 只有遇到錯誤時
+E> BEGIN 在前，END 在後。
+
+@CARD sh.case | 案例：健康檢查腳本
+A> 好腳本像好員工：只做一件事（檢查主機活著沒）、用 exit status 回報結果，通知就交給排程或監控系統去做。
+B> 脆弱寫法：解析 ping 給人看的統計輸出、可預測的暫存檔名、變數不加引號、綁定特定 mail 解析
+B> 較好寫法：**直接用 ping 的 exit status**、驗證剛好一個參數、所有展開加引號、回傳有意義的 exit status，讓 scheduler 決定後續
+X> [ "$#" -eq 1 ] || { usage; exit 2; }
+X> if ping -c 3 "$host" >/dev/null 2>&1; then
+X>   printf '%s is reachable\n' "$host"; exit 0
+X> else
+X>   printf '%s is unreachable\n' "$host" >&2; exit 1
+X> fi
+?mc 健康檢查腳本為什麼建議直接用 ping 的 exit status，而不是解析 ping 的輸出文字？
++ 輸出格式會因實作與語系不同而改變，exit status 穩定
+- ping 的 exit status 會告訴你延遲有多少毫秒，資訊比文字更多
+- 因為讀 exit status 比解析文字快很多
+- 因為 grep 無法處理 ping 的輸出格式
+E> 不依賴 localization-sensitive 的輸出解析。
+?mc 健康檢查腳本用 /tmp/check.tmp 這種固定檔名當暫存檔，有什麼問題？
++ 檔名可預測，會被搶先或互相覆蓋
+- /tmp 不能寫入
+- /tmp 在重開機前不會清空，會占滿磁碟
+- 暫存檔一定要放在家目錄
+E> 檔名可預測，可能被其他使用者預先建立或用 symlink 攻擊，也會和同時執行的另一份腳本互相覆蓋。改用 mktemp 產生不可預測的檔名。
+
+@CARD sh.hw1 | HW1 重點回顧
+A> HW1 是一場「只准用 sh 和常見工具」的闖關：用 curl 跟 task server 講 JSON、用 jq 解析、用 getopts 處理參數、通過 shellcheck 檢查。
+B> 腳本放在 /home/judge/hw1.sh，選項 -t TASK_TYPE（SYS_INFO / WORDLE / DONT_WORDLE / WORD_500）、-i TASK_ID、-h
+B> 無效參數：**非 0 exit code** + 確切的 help 訊息到 **stderr**；參數位置任意
+B> 限制：只能用 **sh**，不能用其他直譯器/編譯器（Python、Perl、GCC…），不能呼叫自寫的其他程式
+B> 工具：curl（HTTP API：GET、POST /tasks、POST /tasks/:id/submit、DELETE…）、jq（解析 JSON）、awk、grep、sed、cut、sort
+B> **shellcheck -s sh -e SC2086 -a hw1.sh** 要回傳 0，且不可在檔案中停用檢查
+B> Wordle 回饋：A 位置對、B 字母對位置錯、X 不在答案中；WORD_500 只給 A/B/X 的「數量」
+?mc HW1 中，用 shell 解析 task server 回傳的 JSON，最適合的工具是？
++ jq
+- tr
+- xargs
+- wc
+E> jq 是 JSON 處理器，課程允許的常見工具。
+?mt 配對 HTTP API 操作與 curl 用法：
+> 建立任務 POST /tasks :: curl -X POST -H 'Content-Type: application/json' -d '{...}' URL/tasks
+> 查詢任務 GET /tasks/:id :: curl URL/tasks/ID
+> 刪除任務 DELETE /tasks/:id :: curl -X DELETE URL/tasks/ID
+E> -X 指定方法、-H 加 header、-d 帶 body（有 -d 時預設就是 POST）。
+
+@CARD sh.p_debug | 實作：腳本 debug 三件套
+A> 腳本出錯像「黑盒子吐出一個怪結果」。bash -n 是先檢查文法、bash -x 是把黑盒子打開，每執行一行就把「展開後的實際指令」印給你看，一眼就能看出哪個變數是空的。
+B> **bash -n script**：只檢查語法，不執行
+B> **bash -x script**：執行並印出每一行展開後的指令（前面有 +）；只想看某一段就在腳本裡包 **set -x** 與 **set +x**
+B> **shellcheck script**：靜態分析，抓沒加引號、用錯 test 等常見錯誤
+B> debug 訊息寫到 stderr：`echo "debug: id=$id" >&2`，才不會汙染要給別人解析的 stdout
+B> 出錯時印行號：`trap 'echo "error at line $LINENO" >&2' ERR`
+B> 每個指令後立刻 `echo $?` 可以確認它的 exit status
+X> bash -n SnApper && echo "syntax ok"
+X> bash -x SnApper snapshot pool1 2>&1 | less
+X> PS4='+ ${BASH_SOURCE}:${LINENO}: ' bash -x SnApper list
+?cmd 只檢查 SnApper 這個腳本的語法，不要真的執行：
+= bash -n SnApper
+= bash -n ./SnApper
+E> -n = noexec。
+?mc `bash -x script.sh` 的輸出中，以 + 開頭的行代表什麼？
++ 展開後即將執行的指令
+- 執行成功的指令
+- 執行失敗的指令
+- 腳本裡的註解
+E> 即將執行的指令，而且是變數與替換都展開之後的樣子。所以空變數、多出來的空白，一看就知道。
+?tf debug 用的訊息應該印到 stdout，這樣使用者一定看得到。
+=F
+E> 應該印到 stderr（>&2）。stdout 常被其他程式或 judge 拿去比對，混進 debug 訊息就會錯。
+
+@CARD sh.p_subcmd | 實作：子指令式 CLI 的骨架
+A> `git commit`、`btrfs subvolume`、HW2 的 `SnApper snapshot` 都是「主指令 + 子指令 + 選項」。骨架就三步：看 $1 決定走哪條路、shift 把子指令吃掉、剩下的參數交給那條路自己的 getopts。
+B> 用 **case "$1" in** 分派子指令；**shift** 之後 $2 變 $1，後面的選項才輪得到 getopts
+B> 沒給參數、給 -h、或給了不認得的子指令：印 **usage**；錯誤用法 exit 非 0
+B> 規格若是 `snapshot SUBVOL [-c N]`（選項在位置參數後面）：先取 `subvol=$1; shift`，再跑 getopts
+B> 每個子指令寫成一個 function，裡面變數用 **local**；function 內重跑 getopts 前設 **OPTIND=1**
+B> 需要 root 的工具開頭先檢查：`[ "$(id -u)" -eq 0 ] || { echo "need root" >&2; exit 1; }`
+X> usage() { cat <<'EOT'
+X> Usage:
+X> SnApper [-h]: show this message
+X> EOT
+X> }
+X> cmd=$1; [ $# -gt 0 ] && shift
+X> case "$cmd" in
+X>   snapshot) do_snapshot "$@" ;;
+X>   list)     do_list "$@" ;;
+X>   -h|"")    usage ;;
+X>   *)        usage >&2; exit 1 ;;
+X> esac
+?mc 腳本以 `tool list -p pool1` 呼叫。在 `case "$1"` 判斷出 list 之後、呼叫 getopts 解析 -p 之前，必須先做什麼？
++ shift，把 list 這個子指令移出位置參數
+- unset 1，把第一個位置參數清掉
+- 再執行一次 case，讓它往下比對
+- export OPTARG，讓 getopts 從頭開始
+E> getopts 從 $1 開始解析，遇到不是選項的字就停，所以 list 要先移走。
+?fill 在 function 裡第二次使用 getopts 之前，應該把變數 ＿＿ 重設為 1
+= OPTIND
+E> OPTIND 記錄解析到第幾個參數，不重設會從上次停的地方繼續。
+?mc 用 heredoc 印 usage 時寫成 `cat <<'EOT'`（分隔字加引號），效果是？
++ 內容原樣輸出，裡面的 $ 和反引號都不會被展開
+- 內容原樣輸出，但會自動把 TAB 換成空白、移除行尾空白
+- 輸出會自動送到 stderr
+- 每行開頭的 TAB 會被移除
+E> 不加引號的 heredoc 會做變數展開；移除開頭 TAB 的是 <<-。
+
+@CARD sh.p_printf | 實作：printf 排出整齊的欄位
+A> echo 是「隨手喊一聲」，printf 是「照著表格格線填字」。HW2 的 list 要求欄位對齊而且不能用 TAB，這正是 printf 的 %-6s 在做的事：靠左、固定寬度、用空白補滿。
+B> `printf '格式\n' 參數...`：**%s** 字串、**%d** 整數；**%-10s** 靠左佔 10 格、**%5d** 靠右佔 5 格；不會自動換行，要自己寫 `\n`
+B> 參數比格式多時，格式會**重複套用**：`printf '%s\n' a b c` 印三行
+B> 時間格式：`date +'%F %T'` 得到 2025-10-02 20:57:50；`date -d @1759409870 +'%F %T'` 把 epoch 秒數轉成可讀時間；`date -d '2025-10-02 20:57:50' +%s` 反過來
+B> 已經有空白分隔的輸出想對齊：接 **column -t**
+B> 檢查輸出有沒有偷藏 TAB：`cmd | cat -A`，TAB 會顯示成 **^I**、行尾顯示 **$**
+X> printf '%-6s%-10s%s\n' ID SUBVOLUME TIME
+X> printf '%-6s%-10s%s\n' "$id" "$sub" "$time"
+X> SnApper list | cat -A | head -n 3
+?cmd 用 printf 印出「ID」靠左佔 6 格、接著「NAME」，最後換行：
+= printf '%-6s%s\n' ID NAME
+= printf "%-6s%s\n" ID NAME
+= printf '%-6sNAME\n' ID
+E> - 表示靠左，6 是最小寬度。
+?mc 懷疑腳本輸出的欄位是用 TAB 分隔的，怎麼確認？
++ 把輸出接到 cat -A，TAB 會顯示成 ^I
+- 把輸出接到 od -c | head -1，看看第一個字元
+- 用 sort 看看欄位的排序順序
+- 用 echo $? 看指令的回傳值
+E> cat -A 會把不可見字元顯示出來，行尾的 $ 也能抓出多餘空白。
+?fill date 要輸出 2025-10-02 20:57:50 這種格式，可以寫 date +'%F ＿＿'
+= %T
+E> %F 等於 %Y-%m-%d，%T 等於 %H:%M:%S。
+
+@CARD sh.p_parse | 實作：解析其他指令的輸出
+A> 寫管理腳本有一半時間在「讀別的指令吐出來的表格」。兩個主力：awk 負責挑欄位與篩選，while read 負責一行一行拿進 shell 變數處理。最大的坑是「pipe 右邊的 while 跑在 subshell，裡面改的變數出來就不見了」。
+B> awk：**$1、$2** 第幾欄、**$NF** 最後一欄、**NR>1** 跳過表頭、**-v n="$x"** 把 shell 變數傳進去、**-F:** 指定分隔字元
+B> 逐行讀：`while read -r id path; do ...; done`；**-r** 避免反斜線被吃掉，最後一個變數會拿到剩下的整段
+B> `cmd | while read ...; do count=$((count+1)); done` 迴圈結束後 count 還是原值（subshell）；改用 **done < <(cmd)** 就不會
+B> 取最小 / 最大：`sort -n | head -n 1`、`sort -n | tail -n 1`；計數：`wc -l` 或 `grep -c`
+B> 字串切割不必開新 process：`${path##*/}` 取最後一段、`${path%/*}` 去掉最後一段
+X> btrfs subvolume list /mnt/root5 | awk '$NF ~ /^snapshot\/pool1\// {print $2, $NF}'
+X> while read -r id path; do
+X>   echo "id=$id name=${path##*/}"
+X> done < <(btrfs subvolume list /mnt/root5 | awk '{print $2, $NF}')
+?mc 下列程式執行後 n 的值是？
+QX> n=0
+QX> printf 'a\nb\n' | while read -r x; do n=$((n+1)); done
+QX> echo $n
++ 0
+- 2
+- 1
+- 空字串
+E> 0，因為 pipe 右邊的 while 在 subshell 中執行。改成 `done < <(printf 'a\nb\n')` 就會得到 2。
+?cmd 用 awk 印出 /etc/passwd 每一行的第 1 欄與最後一欄（分隔字元是冒號）：
+= awk -F: '{print $1, $NF}' /etc/passwd
+= awk -F: '{print $1,$NF}' /etc/passwd
+= awk -F ':' '{print $1, $NF}' /etc/passwd
+E> $NF 是最後一欄，NF 本身是欄位數。
+?fill path=snapshot/pool1/@20251003-163650 時，要只取出最後一段 @20251003-163650，可以寫 ${path＿＿}
+= ##*/
+E> ## 從開頭刪掉最長的符合，*/ 會吃到最後一個斜線。
+
+@CARD sh.p_install | 實作：把腳本裝成系統指令
+A> 寫完的腳本要「上架」才算數：放進 PATH 上的目錄、有執行權限、第一行 shebang 正確、而且要被指定的使用者讀得到。HW2 的 judge 會用 `$(which SnApper)` 去拿你的腳本，任何一項沒做就是 0 分。
+B> 慣例位置 **/usr/local/bin**；一步到位：`install -m 755 SnApper /usr/local/bin/SnApper`（複製 + 設權限）
+B> 第一行 **#!/bin/bash**（用了 bash 語法就不要寫 #!/bin/sh，Debian 的 sh 是 dash）
+B> 在 Windows 編輯過的檔會有 CRLF，錯誤長這樣：**bad interpreter: /bin/bash^M**；用 `sed -i 's/\r$//' 檔案` 或 dos2unix 修
+B> 給別人（或 judge）讀取：權限至少 **755**，而且路徑上每層目錄都要可進入
+B> 驗證：`which SnApper`、`ls -l "$(which SnApper)"`、`sudo -u judge cat "$(which SnApper)" | head -n 1`
+?cmd 把目前目錄的 SnApper 複製到 /usr/local/bin/SnApper，並同時把權限設成 755：
+= install -m 755 SnApper /usr/local/bin/SnApper
+= install -m 755 SnApper /usr/local/bin/
+= install -m 755 SnApper /usr/local/bin
+= install -m 0755 SnApper /usr/local/bin/SnApper
+E> 等同 cp 之後再 chmod 755。
+?mc 執行腳本時出現 `/bin/bash^M: bad interpreter`，原因是？
++ 檔案是 CRLF 換行
+- 沒有安裝 bash
+- 腳本沒有執行權限
+- PATH 沒有 /bin
+E> 檔案是 Windows 的 CRLF 換行，shebang 行尾多了一個 \r。^M 就是 \r。用 sed -i 's/\r$//' 或 dos2unix 移除。
+?tf 腳本第一行寫 #!/bin/sh，在 Debian 上執行時仍然可以使用 [[ ]] 與陣列這些 bash 語法。
+=F
+E> Debian 的 /bin/sh 是 dash，不支援這些 bashism。
+
+@CARD sh.p_bytes | 實作：檔案簽章與雜湊比對
+A> 副檔名可以亂改，但檔案開頭的幾個 bytes（magic number）騙不了人：ELF 執行檔一定以 7f 45 4c 46 開頭。雜湊（MD5）則像檔案的指紋，內容一樣指紋就一樣。sftp_watchd 就是靠這兩招抓違規檔。
+B> 取前 4 bytes 轉十六進位：`head -c 4 檔案 | xxd -p` 得到 **7f454c46**；沒有 xxd 時用 `od -An -tx1 -N4`
+B> **file 檔案**：直接告訴你類型（ELF 64-bit ...、ASCII text ...），人工確認很方便
+B> MD5：`md5sum 檔案` 輸出「雜湊 兩個空白 檔名」，只取雜湊：`md5sum "$f" | awk '{print $1}'` 或 `cut -d' ' -f1`
+B> 黑名單比對：存成陣列或檔案，用 **case** 或 **grep -qxF** 判斷
+B> 檔案擁有者（誰上傳的）：`stat -c %U 檔案`；其他常用：**%a** 八進位權限、**%s** 大小、**%Y** 修改時間 epoch
+X> sig=$(head -c 4 "$f" | xxd -p)
+X> [ "$sig" = 7f454c46 ] && echo "ELF"
+X> sum=$(md5sum "$f" | awk '{print $1}')
+X> owner=$(stat -c %U "$f")
+?cmd 印出 /bin/ls 的前 4 個 bytes 的十六進位（連續不分隔）：
+= head -c 4 /bin/ls | xxd -p
+= xxd -p -l 4 /bin/ls
+= xxd -l 4 -p /bin/ls
+E> 結果是 7f454c46，也就是 \x7f E L F。
+?cmd 用 stat 只印出 upload.bin 的擁有者名稱：
+= stat -c %U upload.bin
+= stat -c '%U' upload.bin
+= stat --format=%U upload.bin
+E> %U 是擁有者名稱、%u 是 UID。
+?mc `md5sum a.txt` 的輸出是 `d41d8cd9... a.txt`。腳本只需要雜湊值本身，應該？
++ 接上 awk '{print $1}' 取第一欄
+- md5sum 加上 -q 選項，只輸出雜湊值
+- 用 tail -c 32 取最後 32 個字元
+- 用 basename 去掉後面的檔名
+E> GNU md5sum 沒有 -q（那是 BSD md5 的選項）；輸出格式是「雜湊、空白、檔名」。
+
+@CARD sh.p_inotify | 實作：inotifywait 事件迴圈
+A> 要「一有新檔就處理」，笨方法是每秒 ls 一次；聰明方法是請 kernel 通知你。inotifywait -m 像「守在門口的感應器」，每發生一個事件就吐一行字，你用 while read 接起來處理，這就是一個 daemon 的主迴圈。
+B> 安裝：`apt install inotify-tools`；**-m** 持續監看（不加就只等一次事件就結束）、**-r** 遞迴子目錄、**-e 事件** 可重複指定
+B> 要等 **close_write**（寫完並關檔）再檢查；用 create 會在檔案還是空的 / 寫到一半時就觸發
+B> 再加 **moved_to** 接住「先寫暫存檔再改名」的上傳方式
+B> `--format '%w%f'` 只輸出完整路徑（%w 目錄、%f 檔名、%e 事件）
+B> 搬檔時用 `mv -- "$f" "$dest/"`：**--** 之後的東西不會被當成選項，檔名以 - 開頭也安全
+B> 記得排除自己的輸出目錄（例如 .violated），不然搬進去又觸發一次
+X> inotifywait -m -r -e close_write -e moved_to --format '%w%f' "$dir" |
+X> while read -r f; do
+X>   [ -f "$f" ] || continue
+X>   check_file "$f"
+X> done
+?mc 監看上傳檔案時，為什麼用 close_write 事件而不是 create？
++ create 時內容還沒寫完
+- create 事件不支援遞迴監看
+- close_write 的效能比較好
+- create 只會對目錄觸發
+E> create 發生時檔案才剛建立、內容還沒寫完；close_write 才表示寫入完成。太早檢查會讀到空檔或半個檔，簽章與雜湊都會判斷錯。
+?fill inotifywait 要持續監看、處理完一個事件後不結束，需要的選項是 ＿
+= -m
+E> -m = monitor。沒有它，收到第一個事件就退出。
+?mc 腳本中寫 `mv -- "$f" "$dest/"`，其中 `--` 的作用是？
++ 選項到此為止
+- 強制覆蓋目的檔
+- 保留檔案的權限與時間
+- 讓 mv 遞迴搬移
+E> 表示選項到此為止，後面即使以 - 開頭也當成檔名。使用者可以上傳名叫 -rf 的檔案，沒有 -- 就會被當成選項。
+
+@CARD sh.p_safety | 實作：腳本最常見的地雷
+A> 腳本的事故大多不是邏輯錯，而是「變數是空的」和「沒加引號」。想像 rm -rf "$dir"/ 裡的 dir 剛好是空字串，那一行就變成 rm -rf /。
+B> 變數一律加雙引號 **"$var"**：檔名有空白、變數為空時才不會被拆開或消失
+B> 關鍵變數用 **${var:?訊息}**：是空的就直接報錯中止，不會繼續往下跑
+B> `cd "$dir" || exit 1`：cd 失敗就停，不然後面的指令會在錯的目錄執行
+B> **[ -z "$x" ]** 空字串、**[ -n "$x" ]** 非空；比較數字用 -eq / -lt，別用 = 或 <
+B> 使用者輸入當參數前先驗證：`case "$id" in ''|*[!0-9]*) echo "bad id" >&2; exit 1 ;; esac`
+B> **set -u** 讓未定義變數直接報錯；**set -e** 遇錯即停，但在 if 條件、&& / || 之中的失敗不會觸發，別過度依賴
+X> rm -rf "${target:?target is empty}"/
+X> cd "$workdir" || exit 1
+X> case "$id" in ''|*[!0-9]*) echo "ID must be a number" >&2; exit 1 ;; esac
+?mc `rm -rf "${dir:?}"/tmp` 中的 `${dir:?}` 作用是？
++ dir 未設定或為空時，印出錯誤並中止，不會執行 rm
+- dir 未設定時，先提示使用者輸入一個值，再繼續執行 rm
+- dir 為空時，自動改用 /tmp 當作預設值
+- 把 dir 轉換成以 / 開頭的絕對路徑
+E> 這是防止「空變數 + rm -rf」災難的標準寫法。
+?mc 檢查變數 id 是否「只由數字組成」，下列哪個 case pattern 會抓到不合法的值？
++ ''|*[!0-9]*
+- [0-9]
+- *[0-9]*
+- *[0-9]*|[0-9]
+E> 空字串，或含有任何一個「非數字」字元，都算不合法。
+?tf 寫了 set -e 之後，腳本中任何一個指令失敗，腳本一定會立刻結束。
+=F
+E> if / while 的條件、以及 && 與 || 左邊的指令失敗不會觸發 set -e。

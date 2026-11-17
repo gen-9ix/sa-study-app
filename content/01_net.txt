@@ -1,0 +1,954 @@
+@CH net | 網路基礎與 Linux 網路工具 | 🌐 | Linux_Networking_Commands.pdf
+
+@CARD net.tcpip | TCP/IP 四層模型
+A> 寄包裹：信的內容是「應用層」，裝進寫了收件人分機號碼（port）的信封是「傳輸層」，再放進寫了地址（IP）的箱子是「網路層」，最後由貨車照車牌路線（MAC）一站一站送是「連結層」。
+B> **L2 連結層 (Network Access / Link)**：在實體線路上傳送 frame，例如 Ethernet、IEEE 802.11 (Wi-Fi)
+B> **L3 網路層 (Internet)**：跨網路路由、轉送封包，例如 IPv4、IPv6
+B> **L4 傳輸層 (Transport)**：TCP、UDP
+B> **L7 應用層 (Application)**：HTTP、SMTP、DNS、SSH
+B> 每往下一層就多包一個 header：Application → Transport → Network → Link，這叫 **封裝 (encapsulation)**；接收端由下往上拆，叫 **解封裝**
+M> 由上往下：「應、傳、網、連」，應該傳個網路連結給我
+?mc IPv4 / IPv6 屬於 TCP/IP 模型的哪一層？
++ Internet Layer (Layer 3)
+- Network Access Layer (Layer 2)
+- Transport Layer (Layer 4)
+- Application Layer (Layer 7)
+E> IP 負責跨網路的定址與路由，是 L3；Ethernet、Wi-Fi 才是 L2。
+?ord 一個 HTTP 請求送出時，依「封裝順序」（最先被加上的 header 在前）排列：
+> Application 資料 (HTTP)
+> 加上 Transport header (TCP)
+> 加上 Network header (IP)
+> 加上 Link header (Ethernet)
+E> 封裝是由上往下一層一層包；接收端反過來由下往上拆。
+?mt 把協定配對到它所在的層：
+> Wi-Fi (802.11) :: L2 連結層
+> IPv6 :: L3 網路層
+> UDP :: L4 傳輸層
+> SMTP :: L7 應用層
+E> 記住代表協定，考試常用協定反推層級。
+?tf VPN（例如 VXLAN）的封包是「把一整個封包當成資料，再包進另一個封包裡」。
+=T
+E> VPN 封裝就是 packet-in-packet，外層 header 負責在實體網路上傳送，內層是原本的封包。
+
+@CARD net.lan | LAN 與廣播域
+A> 同一層樓的走廊：在走廊大喊一聲（L2 broadcast），整層樓的人都聽得到，這層樓就是一個「廣播域」。
+B> **LAN**：在單一 **broadcast domain** 內互連的裝置
+B> broadcast domain：每台裝置都能收到 L2 廣播的 frame
+B> 同一個 LAN 上的裝置可以直接用 **MAC address** 互相溝通，不必經過 router
+?tf 在同一個 LAN（同一個廣播域）裡的兩台電腦，可以直接用 MAC address 溝通，不需要經過 router。
+=T
+E> 同 LAN 走 L2 就到了；要去別的網段才需要 router（gateway）。
+?mc 兩台電腦在「不同」的 LAN（不同廣播域），要互相通訊需要什麼？
++ 經過 router（L3 轉送）
+- 只要知道對方的 MAC address 就能直接送
+- 把 switch 換成 hub
+- 兩邊設定相同的 hostname
+E> MAC 只在同一個廣播域內有效；跨 LAN 要靠 router 依 IP 轉送。
+?fill 每台裝置都能收到 L2 廣播 frame 的範圍，稱為一個 ＿＿ domain
+= broadcast
+E> 一個 LAN 就是一個 broadcast domain。
+
+@CARD net.arp | MAC address 與 ARP
+A> 教室裡老師只知道學號（IP），不知道誰坐哪（MAC），於是大喊「學號 42 號是誰？」（ARP request 廣播），本人舉手說「是我，我坐這」（ARP reply）。老師把它記在小本子上（ARP table）。
+B> **MAC address**：網卡 (NIC) 的全球唯一識別碼，L2 使用
+B> **ARP**：查「IP → MAC」對應的協定
+B> 主機想知道某個 IP 的 MAC → 廣播 **ARP request**（誰有這個 IP？）
+B> 擁有那個 IP 的主機回 **ARP reply**，內含自己的 MAC
+B> 每張網卡維護一張 **ARP table**，存 IP-MAC 對應
+?mc ARP 的功能是什麼？
++ 由 IP address 查出對應的 MAC address
+- 由 MAC address 查出 IP address 並分配給主機
+- 由網域名稱查出 IP address
+- 把私有 IP 轉成公有 IP
+E> 網域→IP 是 DNS；分配 IP 是 DHCP；私有轉公有是 NAT。
+?mc ARP request 是用什麼方式送出的？
++ L2 廣播 (broadcast)，整個 LAN 都收得到
+- 單播 (unicast) 給 default gateway
+- 送給 DNS server 查詢
+- 透過 TCP 連線送給目標主機
+E> 不知道對方 MAC 才要問，所以只能廣播；reply 則直接回給詢問者。
+
+@CARD net.switch | Switch 的 MAC learning
+A> 新來的大樓管理員：每看到有人從某個門走出來，就在本子記下「這個人住幾號門」；有包裹要送但本子沒寫，就每個門都敲一次（flooding）。
+B> Switch 維護 **MAC address table**：存「**port ↔ MAC**」對應（哪個 MAC 可以從哪個 port 到達）
+B> 看到 frame 從某 port 進來 → 記下該 frame 的**來源 MAC** 與 port
+B> 目的 MAC 查不到（table miss）→ **flood** 到所有 port
+B> 對比：**主機**的 ARP table 存 IP↔MAC；**switch** 的 MAC table 存 port↔MAC
+?mc Switch 收到一個 frame，目的 MAC 不在 MAC address table 裡，會怎麼做？
++ Flood 到所有（其他）port
+- 直接丟棄
+- 送 ARP request 去問
+- 回傳 ICMP unreachable 給來源
+E> Table miss 就 flood；等對方回覆時，switch 又會順便學到對方的 port。
+?mt 哪張表存什麼？
+> 主機的 ARP table :: IP ↔ MAC
+> Switch 的 MAC address table :: port ↔ MAC
+> Router 的 routing table :: 目的網段 ↔ 下一跳 / 介面
+E> 三張表常被混在一起考，記住「誰」在維護「什麼對應」。
+?tf Switch 是根據 frame 的「目的 MAC」來學習 MAC table 的。
+=F
+E> 是看「來源 MAC」學習（從哪個 port 進來就代表它在那個方向），目的 MAC 是拿來查表轉送的。
+
+@CARD net.ipv4 | IPv4 位址結構
+A> IP 位址像「城市 + 門牌」：前面的 Network ID 是城市（同城市的都在同一網段），後面的 Host ID 是門牌。/25 代表前 25 bits 是城市名。
+B> IPv4 長 **32 bits**，階層式定址，例：140.113.215.130/25
+B> 高位元 = **Network ID**（subnet ID），低位元 = **Host ID**；/n 是 prefix length
+B> 每個網段兩個特殊位址：**第一個 = Network number**、**最後一個 = Broadcast**
+B> 慣例上 gateway 常用倒數第二個（如 .254）
+B> 可用主機數 = 2^(32−n) − 2
+X> 140.113.215.130/25
+X> 130 = 1000 0010 → 前 1 bit 屬於 network
+X> 網段：140.113.215.128 ~ 140.113.215.255
+X> network = .128   broadcast = .255
+?fill 192.168.10.77/26 所在網段的 network address 是 192.168.10.＿＿
+= 64
+E> /26 → 每段 64 個位址：0, 64, 128, 192。77 落在 64~127，所以 network 是 .64、broadcast 是 .127。
+?fill 一個 /24 網段扣掉 network 與 broadcast，可用主機數為＿＿
+= 254
+E> 2^(32−24) − 2 = 256 − 2 = 254。
+?mc 140.113.215.0/25 的 broadcast address 是？
++ 140.113.215.127
+- 140.113.215.255
+- 140.113.215.128
+- 140.113.255.255
+E> /25 把 .0~.255 切成兩半：.0~.127 與 .128~.255；第一段的 broadcast 是 .127。
+?fill 10.1.2.3/8 中，Network ID 共有＿＿個 bits
+= 8
+E> /8 就是前 8 bits 為 Network ID，剩 24 bits 是 Host ID。
+
+@CARD net.netmask | Netmask 設錯會怎樣？
+A> 把「城市」的範圍畫太大：你以為整個台灣都是台南市，於是要寄到台北的信你直接走路去送（直接 ARP），結果永遠找不到人，因為正確做法是交給郵局（gateway）。
+B> 主機用 netmask 判斷目的地「在不在同一個 LAN」：在 → 直接 ARP 送；不在 → 交給 **gateway**
+B> 192.168.1.0/24 被設成 **/16**：主機以為 192.168.0.0 ~ 192.168.255.255 都在本地
+B> 結果：送往 192.168.2.x 等**其他子網**的封包不交給 gateway，而是直接 ARP → 沒人回應 → **連不到**
+B> 廣播位址也錯（變成 192.168.255.255），同網段原本該收到的廣播可能收不到
+B> 同一個 192.168.1.x 的主機、以及 192.168.0.0/16 以外的網際網路（仍走 gateway）通常還是正常
+?sa 若 netmask 設定錯誤會導致什麼結果？以 192.168.1.0/24 被錯誤設定為 192.168.1.0/16 為例。
+S> 2025 期末 Q1
+R> 主機會依 netmask 判斷目的地是否在同一個 LAN。設成 /16 後，主機以為 192.168.0.0-192.168.255.255 全都在本地網段。
+R> 因此要送往 192.168.1.0/24 以外、但在 192.168.0.0/16 之內的位址（例如另一個子網 192.168.2.5）時，不會把封包交給 gateway，而是直接在本地發 ARP 查 MAC，對方不在這個 LAN 所以沒有回應 → 無法連線。
+R> 此外 broadcast address 會被算成 192.168.255.255，與同網段其他主機（192.168.1.255）不一致，廣播類服務可能異常。同網段 192.168.1.x 與 192.168.0.0/16 以外的目的地仍可正常通訊。
+P> 主機以 netmask 判斷目的地是否在本地網段
+P> 其他 192.168.x.0 子網的流量不會送往 gateway，而是直接 ARP → 連不到
+P> broadcast address 錯誤（192.168.255.255）
+?mc 某主機 IP 192.168.1.10，netmask 被誤設為 /16，gateway 192.168.1.254。它要連 192.168.5.20（實際在另一個子網），會發生什麼？
++ 主機直接在本地 LAN 發 ARP 找 192.168.5.20，找不到所以連不上
+- 主機把封包交給 gateway 192.168.1.1 轉送，所以一切正常
+- 主機收到 ICMP redirect 後，會自動把 netmask 修正回 /24
+- 封包先被 NAT 轉成公有 IP，再繞一圈回到 192.168.5.20
+E> /16 讓主機誤判 192.168.5.20 在本地，所以不經 gateway。
+
+@CARD net.reserved | 保留 IP 位址
+A> 就像電話號碼裡的「分機」：192.168.x.x 這類私有位址只在自己公司（內網）裡有效，打到外面要經過總機（NAT）。
+B> **Private network**：10.0.0.0/8、172.16.0.0/12、192.168.0.0/16
+B> **Loopback**：127.0.0.0/8（127.0.0.1 = 自己）
+B> 還有 link-local（169.254.0.0/16）、multicast（224.0.0.0/4）等
+M> 私有三兄弟：「10 / 172.16 / 192.168」，遮罩「8 / 12 / 16」，越後面遮罩越大
+?mc 下列哪個不是私有 IP？
++ 172.32.1.1
+- 10.255.0.1
+- 172.20.5.5
+- 192.168.99.1
+E> 172.16.0.0/12 的範圍是 172.16.0.0 ~ 172.31.255.255，172.32 已經超出。
+?fill 私有網段 172.16.0.0 的 prefix length 是 /＿＿
+= 12
+E> 10/8、172.16/12、192.168/16。
+
+@CARD net.tcpudp | TCP vs UDP
+A> TCP 像掛號信：要簽收、照順序、遺失會重寄；UDP 像傳單：丟出去就不管，快但不保證送到。（「我想講個 UDP 笑話，但你不一定收得到。」）
+B> **TCP**：可靠、有順序、有錯誤檢查的傳輸（連線導向，三向交握建立連線）
+B> **UDP**：不保證送達、不保證順序、不做錯誤修正 → 較快但較不可靠
+B> UDP 適合：DNS 查詢、串流影音、線上遊戲、VoIP（寧可掉一點也不要延遲）
+B> TCP 適合：HTTP、SSH、檔案傳輸（資料一個 byte 都不能錯）
+?mc 下列哪個情境最適合用 UDP？
++ 即時語音通話，偶爾掉一個封包可以接受，但不能延遲
+- 用 scp 傳送重要的設定檔
+- 用 SSH 登入遠端主機
+- 下載一個需要 checksum 正確的 ISO 檔
+E> 即時性比完整性重要時用 UDP。
+?tf UDP 保證封包會依照送出的順序抵達。
+=F
+E> 有順序保證的是 TCP；UDP 不保證送達也不保證順序。
+
+@CARD net.nat | NAT：SNAT 與 DNAT
+A> 公司總機：員工對外打電話時，外面看到的都是總機號碼（SNAT）；外面打總機說要找「分機 22」，總機幫你轉到內部某人（DNAT）。
+B> **NAT**：讓內網多台裝置共用一個 public IP；做法是在經過 router / firewall 時**改寫封包 header 的 IP**
+B> **SNAT (Source NAT)**：改寫**出去**封包的**來源 IP**（通常改成 router 的 public IP）
+B> **DNAT (Destination NAT)**：改寫**進來**封包的**目的 IP**，導向內網特定主機（port forwarding）
+B> Router 維護 **NAT table**：private addr:port ↔ public addr:port
+B> NAT table 術語：Inside Local（主機私有位址）、Inside Global（NAT 後位址）、Outside Global（目標位址）、Outside Local（內網看到的目標，常同 Outside Global）
+?mc 在家用路由器設定「外部 port 8080 轉到內網 192.168.1.50:80」，這是哪一種 NAT？
++ DNAT
+- SNAT
+- ARP proxy
+- DHCP relay
+E> 改寫進來封包的「目的地」→ DNAT（也就是 port forwarding）。
+?mt 配對 NAT table 術語：
+> Inside Local :: 內部主機的私有位址
+> Inside Global :: 內部主機經 NAT 後的位址
+> Outside Global :: 外部目標主機的真實位址
+E> Inside/Outside 指主機在內或外；Local/Global 指「從內網看」或「從外網看」的位址。
+?tf SNAT 修改的是送出去的封包的來源 IP。
+=T
+E> Source NAT 改 source；內網上網時封包來源被改成 router 的 public IP。
+
+@CARD net.natcone | NAT Cone 類型
+A> 把 NAT 開的「洞」想成門：Full Cone 是大門敞開誰都能進；Address Restricted 只讓你拜訪過的「那棟樓」的人進；Port Restricted 只讓那棟樓的「那個房間」的人進；Symmetric 則是每拜訪一個地方就開一扇新的門。
+B> 假設 PC 連 1.1.1.1:22 時，ip1:port1 被 map 成 ip2:port2
+B> **Full Cone**：**任何**外部主機都能透過 ip2:port2 連到 ip1:port1
+B> **Address Restricted Cone**：只有 **1.1.1.1**（任意 port）能進來
+B> **Port Restricted Cone**：只有 **1.1.1.1:22** 能進來
+B> **Symmetric**：和 Port Restricted 一樣嚴格，而且**不同目的地會用不同的 public addr:port**
+?ord 依「限制程度」由寬鬆到嚴格排列：
+> Full Cone
+> Address Restricted Cone
+> Port Restricted Cone
+> Symmetric NAT
+E> Symmetric 對不同目的地使用不同對外 port，所以最難打洞。
+?mc 哪一種 NAT 會對「不同目的地」使用不同的對外 address:port 組合，使 UDP hole punching 最難成功？
++ Symmetric
+- Full Cone
+- Address Restricted Cone
+- Port Restricted Cone
+E> 公開節點看到的 port 和你連對方時用的 port 不一樣，所以打洞資訊失效。
+
+@CARD net.traversal | NAT Traversal 與 UDP hole punching
+A> 兩個住在不同社區（都在 NAT 後面）的人想直接講話：先各自打電話給公開的「總機」，總機知道雙方對外的號碼後互相告知，兩人同時往對方號碼撥，警衛看到「是我住戶先撥出去的」就放行。
+B> **NAT traversal**：讓 NAT 後的裝置建立 peer-to-peer 連線
+B> 方法：**UDP hole punching**、**TURN**（中繼轉送）等
+B> hole punching 步驟：① clients 先連到一個 public node ② public node 得知雙方 NAT 後的 addr:port ③ 告訴雙方對方在哪 ④ clients 直接互送到對方 NAT endpoint
+?ord UDP hole punching 的步驟順序：
+> Clients 各自送 request 到公開節點
+> 公開節點得知雙方 NAT 後的 address:port
+> 公開節點把對方的位置告訴雙方
+> Clients 直接把訊息送到對方的 NAT endpoint
+E> 關鍵是先「從內往外」送過封包，NAT 才會有對應的 mapping（洞）。
+?mc 兩個 client 都在嚴格的 NAT 後面，UDP hole punching 失敗時，最後的備案是？
++ TURN：由公開的中繼伺服器轉送所有流量
+- 改用 ARP 在兩個 NAT 之間直接查出對方的 MAC
+- 把封包的 TTL 調大，讓它可以穿過更多層 NAT
+- 改用 DHCP 讓兩邊拿到同一個網段的 IP
+E> hole punching 不成功（例如 symmetric NAT）時只能靠中繼，代價是延遲與頻寬。
+?tf UDP hole punching 需要一個雙方都連得到的 public node 來交換彼此在 NAT 外的 addr:port。
+=T
+E> public node 只負責「介紹」，之後 clients 直接互連。
+
+@CARD net.dhcp | DHCP（DORA）
+A> 探險家朵拉 (DORA) 找房東：大喊「有人有空房嗎？」(Discover)、房東「我有 101」(Offer)、朵拉「我要 101」(Request)、房東「成交，鑰匙給你」(Ack)。
+B> **DHCP** 自動派發網路設定：IP、hostname、gateway、DNS server 等；基於 **BOOTP**
+B> 流程 **DORA**：Client 廣播 **DHCPDISCOVER** → Server 回 **DHCPOFFER** → Client 送 **DHCPREQUEST** → Server 回 **DHCPACK** → 拿到 IP（lease）
+B> Server 有 IP pool，並記錄 **IP-MAC 對應**，知道哪些 IP 還可用
+B> ⚠ 若手動把 pool 內的 IP 設到介面上，DHCP server 不知道 → 可能 **IP 衝突**
+M> DORA：Discover → Offer → Request → Ack
+?ord DHCP 取得 IP 的四個訊息順序：
+> DHCPDISCOVER
+> DHCPOFFER
+> DHCPREQUEST
+> DHCPACK
+E> DORA。Discover 是廣播，因為 client 還沒有 IP、也不知道 server 在哪。
+?mc 小明把自己電腦手動設成 192.168.0.100，剛好在 DHCP server 的 pool 裡。最可能發生什麼問題？
++ DHCP server 不知道這個 IP 被用掉，可能再發給別人 → IP 衝突
+- DHCP server 偵測到之後，會自動把 pool 範圍改掉避開它
+- 電腦的 IP 在 pool 範圍內，會無法連到 DHCP server
+- DHCP server 會先 ping 這個位址，發現有人用就把小明的電腦踢下線
+E> DHCP server 只記得自己發出去的 IP-MAC 紀錄，手動設定的它不知道。
+?tf DHCP 除了派發 IP，還能派發 gateway 與 DNS server 等設定。
+=T
+E> DHCP 是設定傳遞框架，IP、hostname、gateway、DNS 等都能給。
+
+@CARD net.dns | DNS 階層與角色
+A> 網路的電話簿。問路流程：你問櫃台（resolver）→ 櫃台問總局（root）「.com 歸誰管？」→ 再問 .com 分局（TLD）「example.com 歸誰？」→ 最後問 example.com 本人（authoritative）拿到真正答案。
+B> **DNS**：把人看得懂的網域名稱轉成 IP
+B> 網域名稱是階層式的，**最右邊層級最高**（www.example.com. 的 . 是 root），解析從最高層開始
+B> **Client**：送出 DNS query
+B> **Resolver**：接受你的查詢，替你一路查到底
+B> **Root server**：依副檔名（如 .com）把你指到對的 **TLD server**
+B> **TLD server**：指到負責該網域的 **authoritative server**
+B> **Authoritative server**：存有該網域實際的 record，給出最終答案
+?ord 遞迴解析 www.example.com 時，resolver 依序詢問的對象：
+> Root DNS server
+> .com TLD server
+> example.com 的 Authoritative DNS server
+E> 由右往左、由高往低：root → TLD → authoritative。
+?mc 哪一個角色「持有網域實際的 DNS records，並提供最終、可信的答案」？
++ Authoritative DNS server
+- Resolver（遞迴解析器）
+- Root DNS server（根伺服器）
+- TLD server（頂級網域伺服器）
+E> Root 和 TLD 只負責「指路」，答案在 authoritative server。
+
+@CARD net.dnsrec | DNS Record 類型
+A> 一個網域的「名片」上有很多欄位：A 是 IPv4 地址、AAAA 是 IPv6 地址（四個 A 因為 IPv6 是 IPv4 的四倍長）、MX 是收信處、NS 是誰管這張名片、TXT 是備註欄。
+B> **SOA**：主要 authoritative server 與管理資訊（serial number、refresh、聯絡人）
+B> **A**：IPv4 位址
+B> **AAAA**：IPv6 位址
+B> **NS**：負責此網域的 authoritative DNS servers
+B> **MX**：負責收這個網域 email 的 mail server
+B> **TXT**：任意文字（常用於驗證網域、SPF）
+B> 補充：**CNAME** 別名、**PTR** 反解（IP→名稱，dig -x 用）
+?mt 配對 DNS record：
+> A :: IPv4 位址
+> AAAA :: IPv6 位址
+> MX :: 收信的 mail server
+> NS :: 負責的 authoritative server
+> TXT :: 任意文字資料
+E> SOA 則記錄 serial、refresh 等管理資訊。
+?mc 想知道 gmail.com 的信要寄到哪台主機，要查哪種 record？
++ MX
+- A
+- NS
+- SOA
+E> MX = Mail eXchanger。
+
+@CARD net.traceroute | traceroute 與 mtr
+A> 沿路蓋章的旅行：traceroute 讓封包的 TTL 從 1 開始遞增，每經過一個 router 就有人「退回一張明信片」，於是你知道沿路經過了誰。mtr 是一直重複旅行並幫你做統計表。
+B> **traceroute**：列出封包到目的主機經過的每一個 **hop**；用來排查可達性與路由
+B> 預設用 **UDP** 探測，但防火牆可能擋 UDP
+B> **-n**：不反解 hostname，只顯示數字 IP
+B> **-I**：改用 ICMP ECHO；**-T**：改用 TCP SYN
+B> **-z sendwait**：探測封包間等待（≤10 單位為秒，否則為毫秒）
+B> **mtr**（My TraceRoute）：介面更漂亮，**重複**做 traceroute 並自動統計
+?cmd 用 traceroute 追蹤到 8.8.8.8 的路徑，並且「不要」反解 hostname：
+= traceroute -n 8.8.8.8
+E> -n = numeric。
+?cmd 防火牆擋掉了 UDP，請改用 ICMP ECHO 對 example.com 做 traceroute：
+= traceroute -I example.com
+E> -I 用 ICMP，-T 用 TCP SYN；預設是 UDP。
+?mc traceroute 預設使用哪種封包探測？
++ UDP
+- ICMP ECHO
+- TCP SYN
+- ARP
+E> Linux traceroute 預設 UDP；Windows 的 tracert 才是 ICMP。
+
+@CARD net.tcpdump | tcpdump 與 Wireshark
+A> 在網路線上裝竊聽器：tcpdump 錄音、-w 存成錄音檔、-r 播放錄音檔；Wireshark 是有漂亮介面的播放器。
+B> **tcpdump**：透過 NIC 擷取封包並 dump 出來
+B> 用 **pcap-filter** 表達式過濾，例：dst port 80
+B> **-i interface**：監聽哪個介面（通常需要 root）
+B> **-q / -v / -vv / -vvv**：安靜 / 越來越詳細
+B> **-A / -x / -X**：以 ASCII / HEX / 兩者印出封包內容
+B> **-w file**：存成 PCAP 檔（binary）；**-r file**：讀檔
+B> **Wireshark** ≈ 有 GUI 的 tcpdump；可開 tcpdump -w 存的檔
+X> tcpdump -i eth0 dst port 80
+?cmd 擷取 eth0 上「目的 port 為 80」的封包：
+= tcpdump -i eth0 dst port 80
+= tcpdump -i eth0 'dst port 80'
+= tcpdump -i eth0 "dst port 80"
+= tcpdump -ni eth0 dst port 80
+= tcpdump -n -i eth0 dst port 80
+E> -i 指定介面，後面接 pcap-filter 表達式。
+?cmd 把 eth0 上擷取的封包存到 cap.pcap，之後要用 Wireshark 開：
+= tcpdump -i eth0 -w cap.pcap
+= tcpdump -w cap.pcap -i eth0
+E> -w 寫入 PCAP 格式檔；讀回用 -r。
+?mt 配對 tcpdump 選項：
+> -A :: 以 ASCII 印出封包內容
+> -X :: HEX 與 ASCII 都印
+> -r file :: 從檔案讀取封包
+> -vv :: 更詳細的輸出
+E> -x 只有 HEX，-X 是 HEX+ASCII。
+
+@CARD net.dig | dig：DNS 查詢
+A> dig = 「挖」DNS 資料。dig @誰 查什麼 什麼類型：「去問 @8.8.8.8：example.com 的 MX 是什麼？」
+B> 語法：**dig @server name type**（也可 dig @server -t type name 避免歧義）
+B> type 可為 A、AAAA、MX、TXT…，**預設 A**
+B> **-x addr**：反查（reverse lookup），不用給 name 和 type
+B> **+noall +answer**：只顯示 answer section
+B> **+short**：只顯示 answer 最右欄
+B> 類似工具：**nslookup**
+?cmd 向 8.8.8.8 查詢 nycu.edu.tw 的 MX record：
+= dig @8.8.8.8 nycu.edu.tw MX
+= dig @8.8.8.8 -t MX nycu.edu.tw
+= dig @8.8.8.8 nycu.edu.tw mx
+E> 格式：dig @server name type。
+?cmd 反查 140.113.1.1 對應的名稱：
+= dig -x 140.113.1.1
+E> -x 做 reverse lookup（查 PTR）。
+?mc dig example.com 不加 type 時，預設查哪種 record？
++ A
+- AAAA
+- ANY
+- NS
+E> 預設 A record。
+?cmd 只想看到 example.com 的 A record 結果（最精簡，只有 IP）：
+= dig +short example.com
+= dig example.com +short
+E> +short 只印 answer 最右邊一欄；+noall +answer 會印整列 answer。
+
+@CARD net.ss | ss（與 netstat）
+A> ss = socket statistics，像「查看大樓裡每個門（port）現在誰在守、誰在講電話」。口訣：ss -tulpn：「吐了 pn」：TCP、UDP、Listening、Process、Numeric。
+B> **-n** 數字 port；**-r** 顯示 hostname
+B> **-4 / -6**：只看 IPv4 / IPv6
+B> **-t / -u / -x**：TCP / UDP / Unix domain socket
+B> **-p**：顯示使用該 socket 的 process
+B> **-l**：只顯示 listening socket
+B> 過濾：ss state listening、ss -t dst :22、ss dst :5432 and src 127.0.0.1
+B> **netstat** 是舊工具，ss 是現代替代品（netstat -l、netstat -nt）
+M> ss -tulpn：TCP + UDP + Listening + Process + Numeric
+?cmd 列出所有 listening 的 TCP 與 UDP socket，顯示數字 port 與對應的 process：
+= ss -tulpn
+= ss -tlunp
+= ss -lntup
+= ss -ltunp
+= ss -tunlp
+= ss -lptun
+H> 五個字母：t u l p n（順序不重要，但這裡請照常見寫法）
+E> -t TCP、-u UDP、-l listening、-p process、-n numeric。
+?cmd 列出所有連到「任何主機的 port 22」的 TCP socket：
+= ss -t dst :22
+= ss -t 'dst :22'
+= ss -t dst :ssh
+= ss -tn dst :22
+E> ss 支援 dst / src 過濾條件。
+?mc 下列哪個是 netstat 的現代替代工具？
++ ss
+- ip
+- dig
+- mtr
+E> netstat 屬於舊的 net-tools；ss 屬於 iproute2。
+
+@CARD net.ssh | SSH 常用選項
+A> SSH 是加密的遠端遙控器。-l 是「以誰的身分」、-p 是「走哪個門」、-i 是「拿哪把鑰匙」、-J 是「先翻過哪道牆（跳板）」。
+B> **-l username**：以某使用者登入（或 user@host）
+B> **-p port**：指定遠端 port
+B> **-i id_file**：指定私鑰檔做 public key 認證
+B> **-J [user@]dst[:port]**：先連到 dst（跳板 / bastion），再從 dst 連到目標
+B> **-L / -R**：port forwarding（local / remote）
+B> 也可以用 **~/.ssh/config** 以 host 為單位管理選項
+?cmd 以使用者 alice、port 2222 連到 10.0.0.5：
+= ssh -p 2222 alice@10.0.0.5
+= ssh alice@10.0.0.5 -p 2222
+= ssh -l alice -p 2222 10.0.0.5
+= ssh -p 2222 -l alice 10.0.0.5
+E> -p 指定 port，-l 或 user@ 指定使用者。
+?cmd 透過跳板機 bastion.cs.nycu.edu.tw（使用者 me）登入內網主機 10.1.1.5（使用者 me）：
+= ssh -J me@bastion.cs.nycu.edu.tw me@10.1.1.5
+E> -J（ProxyJump）：先連 bastion，再從 bastion 連到目標。
+?cmd 用私鑰 ~/.ssh/id_lab 登入 user@lab.example.com：
+= ssh -i ~/.ssh/id_lab user@lab.example.com
+= ssh user@lab.example.com -i ~/.ssh/id_lab
+E> -i 指定 identity file（私鑰）。
+
+@CARD net.sshkey | SSH 金鑰登入
+A> 金鑰是一副「鎖頭 + 鑰匙」：公鑰（.pub）是鎖頭，可以發給大家裝在門上（authorized_keys）；私鑰是鑰匙，永遠只留在自己身上。把鑰匙寄給別人是大忌。
+B> 步驟：① **ssh-keygen** 產生 key pair ② 把**公鑰**加到遠端 **~/.ssh/authorized_keys** ③ 再 ssh 一次就不用密碼
+B> 可用 **ssh-copy-id** 自動完成第 ② 步
+B> 只複製 **.pub**（公鑰），私鑰絕不外流
+B> 加入 authorized_keys 要用 **>>** 附加，用 > 會蓋掉其他人的 key
+B> 金鑰不是預設檔名（id_ed25519 等）時，要用 **-i** 或在 ~/.ssh/config 寫 IdentityFile
+B> 權限：~/.ssh 通常 700、authorized_keys 600，太寬鬆時 sshd（StrictModes）會拒用
+?sa 我想讓 server (10.1.7.170) 可以從 Linux 筆電透過 SSH public key 登入。步驟如下，但仍要求輸入密碼。請找出至少兩個問題並說明。
+QX> # client
+QX> $ ssh-keygen -t ed25519 -C "" -N "" -f ~/.ssh/id_ed25519_custom
+QX> $ scp ~/.ssh/id_ed25519_custom 10.1.7.170:~/upload_key
+QX> # server
+QX> $ cat ~/upload_key > ~/.ssh/authorized_keys
+QX> # client
+QX> $ ssh 10.1.7.170
+S> 2025 期末 Q17
+R> ① scp 傳的是「私鑰」id_ed25519_custom，應該傳公鑰 id_ed25519_custom.pub；authorized_keys 必須放公鑰，而且私鑰外流有安全風險。
+R> ② 金鑰檔名不是預設名稱（id_ed25519 / id_rsa…），ssh 不會自動嘗試它，需要 ssh -i ~/.ssh/id_ed25519_custom 10.1.7.170 或在 ~/.ssh/config 設 IdentityFile。
+R> ③ 用 > 會覆蓋 authorized_keys 既有的其他公鑰，應用 >> 附加（或直接用 ssh-copy-id）。
+R> ④ 若 ~/.ssh 不存在或權限太寬（應為 700，authorized_keys 600），sshd 的 StrictModes 會拒絕使用。
+P> 傳的是私鑰而不是 .pub 公鑰
+P> 非預設檔名，需要 -i 或 config 的 IdentityFile
+P> > 會覆蓋 authorized_keys，應用 >>
+P> ~/.ssh 與 authorized_keys 權限
+?mc 要放進遠端 ~/.ssh/authorized_keys 的是哪個檔案的內容？
++ id_ed25519.pub
+- id_ed25519
+- known_hosts
+- sshd_config
+E> authorized_keys 放公鑰；known_hosts 記錄的是「伺服器」的 host key。
+?cmd 產生一組 ed25519 的 SSH 金鑰：
+= ssh-keygen -t ed25519
+E> -t 指定類型；-f 可指定檔名、-N 指定 passphrase、-C 註解。
+
+@CARD net.lpf | SSH Local Port Forwarding (-L)
+A> L = 「在 **L**ocal（我這邊）開一扇任意門」：我連到自己的 localhost:9999，任意門另一頭從 SSH server 那邊出去，走到 server 看得到的 host:hostport。
+B> 情境：在咖啡店（NAT 後）用筆電，想連宿舍 PC 上只聽 127.0.0.1:8080 的 nginx；PC 有 public IP 跑 SSH
+B> 語法：**-L [bind_address:]port:host:hostport**
+B> 例：ssh <server> -L 9999:localhost:8080
+B> **9999**：筆電（client）上監聽的 port
+B> **localhost:8080**：從「遠端 SSH server」角度看到的位址
+B> SSH client 在本地監聽 → 經 tunnel 轉給 SSH server → server 再連到 host:hostport
+X> laptop$ ssh me@140.113.2.2 -L 9999:localhost:8080
+X> laptop$ curl localhost:9999   # 實際打到 PC 上的 127.0.0.1:8080
+?cmd 你的宿舍 PC（SSH server，140.113.2.2，帳號 me）上 nginx 只聽 127.0.0.1:8080。請在筆電建立 local forwarding，讓筆電的 localhost:9999 連到它：
+= ssh me@140.113.2.2 -L 9999:localhost:8080
+= ssh -L 9999:localhost:8080 me@140.113.2.2
+= ssh me@140.113.2.2 -L 9999:127.0.0.1:8080
+= ssh -L 9999:127.0.0.1:8080 me@140.113.2.2
+E> 格式 -L 本地port:遠端看到的host:hostport。
+?mc 在 ssh server -L 9999:localhost:8080 中，「localhost」指的是誰？
++ SSH server 那台機器自己
+- 執行 ssh 指令的 client
+- DNS server
+- 跳板機
+E> host:hostport 是從 SSH server 的角度解析的。
+
+@CARD net.rpf | SSH Remote Port Forwarding (-R)
+A> R = 「在 **R**emote（對方那邊）開一扇任意門」：同學在 PC 上連 0.0.0.0:9999，門的另一頭穿回 tunnel，從我的筆電走出去到 127.0.0.1:8080。因為筆電在 NAT 後，別人連不進來，只好我「主動挖地道」出去。
+B> 情境：同學想連你筆電上的 web server，但筆電在 NAT 後，同學無法 SSH 進你的筆電 → local forwarding 不可行
+B> 語法：**-R [bind_address:]port:host:hostport**
+B> 例：ssh server_addr -R 0.0.0.0:9999:127.0.0.1:8080
+B> **0.0.0.0:9999**：遠端 PC 上監聽的位址
+B> **127.0.0.1:8080**：筆電（client）上的服務位址
+B> SSH **server** 監聽 → 轉回 SSH client → client 再送進本地位址
+?mt 比較 -L 與 -R：
+> -L 的監聽端 :: SSH client（本地）
+> -R 的監聽端 :: SSH server（遠端）
+> -L 的 host:hostport 由誰解析 :: SSH server
+> -R 的 host:hostport 由誰解析 :: SSH client
+E> 兩者剛好相反：誰監聽、誰連目標互換。
+?mc 你的筆電在 NAT 後，想讓同學（能連到你的公網 SSH server）透過 server 存取筆電上 127.0.0.1:8080 的服務，應該用？
++ 在筆電上執行 ssh server -R 0.0.0.0:9999:127.0.0.1:8080
+- 在筆電上執行 ssh server -L 9999:127.0.0.1:8080
+- 在同學電腦上執行 ssh 筆電 -L 9999:localhost:8080
+- 在 SSH server 上執行 ssh 筆電 -L 0.0.0.0:9999:127.0.0.1:8080
+E> 外面連不進 NAT 內的筆電，只能由筆電主動連出去，再請 server 監聽（-R）。
+
+@CARD net.iproute2 | iproute2：ip 指令總覽
+A> ip 是網路設定的瑞士刀：ip link 管「網卡本身（插頭）」、ip address 管「網卡上的門牌」、ip route 管「路標」。
+B> **ip address**（ip a）：管理介面上的位址
+B> **ip link**：設定網路裝置、建立虛擬裝置
+B> **ip route**：設定 routing table
+B> **-c**：彩色輸出
+?mt 配對要用的 ip 子指令：
+> 幫 eth0 加一個 IP :: ip address
+> 把 eth0 啟用 (up) :: ip link
+> 設定 default gateway :: ip route
+> 建立 veth pair :: ip link
+E> 位址 → address；裝置 → link；路由 → route。
+?cmd 用彩色輸出顯示所有介面上的 IP 位址（用縮寫 a）：
+= ip -c a
+= ip -c addr
+= ip -c address
+= ip -c a show
+= ip -c address show
+E> -c 是彩色輸出；ip a 是 ip address 的縮寫。
+
+@CARD net.iplink | ip link 指令
+A> ip link 是「接線生」：插拔網卡（up/down）、生出假網卡（dummy）、做一條兩頭的網路線（veth pair）、把線插到虛擬交換器上（master br0）。
+B> **ip link show**：顯示所有介面；ip link show bridge 只看 bridge
+B> **ip link add name dum0 type dummy**：新增 dummy 裝置
+B> **ip link add name veth11 type veth peer name veth22**：新增一對 veth
+B> **ip link set eth0 up / down**：啟用 / 停用
+B> **ip link set veth11 master br0**：把 veth11 接到 bridge br0
+B> **ip link del dum0**：刪除裝置
+?cmd 把介面 eth0 啟用（up）：
+= ip link set eth0 up
+= ip link set dev eth0 up
+E> ip link set <dev> up/down。
+?cmd 建立一對 veth，一端叫 veth11、另一端叫 veth22：
+= ip link add name veth11 type veth peer name veth22
+= ip link add veth11 type veth peer name veth22
+E> type veth peer name <另一端>。
+?cmd 把 veth11 接到 bridge br0 上：
+= ip link set veth11 master br0
+= ip link set dev veth11 master br0
+E> master 指定它要掛在哪個 bridge。
+
+@CARD net.ipaddr | ip address 指令
+A> 幫門口（介面）掛門牌：add 掛一塊、del 拆一塊、flush 全部拆光。
+B> **ip addr show**：所有介面的位址；ip addr show up 只看已啟用的
+B> **ip a add 192.168.100.1/24 brd 192.168.100.255 dev eth0**：加位址（brd 可寫 +，代表網段最後一個 IP）
+B> **ip a del 192.168.100.1/24 dev eth0**：刪位址
+B> **ip a flush dev eth0**：清除 eth0 上所有位址
+?cmd 在 eth0 上加入位址 192.168.100.1/24，broadcast 自動用網段最後一個 IP：
+= ip a add 192.168.100.1/24 brd + dev eth0
+= ip addr add 192.168.100.1/24 brd + dev eth0
+= ip address add 192.168.100.1/24 brd + dev eth0
+E> brd + 表示自動推算為網段最後一個位址（.255）。
+?cmd 移除 eth0 上的所有 IP 位址：
+= ip a flush dev eth0
+= ip addr flush dev eth0
+= ip address flush dev eth0
+E> flush 一次清空。
+
+@CARD net.iproute | ip route 指令
+A> routing table 是路口的路標：「往 10.1.100.0/24 走 tun0、交給 192.168.2.254」；「其他所有地方（default）都交給 192.168.1.254」。
+B> **ip route [show]**：印 routing table
+B> **ip route add 10.1.100.0/24 via 192.168.2.254 dev tun0**：目的 10.1.100.0/24 從 tun0 出去，下一跳 192.168.2.254
+B> **ip route add default via 192.168.1.254 dev eth0**：設 default gateway
+B> **ip route del …**：刪除路由
+B> **ip route get to 8.8.8.8**：顯示到 8.8.8.8 會選哪條路（debug 好用）
+?cmd 設定 default gateway 為 192.168.1.254，從 eth0 出去：
+= ip route add default via 192.168.1.254 dev eth0
+= ip r add default via 192.168.1.254 dev eth0
+E> default = 0.0.0.0/0。
+?cmd 想知道送往 8.8.8.8 的封包會選哪條路由：
+= ip route get to 8.8.8.8
+= ip route get 8.8.8.8
+= ip r get 8.8.8.8
+E> ip route get 會模擬路由選擇結果。
+
+@CARD net.lpm | 讀懂 routing table：最長前綴匹配
+A> 地址越詳細的路標越可信：寫「台灣」的路標、寫「台南市」的路標、寫「台南市東區」的路標都符合時，選最詳細（prefix 最長）的那個。
+B> 第一欄是**目的 prefix**；封包目的地符合的都是候選；多個候選選 **prefix 最長** 的
+B> **default** = 0.0.0.0/0，涵蓋所有 IPv4
+B> **dev**：封包要從哪個介面出去
+B> **proto**：kernel（自動設定）／static（手動設定）／dhcp
+B> **via**：下一跳（gateway）；沒有 via 代表目的地就在同一個 LAN
+B> **scope link**：會送到本地 link（L2）
+B> 想當 router：除了 routing table，還要**開啟 packet forwarding**，可能還要設定 netfilter
+B> 想依來源位址等決定路由 → **Policy-based routing**（ip rule）
+X> default via 172.18.23.254 dev wlo1 proto dhcp src 172.18.16.1 metric 600
+X> 172.18.16.0/21 dev wlo1 proto kernel scope link src 172.18.16.1 metric 600
+X> 172.18.16.0/24 dev wlo2 proto static scope link src 172.18.16.2
+?mc 依上面的 routing table，送往 172.18.17.1 的封包會從哪個介面出去？
+QX> default via 172.18.23.254 dev wlo1 proto dhcp
+QX> 172.18.16.0/21 dev wlo1 proto kernel scope link
+QX> 172.18.16.0/24 dev wlo2 proto static scope link
++ wlo1（符合 /21）
+- wlo2（符合 /24）
+- wlo1，經由 default gateway 172.18.23.254
+- 丟棄，沒有符合的路由
+E> 172.18.17.1 不在 172.18.16.0/24（只到 .16.255），但在 /21（172.18.16.0~172.18.23.255），/21 比 default 長。
+?mc 同上表，送往 172.18.16.1 的封包會選哪條？
+QX> default via 172.18.23.254 dev wlo1 proto dhcp
+QX> 172.18.16.0/21 dev wlo1 proto kernel scope link
+QX> 172.18.16.0/24 dev wlo2 proto static scope link
++ 172.18.16.0/24 dev wlo2
+- 172.18.16.0/21 dev wlo1
+- default via 172.18.23.254
+- 三條都會送一份
+E> 三條都符合，選 prefix 最長的 /24。
+?tf routing table 中沒有 via 的路由，代表目的地在同一個 LAN，可直接送達。
+=T
+E> 沒有下一跳 → 直接在本地 link 上 ARP 送出。
+?tf 只要 routing table 設好，Linux 就會自動幫別人轉送封包，當成 router。
+=F
+E> 還要開啟 IP forwarding（例如 net.ipv4.ip_forward=1），通常也要設定 netfilter。
+
+@CARD net.tools | nmap 與 iperf3（FYR）
+A> nmap 是「挨家挨戶敲門看誰在家、開了哪些門」，在學校亂掃會被當成小偷（ban）；iperf3 是「測這條水管一秒能流多少水」，水管兩頭都要有人（server -s、client -c）。
+B> **nmap**：網路探索與安全稽核；找出存活主機與開放 port
+B> nmap 選項：-sn 只做主機探測、-sV 偵測服務版本、-O 偵測 OS、-sS TCP SYN 掃描、-p 指定 port 範圍、-n 不做 DNS 解析
+B> ⚠ 小心使用，在學校可能被 ban；練習用 scanme.nmap.org
+B> **iperf3**：量測網路 throughput / latency；兩端都要跑
+B> server：iperf3 -s；client：iperf3 -c serverAddr；預設 port **5201**
+B> -D server 背景 daemon、-b 目標 bitrate、-t 秒數 / -n bytes（client）
+?cmd 在 server 端啟動 iperf3 等待測試：
+= iperf3 -s
+E> 另一端用 iperf3 -c <server> 連過來測。
+?fill iperf3 的預設 port 是＿＿
+= 5201
+E> 可以用 -p 改。
+
+@CARD net.netns | Network Namespace
+A> 一棟大樓裡隔出好幾間獨立的「小公寓」，每間有自己的網卡、自己的路標（routing table）、自己的門禁（firewall）；住在 A 公寓的人看不到 B 公寓的東西。這就是 container 網路的基礎。
+B> **Network namespace**：邏輯上隔離網路資源，是 **container 網路的基礎**
+B> 每個 namespace 有自己的：**routing table、firewall rules、network devices (NICs)**
+B> process 只能看到並操作自己 namespace 內的網路資源
+?mc 下列哪個「不是」每個 network namespace 獨立擁有的？
++ Linux kernel 本身
+- Routing table
+- Firewall rules
+- 網路介面 (NIC)
+E> namespace 共用同一個 kernel，只是隔離資源；這也是 container 比 VM 輕量的原因。
+?tf 兩個不同 network namespace 裡的 process，可以各自監聽同一個 port（例如 80）而不衝突。
+=T
+E> 每個 namespace 有自己的網路 stack，這也是多個容器都能聽 80 的原因。
+?cmd 建立一個名為 ns1 的 network namespace：
+= ip netns add ns1
+E> 之後用 ip netns exec ns1 <指令> 在裡面執行程式。
+
+@CARD net.veth | veth 與 bridge
+A> veth pair 是一條兩頭的網路線，一頭插 A 公寓、一頭插 B 公寓（或插到交換器）；bridge 就是一台虛擬交換器。
+B> **veth**：虛擬介面，**一定成對**；一端送出的封包會從另一端出來 → 像一條網路線
+B> 兩端可以在**不同 namespace** → 實現跨 namespace 通訊
+B> **bridge**：輕量的**虛擬 switch**，實體/虛擬介面都能接上去，負責在接上的介面間轉送
+?tf veth 介面一定成對出現，兩端可以放在不同的 network namespace。
+=T
+E> 這就是 container 連到 host bridge（如 docker0）的方式。
+?mc Linux bridge 的角色最像下列哪個實體設備？
++ Switch（交換器）
+- Router（路由器）
+- Modem
+- Firewall
+E> bridge 在 L2 轉送 frame，像 switch。
+
+@CARD net.netfilter | netfilter、iptables、nftables
+A> netfilter 是 kernel 裡的「海關檢查站」（hooks），iptables / nftables 是你拿來寫檢查規則的「規章」。iptables 是舊規章（一堆分開的本子：iptables、arptables、ebtables），nftables 是統一的新規章。
+B> **netfilter**：Linux 2.4+ kernel 的封包處理框架
+B> 功能：packet filtering、NAT（位址/port 轉換）、userspace packet queueing、packet mangling
+B> **xtables（legacy）**：iptables、arptables、ebtables；讓 kernel module 註冊 callback
+B> **nftables**：取代 xtables；**沒有預先定義的 table**
+?mc 下列哪個「不是」netfilter 提供的功能？
++ DNS 名稱解析
+- Packet filtering
+- NAT
+- Packet mangling
+E> DNS 是 systemd-resolved 等的工作。
+?tf nftables 和 iptables 一樣，有預先定義好的 tables（如 filter、nat）。
+=F
+E> nftables 沒有預定義 table，要自己建立。
+
+@CARD net.networkd | systemd-networkd 基礎
+A> networkd 像「自動配對的設定機器人」：把 .network 檔放在 /etc/systemd/network/，它看到符合 [Match] 條件的介面就套用。檔名照字母順序比對，「第一個配對成功的才算數」，所以用兩位數字前綴排優先序。
+B> 管理網路設定的 system daemon（Debian 上不是唯一選擇）；適合 container/VM 動態產生的虛擬裝置
+B> 三種檔：**.network**（設定網路裝置）、**.netdev**（建立虛擬裝置）、**.link**（改實體裝置屬性，由 udev 使用）
+B> 檔案放在 **/etc/systemd/network/**；格式 [Section] + key=value，一行一組
+B> **[Match]**：介面要符合**所有**條件才套用（Name=eth*、Name=!br0、MACAddress=、Kind=）
+B> 依檔名**字典序**載入；介面**只會被第一個符合的檔**設定 → 慣例加 2 位數字前綴，如 40-foo.network
+B> 其他 section：**[Link]**（MAC、MTU、ActivationPolicy）、**[Address]**、**[Route]**、**[Network]**（DNS、DHCP、Gateway、Bridge 等雜項）
+?mt 配對 systemd-networkd 的檔案類型：
+> .network :: 設定網路裝置（IP、路由、DHCP…）
+> .netdev :: 建立虛擬網路裝置（如 bridge）
+> .link :: 修改實體裝置屬性（給 udev 用）
+E> 三種副檔名分工明確。
+?mc 10-eth.network 與 50-eth.network 都 [Match] Name=eth0，eth0 會被怎麼設定？
++ 只套用 10-eth.network（字典序較前、優先）
+- 只套用 50-eth.network（後面覆蓋前面）
+- 兩個檔的設定合併
+- 報錯，兩個都不套用
+E> 介面只會被第一個符合的設定檔設定。
+?fill systemd-networkd 的設定檔要放在 /etc/systemd/＿＿/ 目錄
+= network
+E> /etc/systemd/network/。
+
+@CARD net.networkd2 | networkd 設定實例
+A> [Address] 一段掛一塊門牌，[Route] 一段立一個路標；[Network] 是把常用的東西寫成簡寫的「快速設定區」。
+B> 多個 **[Address]** = 多個位址；Broadcast=true 自動推導廣播位址；AddPrefixRoute=true 自動加網段路由（兩者預設 true）
+B> 多個 **[Route]** = 多條路由（Destination= 與 Gateway=），從對應介面出去
+B> **[Network]**：Address=（[Address] 簡寫，可多次）、Gateway=（[Route] 簡寫，無 Destination → **default route**）、DNS=、IPv4Forwarding=yes
+B> 建 bridge：20-br0.netdev（[NetDev] Name=br0、Kind=bridge）→ 20-br0-eth0.network（[Match] Name=eth0、[Network] Bridge=br0；原本 eth0 的 .network 要移除）→ 20-br0.network（[Match] Name=br0、[Network] DHCP=yes）
+X> [Match]
+X> Name=eth0
+X> [Network]
+X> Address=192.168.1.1/24
+X> Gateway=192.168.1.254
+X> DNS=8.8.8.8
+?mc 在 [Network] 中只寫 Gateway=192.168.1.254，會產生什麼路由？
++ default via 192.168.1.254（因為沒有指定 Destination）
+- 192.168.1.0/24 via 192.168.1.254（同網段的路由）
+- 不會產生任何路由，Gateway 一定要寫在 [Route] 區段才有效
+- 只會把 192.168.1.254 設成 DNS，路由要另外在 [Route] 區段宣告
+E> Gateway= 是只有 Gateway key 的 [Route] 簡寫，沒有目的地就是 default route。
+?ord 用 systemd-networkd 建立 bridge br0 並把 eth0 接上去的設定順序：
+> 寫 20-br0.netdev：[NetDev] Name=br0、Kind=bridge
+> 寫 20-br0-eth0.network：[Match] Name=eth0、[Network] Bridge=br0（並移除 eth0 原本的 .network）
+> 寫 20-br0.network：[Match] Name=br0、[Network] DHCP=yes
+E> 先建裝置 (.netdev)，再把實體網卡掛上去，最後設定 bridge 自己的 IP。
+?fill 在 .network 的 [Network] section 中，開啟該介面封包轉送的設定是 IPv4Forwarding=＿＿
+= yes
+= true
+E> IPv4Forwarding=yes。
+
+@CARD net.networkctl | networkctl 與排錯
+A> networkctl 是 networkd 的遙控器。狀態從差到好：off（沒插電）→ no-carrier（插電沒接線）→ degraded（接線了但出不去）→ routable（可以上網）。
+B> **networkctl / networkctl list**：列出介面與狀態
+B> **networkctl status <iface>**：詳細狀態（含套用了哪個設定檔）
+B> **networkctl reload**：重新載入設定
+B> 狀態：**off** 斷電、**no-carrier** 有電沒 carrier（網路線沒插）、**degraded** 有 carrier 但還不能 route（例：有位址沒 gateway）、**routable** 可能可以連外
+B> 排錯：networkctl → networkctl status <iface> → **journalctl -u systemd-networkd** → 用前面學的網路工具
+?ord 介面狀態由「最不能用」到「最能用」排列：
+> off
+> no-carrier
+> degraded
+> routable
+E> degraded 常見原因：有 IP 但沒有 gateway。
+?cmd 查看 systemd-networkd daemon 的 log：
+= journalctl -u systemd-networkd
+= journalctl -u systemd-networkd.service
+E> -u 指定 unit。
+?mc networkctl 顯示某介面為 degraded，最可能的原因是？
++ 有 IP 但沒有對外路由
+- 網卡已經連線，但還在等 DHCP 回應
+- 網卡電源關閉
+- 已經可以正常上網
+E> 有 IP 位址，但沒有 gateway / 路由可出去。沒插線是 no-carrier；off 是關閉。
+
+@CARD net.resolved | systemd-resolved
+A> resolved 是系統的「查號台」：DNS= 是主要查號台、FallbackDNS= 是備用、Domains= 是「只講名字時自動補上的姓氏」（search domain）。
+B> 管理名稱解析的 systemd service
+B> 主設定檔 **/etc/systemd/resolved.conf**，並引入 /etc/systemd/resolved.conf.d/ 下所有檔
+B> **[Resolve]** section：**DNS=**（主要，空白分隔）、**FallbackDNS=**（主要都失敗時用）、**Domains=**（search domain）、**DNSSEC=**
+B> 排錯：**resolvectl status**、**resolvectl query <name>**
+X> [Resolve]
+X> DNS=1.1.1.1 8.8.8.8
+X> FallbackDNS=8.8.4.4
+X> Domains=cs.nycu.edu.tw
+X> DNSSEC=yes
+?cmd 用 systemd-resolved 查詢 www.nycu.edu.tw 的解析結果：
+= resolvectl query www.nycu.edu.tw
+E> resolvectl status 看整體設定，query 做查詢。
+?mc 設定 Domains=cs.nycu.edu.tw 後，執行 ping linux1 會嘗試解析哪個名稱？
++ linux1.cs.nycu.edu.tw
+- linux1.local
+- cs.nycu.edu.tw
+- 只會查 linux1，不會補任何東西
+E> Domains= 設定 search domain，短名稱會自動補上後綴。
+
+@CARD net.p_flow | 實作：連不上時由下往上查
+A> 網路 debug 像「水管不通，從水塔一路查到水龍頭」：先看自己有沒有位址、再看到不到得了閘道、再看出不出得去、名字解不解得開、最後才是對方的服務有沒有在聽。每一步都有一個指令和一句典型的錯誤訊息。
+B> ① 介面與位址：**ip -br a**（一行一個介面，看 UP 與 IP）
+B> ② 路由：**ip r**，有沒有 default via；`ping -c 3 閘道`
+B> ③ 對外：`ping -c 3 8.8.8.8` 通但 `ping google.com` 不通 → 問題在 DNS，用 **dig** 與 `resolvectl status` 查
+B> ④ 服務：本機 **ss -tlnp** 看有沒有在聽、聽在哪個位址；遠端 **nc -zv host port** 測 port
+B> 錯誤訊息對照：**Connection refused**（主機到了，但那個 port 沒人聽）、**Connection timed out**（封包被丟：防火牆或路由）、**No route to host**（路由 / ARP 層就不通）、**Name or service not known**（DNS 解不出來）
+X> ip -br a; ip r
+X> ping -c 3 8.8.8.8 && dig +short google.com
+X> ss -tlnp | grep ':22'
+X> nc -zv 10.113.0.5 22
+?mc `ssh host` 立刻回 Connection refused。這代表？
++ 封包到得了那台主機，但目標 port 沒有程式在監聽
+- DNS 解析失敗，ssh 找不到這台主機的 IP
+- 中間的防火牆把封包丟掉了，所以被拒絕
+- 自己的網路介面沒有 IP，連線無法送出
+E> 被丟包通常是等很久後 timed out；refused 是對方明確回了 RST。
+?ord 網路不通時，由底層到上層的排查順序：
+> ip -br a：介面有沒有 UP、有沒有 IP
+> ip r：有沒有 default route，ping 閘道
+> ping 8.8.8.8：對外連線
+> dig：名稱解析
+> ss -tlnp / nc -zv：服務與 port
+E> 先確定下層沒問題再往上，才不會亂猜。
+?cmd 不傳送資料，只測試 10.0.0.5 的 TCP 22 port 能不能連上，並顯示結果：
+= nc -zv 10.0.0.5 22
+= nc -vz 10.0.0.5 22
+E> -z 只掃描不送資料、-v 顯示結果。
+?mc `ping 8.8.8.8` 正常，但 `ping google.com` 顯示 Name or service not known。下一步最該查的是？
++ DNS 設定與解析
+- default route
+- 網路線有沒有插好
+- MTU 大小
+E> DNS 設定（resolvectl status、/etc/resolv.conf、dig）用 IP 會通、用名字不通，問題就在名稱解析。
+
+@CARD net.p_sshdebug | 實作：SSH 進不去的排查
+A> SSH 登入失敗時，client 只會給你一句很含糊的 Permission denied，真正的原因寫在 server 的 log 裡。口訣：client 開 -v 看「談到哪一步」，server 看 journal 看「為什麼拒絕」。金鑰登入最常死在權限太鬆。
+B> client：**ssh -v user@host**（-vvv 更詳細），看有沒有 Offering public key、對方接受哪些認證方式
+B> server：**journalctl -u ssh -e**（Debian 的服務名是 ssh），常見訊息：`Authentication refused: bad ownership or modes`、`User xxx not allowed`
+B> **StrictModes**（預設開）：家目錄不能被 group / other 寫入、**~/.ssh 要 700**、**authorized_keys 要 600**，而且擁有者要是該使用者
+B> 設定檔有沒有寫錯：**sshd -t**；最後實際生效的值：**sshd -T | grep -i 關鍵字**
+B> 改 sshd_config 時保留一個已登入的連線不要關，改壞了還能救
+B> host key 變了（重灌 / 換 VM）出現 REMOTE HOST IDENTIFICATION HAS CHANGED：`ssh-keygen -R 主機`
+X> ssh -v judge@10.113.0.5
+X> sudo journalctl -u ssh -e --no-pager | tail -n 20
+X> chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+X> sudo sshd -T | grep -i -E 'permitrootlogin|banner|port'
+?mc 公鑰已放進 ~/.ssh/authorized_keys，登入仍被拒；server log 顯示 `Authentication refused: bad ownership or modes for directory /home/u1`。該怎麼修？
++ 把家目錄與 ~/.ssh 的擁有者 / 權限修正（家目錄不可被 group 或 other 寫入）
+- 把 authorized_keys 改成 777，讓 sshd 在任何身分下都讀得到它
+- 把 PasswordAuthentication 改成 yes，金鑰登入才會一起啟用
+- 重開機，讓 sshd 重新讀取 authorized_keys 並更新 known_hosts 的紀錄
+E> StrictModes 會檢查家目錄、.ssh、authorized_keys 的擁有者與權限。
+?cmd 檢查 sshd 設定檔語法是否正確（不啟動服務）：
+= sshd -t
+= sudo sshd -t
+= /usr/sbin/sshd -t
+E> 沒有任何輸出就是通過。
+?mt 配對檔案與應有的權限：
+> ~/.ssh 目錄 :: 700
+> ~/.ssh/authorized_keys :: 600
+> 私鑰 id_ed25519 :: 600
+> 公鑰 id_ed25519.pub :: 644
+E> 私鑰權限太鬆，ssh client 也會拒絕使用。
+?cmd known_hosts 裡 10.0.0.5 的舊 host key 已經過期，把它移除：
+= ssh-keygen -R 10.0.0.5
+E> 之後重新連線再確認新的 fingerprint。
+
+@CARD net.p_sftp | 實作：sftp client 與 ~/.ssh/config
+A> sftp 是「走 SSH 通道的檔案總管」：連上去之後有自己的一組小指令。驗收 SFTP 伺服器時，你就是用它一項一項試（ls、put、get、mkdir、rm），把規格的權限表變成實測結果。
+B> 連線：`sftp -P 22 -i 金鑰 user@host`；遠端操作 **ls、cd、pwd、mkdir、rmdir、rm、get、put**；本機端加 l：**lls、lcd、lpwd**
+B> 非互動測試：`sftp -b 批次檔 user@host`，或 `echo 'ls public' | sftp -b - user@host`，適合寫成驗收腳本
+B> 確認「只能 SFTP、不能 SSH」：`ssh user@host` 應該被拒絕或直接斷線
+B> **~/.ssh/config** 幫主機取別名，省去每次打一長串
+X> Host hw2
+X>     HostName 10.113.0.5
+X>     User judge
+X>     IdentityFile ~/.ssh/id_ed25519
+X> # 之後 ssh hw2、sftp hw2、scp file hw2:/tmp/ 都能用
+X> echo 'put test.txt public/' | sftp -b - sftp-u1@hw2
+?mt 配對 sftp 互動指令：
+> put a.txt :: 把本機的 a.txt 上傳到遠端
+> get a.txt :: 把遠端的 a.txt 下載到本機
+> lcd /tmp :: 切換「本機」的工作目錄
+> ls :: 列出「遠端」目前目錄
+E> 前面加 l 的是 local 端的操作。
+?mc 在 ~/.ssh/config 寫了 `Host hw2` 區塊並設定 HostName、User、IdentityFile 之後，可以怎麼用？
++ ssh hw2、sftp hw2、scp 都能直接用 hw2 這個別名
+- 只有 ssh 能用這個別名，sftp 與 scp 要寫完整位址
+- 只有 ssh 讀 ~/.ssh/config，sftp 與 scp 都要另外寫 -F 指定設定檔
+- 修改 ~/.ssh/config 之後需要重新啟動 sshd
+E> 這是 client 端的設定，所有 OpenSSH client 工具共用。
+?fill sftp 要用非互動方式執行一個指令檔，選項是 ＿（後面接檔名，或用 - 表示讀 stdin）
+= -b
+E> batch mode，任何一個指令失敗就會中止並回傳非 0。
+
+@CARD net.p_wg | 實作：WireGuard 與 wg-quick
+A> WireGuard 是「一條用金鑰認人的加密隧道」。設定檔只有兩段：[Interface] 是我自己（我的私鑰、我在隧道裡的 IP），[Peer] 是對方（他的公鑰、他在哪、哪些目的地要走這條隧道）。HW0 的連線就靠它，HW2 要求它重開機後仍然存在。
+B> 設定檔 **/etc/wireguard/wg0.conf**（權限 600，裡面有私鑰）
+B> [Interface]：**PrivateKey**、**Address**；[Peer]：**PublicKey**、**Endpoint**（對方 IP:port）、**AllowedIPs**（哪些目的 IP 走隧道，也是允許對方用的來源 IP）、**PersistentKeepalive = 25**（在 NAT 後面時保持連線）
+B> 啟動 / 關閉：**wg-quick up wg0**、**wg-quick down wg0**
+B> 開機自動啟動：**systemctl enable --now wg-quick@wg0**（template unit，@ 後面是介面名）
+B> 檢查：**wg show**，重點看 **latest handshake**（沒有這一行代表根本沒連上）與 transfer 的收發量
+X> sudo wg show
+X> sudo systemctl enable --now wg-quick@wg0
+X> ip -br a show wg0
+?cmd 讓 wg0 這條 WireGuard 隧道現在啟動，並且開機時自動啟動：
+= systemctl enable --now wg-quick@wg0
+= systemctl enable --now wg-quick@wg0.service
+E> wg-quick@.service 是 template unit，@ 後面帶入介面名稱。
+?mc `wg show` 中某個 peer 完全沒有 latest handshake 這一行，代表？
++ 從未與該 peer 完成握手
+- 隧道運作正常，只是目前沒有流量
+- AllowedIPs 設得太大
+- DNS 設定錯誤
+E> 從未成功與該 peer 完成握手（金鑰、Endpoint 或防火牆有問題）握手成功過就會顯示時間；沒有就是還沒連上。
+?mc WireGuard [Peer] 區塊的 AllowedIPs 決定什麼？
++ 哪些目的 IP 要走這條隧道
+- 允許哪些使用者帳號使用 VPN
+- 隧道要監聽哪個 UDP port
+- 加密演算法
+E> 哪些目的 IP 的封包要送進這條隧道（同時也是允許對方使用的來源 IP）AllowedIPs = 0.0.0.0/0 就是全部流量都走隧道。
+
+@CARD net.p_curl | 實作：curl 測服務
+A> curl 是「用指令打開網頁的瀏覽器」，而且願意把過程全部講給你聽。服務有沒有活著、回什麼狀態碼、憑證對不對、有沒有被轉址，一行指令就知道。
+B> **curl -I URL**：只看回應標頭與狀態碼；**-v**：顯示連線、TLS 握手、送出與收到的標頭
+B> **-L** 跟著轉址、**-o 檔名** 存檔、**-s** 安靜模式（腳本用）、**-k** 忽略憑證錯誤（只限測試）
+B> **-H 'Host: a.example.com'** 指定 Host 標頭，可測 virtual host；**--resolve name:443:IP** 連同 TLS 的 SNI 一起指定
+B> 腳本裡判斷成功：`curl -fsS URL`，**-f** 讓 HTTP 4xx / 5xx 變成非 0 的 exit status
+B> 只想知道狀態碼：`curl -s -o /dev/null -w '%{http_code}\n' URL`
+X> curl -I http://localhost:8080
+X> curl -v https://example.com 2>&1 | less
+X> curl -s -o /dev/null -w '%{http_code}\n' http://localhost/
+?cmd 只取得 http://localhost:8080 的回應標頭（不要內容）：
+= curl -I http://localhost:8080
+= curl --head http://localhost:8080
+= curl -I localhost:8080
+E> -I 送的是 HEAD request。
+?mc 健康檢查腳本用 `curl -s URL && echo ok`，但網站回 500 時還是印出 ok。應該加上哪個選項？
++ -f
+- -v
+- -L
+- -k
+E> -f，讓 HTTP 錯誤狀態碼變成非 0 的 exit status。curl 預設只要「有拿到回應」就算成功，不管狀態碼。
+?tf curl -k 會略過 TLS 憑證驗證，所以正式環境的腳本也應該加上它以免出錯。
+=F
+E> -k 等於放棄驗證對方身分，只能在測試自簽憑證時暫時使用。
+
+@CARD net.p_hostname | 實作：hostname 與 /etc/hosts
+A> 主機名稱要「改兩個地方才算改完」：一個是系統自己記的名字，一個是 /etc/hosts 裡「這個名字對應到本機」的那一行。只改前者，sudo 每次都會抱怨 unable to resolve host。
+B> 查與改：**hostnamectl**、**hostnamectl set-hostname 新名字**（寫入 /etc/hostname，立刻生效、重開機也在）
+B> 同步修改 **/etc/hosts**：Debian 慣例是 `127.0.1.1 新名字`
+B> 症狀：**sudo: unable to resolve host xxx** → /etc/hosts 裡沒有目前的 hostname
+B> 查名字實際解析結果（會依 nsswitch 順序走 files 再 dns）：**getent hosts 名字**；dig 只問 DNS，不看 /etc/hosts
+?cmd 把主機名稱永久改成 sa2026：
+= hostnamectl set-hostname sa2026
+= hostnamectl hostname sa2026
+E> 之後記得同步 /etc/hosts。
+?mc 改完 hostname 之後，每次 sudo 都出現 `sudo: unable to resolve host sa2026`。原因是？
++ /etc/hosts 沒有 sa2026 那一行
+- sudoers 檔案的語法錯誤
+- 使用者不在 sudo 群組中
+- /etc/sudoers 裡還記著舊的 hostname
+E> /etc/hosts 裡沒有 sa2026 對應到本機的那一行。補上 127.0.1.1 sa2026 即可。
+?mc 想確認「系統實際上」會把某個名字解析成什麼（包含 /etc/hosts 的設定），應該用？
++ getent hosts 名字
+- dig 名字 +search（查詢時加上搜尋網域）
+- nslookup 名字
+- ip r get 名字
+E> dig 與 nslookup 直接問 DNS 伺服器，不會讀 /etc/hosts。

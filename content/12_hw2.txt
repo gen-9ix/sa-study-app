@@ -1,0 +1,884 @@
+@CH hw2 | HW2 實戰觀念：救援、SFTP、log、daemon | 🛠️ | hw2.pdf
+
+@CARD hw2.preflight | Preflight：initramfs、LUKS、預設 target
+A> HW2 的 VM 是一台「故意被弄壞的車」：開機零件（initramfs）被藏在 /root、預設停在維修模式（rescue）。修車原則：不重灌、不 mkfs，用學過的開機知識一層層修。
+B> 開機問題：**initramfs** 映像放在 /root，需找出並放回 /boot（對應 kernel 版本），必要時 update-initramfs / 修 GRUB
+B> 開機後落在 **rescue mode** → 檢查並修正預設 target：**systemctl get-default**、**systemctl set-default multi-user.target**
+B> **LUKS / dm-crypt** 磁碟加密：預設密碼 judge 改為 ilovesa2026 → **cryptsetup luksChangeKey <device>**（或 luksAddKey 再 luksKillSlot）
+B> **禁止重灌或對任何分割區 mkfs**；要以 **UEFI 模式**開機
+B> 也要維持 HW0：sudo NOPASSWD、wireguard、ssh key、hostname
+?cmd 把系統預設開機 target 改回 multi-user.target：
+= systemctl set-default multi-user.target
+= systemctl set-default multi-user
+E> get-default 查詢、set-default 設定。
+?cmd 變更 LUKS 裝置 /dev/sda3 的解鎖密碼：
+= cryptsetup luksChangeKey /dev/sda3
+E> 會要求輸入舊密碼與新密碼。
+?mc 開機時要求輸入 LUKS 密碼這一步，是在哪個階段由誰負責？
++ initramfs（early user space）解鎖加密裝置，之後才掛載 root
+- BIOS 在 GRUB 載入 kernel 之前就解鎖加密裝置
+- systemd 進入 multi-user.target 之後才解鎖
+- GRUB 載入 kernel 後，由 kernel 自己解鎖，再交給 initramfs 掛載
+E> root 在加密裝置上時，解鎖一定要在掛載 root 之前。
+
+@CARD hw2.snapper | SnApper：Btrfs 快照管理腳本
+A> SnApper 是自己寫的「相機管家」：snapshot 拍照（唯讀、自動輪替只留 N 張）、list 列相簿、delete 刪照片、rollback 把照片「沖洗成可用的新版本」換回原處，而且照片本身要留著。
+B> 指令：SnApper snapshot SUBVOL [-c ROTATION_COUNT]、list [-p SUBVOL] [-i ID]、delete [ID]、rollback ID；放在 **$PATH** 中
+B> snapshot 放在 <ROOT_VOLUME>/snapshot/<SUBVOL>/**@YYYYMMDD-hhmmss**，直接在 root volume（ID 5）下，**唯讀**；輸出 Snap '<PATH>' [<ID>]
+B> 輪替：超過 ROTATION_COUNT（預設 5）就刪除 **subvolume ID 最小**的，直到 ≤ count
+B> list 欄位 ID SUBVOLUME TIME，**不能用 TAB** 分隔；-p、-i 可同時使用
+B> rollback：snapshot 仍存在、subvolume 可寫、remount 後持續（作法：對唯讀 snapshot 建立可寫 snapshot 取代原 subvolume）
+X> date +%Y%m%d-%H%M%S        # 20251003-163650
+X> btrfs subvolume snapshot -r /mnt/hw2root/pool1 /mnt/hw2root/snapshot/pool1/@$(date +%Y%m%d-%H%M%S)
+X> btrfs subvolume list -p -a -t /mnt/hw2
+?fill 產生 20251003-163650 這種格式的 date 指令格式字串是 date +＿＿
+= %Y%m%d-%H%M%S
+E> %Y 年、%m 月、%d 日、%H 時、%M 分、%S 秒。
+?mc SnApper 預設保留 5 個 snapshot，建立第 6 個之後要刪掉哪一個？
++ ID 最小的
+- 最新建立的那個
+- 隨機一個
+- 全部刪掉重來
+E> subvolume ID 最小的那個（最舊）規格：delete snapshot with smallest subvolume ID，重複直到 ≤ ROTATION_COUNT。
+?cmd 刪除路徑為 /mnt/root5/snapshot/pool1/@20251003-163650 的 snapshot：
+= btrfs subvolume delete /mnt/root5/snapshot/pool1/@20251003-163650
+= btrfs sub delete /mnt/root5/snapshot/pool1/@20251003-163650
+E> snapshot 是 subvolume，用 subvolume delete。
+
+@CARD hw2.sshd | 修正 SSH 設定（sshd_config）
+A> sshd_config 是 SSH 大門的「門禁規則表」。改完一定先 sshd -t 檢查文法，再 reload；並保持一個已登入的視窗，免得把自己鎖在門外。
+B> 只聽 **Port 22**；**PermitRootLogin no**
+B> 不要 banner：**Banner none**（不可修改或刪除 /etc/ssh/banner.txt）
+B> 不要 uname 輸出：Debian 的 motd 由 /etc/update-motd.d/（如 10-uname）產生 → 移除其執行權限
+B> 要 Last login 訊息：**PrintLastLog yes**
+B> 檢查 sshd -t；重載 systemctl reload ssh；sshd_config.d/ 的 Include 與 Match 區塊也會影響
+?mt 配對 sshd_config 設定：
+> PermitRootLogin no :: 禁止 root 直接 SSH 登入
+> Banner none :: 不顯示登入前的 banner
+> PrintLastLog yes :: 顯示 Last login 訊息
+> Port 22 :: 只監聽 22 port
+E> 改完 sshd -t 再 reload。
+?mc HW2 要求登入時「不要顯示 banner」，但又規定不能修改或刪除 /etc/ssh/banner.txt。應該怎麼做？
++ 在 sshd_config 設定 Banner none
+- 把 banner.txt 的內容清空，檔案本身保留
+- 把 banner.txt 改名，sshd 找不到就不會顯示
+- 把 sshd 換成 telnet，就不會有 banner 機制
+E> 題目禁止動檔案，所以從設定關掉。
+?cmd 修改 sshd 設定後，不中斷現有連線地重新載入（Debian 的服務名稱是 ssh）：
+= systemctl reload ssh
+= sudo systemctl reload ssh
+= systemctl reload ssh.service
+= systemctl reload sshd
+E> reload 前先用 sshd -t 檢查語法。
+
+@CARD hw2.sftp | SFTP chroot 與 internal-sftp
+A> chroot 是「把客人關在指定的展示間裡」：他以為展示間就是整棟樓的 /。sshd 有嚴格規定：展示間（以及往上每一層路徑）必須是 root 擁有、而且別人不能寫，不然 sshd 拒絕 chroot。internal-sftp 是 sshd 內建的 SFTP 服務，不需要 chroot 裡面有任何程式。
+B> **Subsystem sftp internal-sftp**（內建 sftp server，chroot 內不需要 binary）
+B> 用 **Match User / Match Group** 對特定使用者套用：**ChrootDirectory**、**ForceCommand internal-sftp**（只能 SFTP，不能 SSH shell）、可關閉 forwarding
+B> **ChrootDirectory 的路徑每一層都必須是 root 擁有，且 group/other 不可寫**
+B> 管理員（sysadm）**不 chroot**；所有人的 SFTP 起始目錄都在 $SFTP_ROOT（internal-sftp **-d** 設定起始目錄）
+B> 上傳檔案移除 other 的 rwx：internal-sftp **-u 0007**（強制 umask）
+B> 公鑰登入：每個帳號的 ~/.ssh/authorized_keys
+X> Match User sftp-u1,sftp-u2,anonymous
+X>     ChrootDirectory /mnt/hw2/sftp
+X>     ForceCommand internal-sftp -u 0007
+X>     AllowTcpForwarding no
+?mc 設定 ChrootDirectory /mnt/hw2/sftp 後 SFTP 一登入就斷線，log 顯示 bad ownership or modes for chroot directory。原因？
++ chroot 路徑的擁有者或權限不對
+- 使用者沒有 shell
+- internal-sftp 沒有安裝
+- 防火牆擋住 22 port
+E> chroot 路徑上的某一層目錄不是 root 擁有，或 group/other 可寫。sshd 要求 chroot 目錄與其所有上層都 root 擁有且不可被他人寫入。
+?mt 配對 sshd_config 指令：
+> ChrootDirectory :: 把使用者限制在指定目錄當作 /
+> ForceCommand internal-sftp :: 只允許 SFTP，不允許 shell
+> Match Group :: 只對特定群組套用後面的設定
+> internal-sftp -u 0007 :: 強制上傳檔案的 umask
+E> Match 區塊一直作用到下一個 Match 或檔案結尾。
+?tf 使用 internal-sftp 時，chroot 目錄內必須放一份 sftp-server 程式。
+=F
+E> internal-sftp 是 sshd 內建，這正是用它搭配 chroot 的原因。
+
+@CARD hw2.sftpperm | SFTP 權限設計（public / private / hidden）
+A> 用權限位元蓋一座「藏寶屋」：public/ 是大家都能放東西的公共區，但只能拿走自己的（sticky）；private/ 是「看不到房間清單、但知道名字就能走進去」（只給 x 不給 r），hidden/treasure 就是知道地址才拿得到的寶藏。
+B> public/：registered user 可 get/put/mkdir，只能刪除**自己的**檔案 → **sticky bit** + 群組可寫；anonymous 唯讀 → 不在可寫群組
+B> 管理員 sysadm 可刪除全部：讓 sysadm 成為目錄**擁有者**（sticky 允許目錄擁有者刪除）
+B> private/：使用者**不能 ls**、**不能寫**、**能 cd**、能 get hidden/treasure → 目錄只給 **x**（--x）、treasure 給 r
+B> 新目錄自動屬於共同群組 → **setgid** 目錄
+B> 上傳檔移除 other 的 rwx → umask 007 或預設 ACL 的 o::---；但 anonymous 對檔案而言就是 other，所以要另外用 **ACL（u:anonymous:r）** 給它讀取權（見「umask 007 與 anonymous 唯讀的衝突」）
+?mc 要讓使用者「可以 cd 進 private/、可以下載已知名稱的檔案，但不能 ls 列出內容」，private/ 對他們應給什麼權限？
++ 只給 x（執行/通過），不給 r
+- 只給 r，不給 x
+- 給 rw，不給 x
+- 給 rwx 加 sticky
+E> 目錄 r = 列出、x = 通過。
+?mc public/ 中「使用者只能刪除自己上傳的檔案」，關鍵的權限位元是？
++ sticky bit
+- setuid
+- setgid
+- 檔案本身的 w
+E> sticky 目錄只允許檔案擁有者、目錄擁有者或 root 刪除 / 改名。
+
+@CARD hw2.log | SFTP logging：journald + rsyslog
+A> 讓 SFTP 的 log「獨立成一本帳」：先讓 internal-sftp / sftp-server 會寫 log（-l INFO -f 設施），再用 rsyslog 的過濾規則依程式名稱挑出來寫進 /var/log/sftp.log，並且「stop」避免混到其他 log。chroot 中的使用者還需要讓 /dev/log 在 chroot 裡可用，log 才送得出來。
+B> internal-sftp / sftp-server 開 log：**-l INFO**（log level）、**-f AUTH / LOCAL*n***（facility）
+B> 查 log：**journalctl -t internal-sftp -t sftp-server**（-t 依 syslog identifier 過濾）
+B> rsyslog 依 **programname** 過濾寫到 /var/log/sftp.log，再 **stop** 避免寫進其他檔
+B> chroot 使用者：需在 chroot 內提供 /dev/log（例如 rsyslog 增加 socket、或 bind mount）
+B> 檔名要排在 50-default.conf 之前（例如 10-sftp.conf），stop 才能避免訊息又寫進 auth.log
+X> # /etc/rsyslog.d/10-sftp.conf
+X> if $programname == 'internal-sftp' or $programname == 'sftp-server' then {
+X>     action(type="omfile" file="/var/log/sftp.log")
+X>     stop
+X> }
+?cmd 用 journalctl 只看 syslog identifier 為 internal-sftp 與 sftp-server 的 log：
+= journalctl -t internal-sftp -t sftp-server
+= journalctl -t sftp-server -t internal-sftp
+E> -t = SYSLOG_IDENTIFIER。
+?mc rsyslog 規則寫完 action 後加 stop 的目的？
++ 不讓後面的規則再處理它
+- 停止 rsyslog daemon
+- 停止 SFTP 服務
+- 讓 log 只寫一次就關檔
+E> 讓符合的訊息不再被後面的規則處理（不會混進 /var/log/syslog 等）規格要求 sftp.log 是純 SFTP log，同時其他檔不該混入。
+
+@CARD hw2.watchd | sftp_watchd：監控上傳並做成 systemd service
+A> sftp_watchd 是「上傳檢查站的保全」：盯著每個新上傳的檔案，看前 4 個 bytes 是不是 ELF 的身分證（\x7fELF），或 MD5 是否在黑名單上；違規就移到 .violated/ 並寫 log。再把保全登記成 systemd service，讓 systemctl 能叫他上班、下班、看狀態，journalctl -u 能看他的值勤紀錄。
+B> 偵測：**ELF** 檔（只看前 4 bytes：**0x7F 'E' 'L' 'F'**）、**MD5** 在禁止清單中（md5sum）
+B> 違規 → 移到 ${SFTP_ROOT}/private/.violated/ 並記錄指定格式的 log
+B> 監看檔案事件：如 **inotifywait -m -r -e close_write**
+B> 寫成 systemd service：/etc/systemd/system/sftp_watchd.service → daemon-reload → enable --now；支援 start/stop/status/restart；log 用 **journalctl -u sftp_watchd**（印到 stdout/stderr 就會進 journal）
+X> [Unit]
+X> Description=SFTP upload watcher
+X> After=network.target
+X> [Service]
+X> ExecStart=/usr/local/bin/sftp_watchd
+X> Restart=on-failure
+X> [Install]
+X> WantedBy=multi-user.target
+?mc 判斷檔案是不是 ELF 執行檔，只看前 4 bytes 應該是？
++ 0x7F 45 4C 46（\x7fELF）
+- 23 21 2F 62（#!/b）
+- 4D 5A 90 00（MZ，Linux 執行檔）
+- 50 4B 03 04（PK）
+E> MZ 是 Windows PE、#! 是 script、PK 是 zip。
+?mt 配對 service unit 的 section：
+> [Unit] :: 描述與依賴 / 順序（Description、After）
+> [Service] :: 如何執行（ExecStart、Restart）
+> [Install] :: enable 時掛到哪個 target（WantedBy）
+E> 沒有 [Install] 就不能 enable。
+?cmd 讓 sftp_watchd.service 立即啟動並在開機時自動啟動：
+= systemctl enable --now sftp_watchd
+= systemctl enable --now sftp_watchd.service
+E> 新寫的 unit 記得先 daemon-reload。
+?cmd 計算 upload.bin 的 MD5：
+= md5sum upload.bin
+E> FreeBSD 上是 md5。
+
+@CARD hw2.p_plan | HW2 作戰順序與存檔點
+A> HW2 像一款「不能讀檔重來」的遊戲：judge 甚至可能 dd 掉你的磁碟。所以每完成一個階段就在 VM 存一次檔（快照），並且每一關都問自己：重開機之後它還在嗎？
+B> 順序：Preflight（能開機、解鎖、進 multi-user）→ 2-1 縮 root、new-part → 加磁碟、RAID10、Btrfs、subvolume、fstab → SnApper → 2-2 sshd、帳號、SFTP 權限 → 2-3 logging、sftp_watchd
+B> 每一階段結束：**VM 快照**＋**重開機驗證**；作業規格明寫「Make sure everything works after reboot」
+B> 持久化清單：fstab（掛載）、systemctl enable（服務）、set-default（target）、crypttab 與 initramfs（解鎖）、hostnamectl
+B> judge 從 `$(which SnApper)`、`$(which sftp_watchd)` 拿腳本：要在 PATH、judge 讀得到，而且**不能呼叫你自己寫的其他腳本或程式**
+B> 同時維持 HW0：sudo NOPASSWD、WireGuard、SSH key、hostname
+?mc 規格要求所有設定在重開機後仍然有效。下列哪一項「不會」自動在重開機後保留？
++ 只用 mount 指令手動掛上、沒有寫進 fstab 的掛載
+- systemctl enable 過的服務
+- set-default 設定的 target
+- hostnamectl set-hostname 設定的名稱
+E> 手動 mount 只存在於這次開機。
+?tf SnApper 腳本可以把共用函式寫在另一個 /usr/local/lib/snap_lib.sh，再用 source 載入。
+=F
+E> 規格：腳本不得呼叫任何其他自寫的 script 或執行檔；全部寫在同一個檔案裡。
+
+@CARD hw2.p_preflight | Preflight 實戰：從開不了機到登入
+A> Preflight 是三道關卡串在一起：GRUB 找不到 initramfs（開不了機）→ 解鎖 LUKS → 一進系統就掉進 rescue。每一道都對應到開機流程的一層，照順序一關一關打。
+B> 關卡一：開機卡在 kernel panic 或找不到 root → initramfs 不在 /boot。在 GRUB 按 **c** 用 `ls` 看分割區、或用 rescue / Live 環境把 /root 底下的 initrd 放回 /boot（版本與 vmlinuz 一致），再 `update-grub`
+B> 臨時開機也可以在 GRUB 指令列手動下：`linux /vmlinuz-版本 root=...`、`initrd /initrd.img-版本`、`boot`（路徑依 /boot 是否獨立分割而不同）
+B> 關卡二：解鎖密碼 judge → 進系統後 `cryptsetup luksChangeKey` 換成 ilovesa2026，**重開機實測**新密碼
+B> 關卡三：每次都進 rescue → `systemctl get-default`、`cat /proc/cmdline`、`/etc/default/grub` 三處都查
+B> 用 **find / -name 'initrd*' 2>/dev/null** 找出被藏起來的檔案；用 `uname -r` 對版本
+B> 還要確認 UEFI 模式開機：存在 **/sys/firmware/efi** 目錄就是 UEFI
+X> ls /sys/firmware/efi && echo "UEFI"
+X> find / -name 'initrd.img*' 2>/dev/null
+X> cp /root/initrd.img-$(uname -r) /boot/ && update-grub
+?cmd 檢查系統是否以 UEFI 模式開機（判斷 /sys/firmware/efi 是否存在）：
+= ls /sys/firmware/efi
+= test -d /sys/firmware/efi
+= [ -d /sys/firmware/efi ]
+= ls -d /sys/firmware/efi
+E> 以 legacy BIOS 開機時沒有這個目錄。
+?mt 配對 Preflight 的症狀與對應的處理：
+> 開機時 VFS: Unable to mount root fs :: 把 initramfs 放回 /boot 並 update-grub
+> 一進系統就是 rescue mode :: systemctl set-default multi-user.target 並檢查 kernel 參數
+> 要求的磁碟密碼是 judge :: cryptsetup luksChangeKey 換成新密碼
+> 開機後 sudo 要輸入密碼 :: 用 visudo 設定 NOPASSWD
+E> 每一關對應開機流程的不同層。
+?fill 在 GRUB 選單按 ＿ 可以進入 GRUB 指令列，手動下 linux、initrd、boot 指令
+= c
+E> 按 e 則是編輯目前選中的那一筆。
+
+@CARD hw2.p_layout | 2-1 實戰：Btrfs 子卷與掛載配置
+A> 這一關的要點是「所有房間都直接開在大廳旁邊」：root、sftp、pool1、pool2 四個 subvolume 都直接在 ID 5 底下，snapshot/ 只是一般目錄。但掛載的時候，sftp、pool1、pool2 要掛在 root 的「裡面」，所以 root 裡要先有這三個空目錄當掛載點。
+B> 在 top-level 建 4 個 subvolume 與 snapshot/{sftp,pool1,pool2} 三個**目錄**
+B> 先把 root 掛到 /mnt/hw2，再在 /mnt/hw2 裡 `mkdir sftp pool1 pool2`（這些是 root subvolume 裡的普通目錄，當作掛載點，**不是**巢狀 subvolume）
+B> fstab 四行，來源都寫 **/dev/mapper/SA2026vg-SARaid10**，選項用 **subvol=名稱**；/mnt/hw2 那行要排在前面
+B> 驗證：`btrfs subvolume list -p -a -t /mnt/hw2` 每個的 parent 與 top level 都是 5；`findmnt -t btrfs` 看到四個掛載；`btrfs filesystem show` 確認 Label 是 SAHW2
+X> mount -o subvol=root /dev/mapper/SA2026vg-SARaid10 /mnt/hw2
+X> mkdir /mnt/hw2/{sftp,pool1,pool2}
+X> # /etc/fstab
+X> /dev/mapper/SA2026vg-SARaid10 /mnt/hw2       btrfs subvol=root  0 0
+X> /dev/mapper/SA2026vg-SARaid10 /mnt/hw2/sftp  btrfs subvol=sftp  0 0
+X> /dev/mapper/SA2026vg-SARaid10 /mnt/hw2/pool1 btrfs subvol=pool1 0 0
+X> /dev/mapper/SA2026vg-SARaid10 /mnt/hw2/pool2 btrfs subvol=pool2 0 0
+?mc 在掛著 root subvolume 的 /mnt/hw2 裡執行 `btrfs subvolume create /mnt/hw2/pool1`，會有什麼問題？
++ pool1 變成 root 底下的巢狀子卷
+- 指令會失敗，因為 /mnt/hw2 是唯讀
+- 沒有問題，結果和在 top-level 建立相同
+- pool1 會變成 snapshot
+E> pool1 會變成 root 底下的巢狀 subvolume，違反「所有 subvolume 都直接在 ID 5 底下」。subvolume 要在 top-level（例如 /mnt/root5）底下建立；/mnt/hw2/pool1 只要是普通目錄當掛載點。
+?tf /mnt/hw2/sftp 這個掛載點目錄，本身必須是一個 Btrfs subvolume。
+=F
+E> 掛載點只是 root subvolume 裡的普通目錄；sftp subvolume 是從 top-level 掛過來的。
+
+@CARD hw2.p_snapimpl | SnApper 實作拆解
+A> 把 SnApper 拆成四個小零件分別做、分別測：找到大廳（掛 top-level）、拍照（唯讀快照 + 印出 ID）、整理相簿（依 ID 排序、刪最舊）、列印清單（解析名稱轉成時間）。每個零件都能用一行指令單獨驗證。
+B> 腳本一開頭：檢查 root、把 top-level 掛到暫存點（例如 /mnt/root5），結束時用 **trap** 確保 umount
+B> snapshot：名稱 `@$(date +%Y%m%d-%H%M%S)`，`btrfs subvolume snapshot -r`，再用 `subvolume show` 或 list 取 ID，印出 `Snap 'snapshot/pool1/@...' [ID]`
+B> 輪替：列出 `snapshot/SUBVOL/@` 開頭的路徑與 ID → `sort -n` → 數量超過 N 就從最小的開始刪
+B> list：由名稱 @20251002-205750 轉成 2025-10-02 20:57:50（字串切割或 `date -d`）；用 printf 對齊，**不能有 TAB**；-p 與 -i 可以同時篩選
+B> delete：沒給 ID 就刪全部受管快照，每刪一個印 `Destroy ID <ID>`；給了不存在的 ID 要怎麼處理，自己想清楚並一致
+B> 測試：連續 snapshot 7 次確認只剩 5 個；`list | cat -A` 確認沒有 ^I；rollback 後 `touch` 測可寫、`umount && mount` 測持久
+X> name="@$(date +%Y%m%d-%H%M%S)"
+X> ts=${name#@}                       # 20251002-205750
+X> printf '%s-%s-%s %s:%s:%s\n' "${ts:0:4}" "${ts:4:2}" "${ts:6:2}" "${ts:9:2}" "${ts:11:2}" "${ts:13:2}"
+X> btrfs subvolume list /mnt/root5 | awk -v p="snapshot/$sub/@" 'index($NF,p)==1 {print $2}' | sort -n
+?mc 輪替時要刪「ID 最小」的快照。從 `btrfs subvolume list` 取出 ID 後，要怎麼確保排序正確？
++ 用 sort -n 依數值排序
+- 用 sort，預設就是數值排序
+- 不用排序，list 的順序就是 ID 順序
+- 用 sort -r
+E> 不加 -n 會按字串排序，例如 1000 會排在 999 前面。
+?fill ts=20251002-205750 時，bash 取出前 4 個字元 2025 的寫法是 ${ts:＿＿}
+= 0:4
+E> ${var:offset:length}，offset 從 0 開始。
+?mc 連續執行 7 次 `SnApper snapshot pool1`（沒有 -c）之後，應該觀察到什麼？
++ 剩 5 個，ID 最大的
+- 有 7 個快照
+- 只剩最舊的 5 個
+- 第 6 次開始會報錯
+E> snapshot/pool1/ 底下只剩 5 個快照，留下的是 ID 最大的 5 個。預設 ROTATION_COUNT 是 5，每次建立後刪掉多出來的最小 ID。
+
+@CARD hw2.p_sshd | 2-2 實戰：sshd 設定的「第一個值獲勝」
+A> sshd_config 有個反直覺的規則：同一個關鍵字出現好幾次時，**第一個**讀到的值生效。Debian 的主設定檔第一行就 Include 了 sshd_config.d/*.conf，所以藏在那個資料夾裡的設定會蓋過你在主檔後面寫的。作業的陷阱很可能就藏在這裡。
+B> 先找出所有相關設定：`grep -rn -i -E 'port|permitroot|banner|printlastlog|printmotd' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/`
+B> 看最後生效的值：**sshd -T**（要 root），例如 `sshd -T | grep -i banner` 應該是 **banner none**
+B> 例外：**Port 可以寫多行**，每一行都會監聽；只能留 22，用 `ss -tlnp | grep sshd` 確認
+B> **Match 區塊**一直延續到下一個 Match 或檔案結尾，寫在 Match 後面的「全域設定」其實不是全域的
+B> uname 那段輸出來自 **/etc/update-motd.d/** 的腳本，`chmod -x` 停用那一支；motd 的歡迎詞（greeting）本身要保留
+B> 改完 `sshd -t` → `systemctl reload ssh` → **另開一個新視窗**登入測試，原本的視窗先別關
+X> sudo grep -rn -i banner /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+X> sudo sshd -T | grep -i -E '^(port|permitrootlogin|banner|printlastlog) '
+X> sudo chmod -x /etc/update-motd.d/10-uname
+X> sudo sshd -t && sudo systemctl reload ssh
+?mc sshd_config 主檔最後寫了 `Banner none`，但 sshd_config.d/99-banner.conf 裡有 `Banner /etc/ssh/banner.txt`，而主檔開頭就 Include 了這個資料夾。登入時會怎樣？
++ 仍顯示，Include 的值先被讀到
+- 不顯示 banner，主檔的設定優先
+- sshd 會因設定衝突而無法啟動
+- 兩個都會生效
+E> 仍然顯示 banner，因為 Include 進來的設定比較早被讀到，第一個值獲勝。用 sshd -T 就能看到最後生效的是哪一個。
+?cmd 以 root 印出 sshd 實際生效的完整設定：
+= sshd -T
+= sudo sshd -T
+= /usr/sbin/sshd -T
+E> 搭配 grep 看單一項目最方便。
+?mc sshd_config 中寫了 `Port 22` 與 `Port 2222` 兩行，結果是？
++ sshd 同時監聽 22 與 2222
+- 只監聽 22（第一個值）
+- 只監聽 2222（後面的值覆蓋前面）
+- 設定錯誤無法啟動
+E> Port 與 ListenAddress 可以重複，是「第一個值獲勝」規則的例外。
+
+@CARD hw2.p_sftptest | 2-2 實戰：用腳本驗收權限表
+A> 權限表有 3 種角色乘以 2 個目錄乘以 6 個動作，靠手動一個一個試很容易漏。把每個角色要做的操作寫成 sftp 批次檔，一次跑完看哪一行成功、哪一行失敗，就是你自己的小 judge。
+B> sftp -b 遇到失敗會停下並回傳非 0；在指令前加 **-**（例如 `-rm x`）表示「失敗也繼續」，適合一次測完
+B> 每個角色測：public 的 ls / put / get / mkdir / rm 別人的檔 / rm 自己的檔；private 的 ls（應失敗）、cd（應成功）、get hidden/treasure（應成功）、put（應失敗）
+B> 也要測：`ssh sftp-u1@host` 應該不能拿到 shell；登入後 `pwd` 應該是 /（registered / anonymous 被 chroot）
+B> 上傳後在伺服器端 `ls -l` 確認 other 沒有任何權限
+B> 伺服器端同時開 `journalctl -t internal-sftp -f` 或 auth log，失敗時看原因
+X> cat > t.batch <<'EOT'
+X> pwd
+X> -ls private
+X> cd private/hidden
+X> -get treasure /tmp/treasure
+X> -put /etc/hostname
+X> EOT
+X> sftp -b t.batch anonymous@hw2
+?fill sftp 批次檔中，要讓某個指令失敗時不中斷整個批次，要在指令前面加上 ＿
+= -
+E> 例如 `-rm foo`。另外 @ 前綴可以不回顯該指令。
+?mc 依作業權限表，sftp-u1 對 private/hidden/ 可以做的是？
++ cd 進去並 get treasure，但不能 ls、不能 put
+- 完全不能進入，因為 hidden 目錄對 other 沒有任何權限
+- 完全不能進入，因為 hidden 對 other 沒有權限
+- 可以 put 新檔案進去，但不能 get treasure
+E> 對應到目錄只有 x、檔案有 r 的權限設計。
+
+@CARD hw2.p_chrootlog | 2-3 實戰：chroot 裡的 log 送不出來
+A> 被 chroot 的 SFTP 使用者，世界只剩 /mnt/hw2/sftp；internal-sftp 想寫 log 時要找 /dev/log 這個「郵筒」，但 chroot 裡根本沒有 /dev。所以 sysadm 的 log 有、sftp-u1 的 log 卻沒有，是這一關最典型的現象。
+B> 症狀：只看得到 **sftp-server**（沒有 chroot 的 sysadm）的 log，看不到 chroot 使用者的 **internal-sftp** log
+B> 做法一：讓 rsyslog 多開一個 socket，`input(type="imuxsock" Socket="/mnt/hw2/sftp/dev/log" CreatePath="on")`；這樣訊息只進 rsyslog，**journald 收不到**
+B> 做法二：在 chroot 裡建一個空檔 dev/log，把 **/run/systemd/journal/dev-log** bind mount 到它上面；訊息進 journald，再由 rsyslog 從 journal 轉出，兩邊都看得到；要寫進 fstab 才會持久
+B> chroot 內新增的 dev/ 目錄同樣必須是 root 擁有、他人不可寫
+B> 兩種做法對規格「journalctl 與 /var/log/sftp.log 都要有」的影響不同，選之前想清楚，做完兩種指令都實測
+B> rsyslog 設定檢查：**rsyslogd -N1**；改完 `systemctl restart rsyslog`
+X> sudo rsyslogd -N1
+X> journalctl -t internal-sftp -t sftp-server -f
+X> tail -f /var/log/sftp.log
+?mc sysadm 的 SFTP log 正常，但 chroot 的 sftp-u1 登入完全沒有 internal-sftp 的 log。最可能的原因？
++ chroot 環境裡沒有 /dev/log，internal-sftp 無法把 log 送出去
+- sftp-u1 沒有寫入 /var/log/sftp.log 的權限，所以 log 被拒絕
+- rsyslog 沒有安裝 imjournal 模組，所以收不到 chroot 的訊息
+- journald 預設只記錄 UID 1000 以下帳號的活動
+E> 不 chroot 的 sysadm 用的是正常的 /dev/log，所以沒問題。
+?cmd 檢查 rsyslog 設定檔語法（不啟動服務）：
+= rsyslogd -N1
+= sudo rsyslogd -N1
+= rsyslogd -N 1
+E> -N 是 config check mode，1 是檢查等級。
+?tf 用 rsyslog 的 imuxsock 在 chroot 中建立 /dev/log 時，訊息也會自動出現在 journalctl -t internal-sftp 中。
+=F
+E> 那個 socket 由 rsyslog 自己監聽，journald 收不到；要兩邊都有就得讓訊息先進 journald。
+
+@CARD hw2.p_watchtest | 2-3 實戰：測試 sftp_watchd
+A> 測試 daemon 要「自己扮演壞人」：故意上傳一個 ELF 檔、一個雜湊在黑名單上的檔、一個正常檔，看前兩個有沒有被搬走、log 格式對不對、正常檔有沒有被誤搬。
+B> 準備違規檔：ELF 直接用系統裡的執行檔（例如 `cp /bin/true evil`）；黑名單測試可以先把你自己測試檔的 md5 暫時加進清單驗證流程，或確認比對邏輯正確
+B> 用 sftp 以 sftp-u1 上傳 → 伺服器端檢查 `private/.violated/` 裡是否出現、`journalctl -u sftp_watchd` 的訊息是否**一字不差**符合規格
+B> log 中的 {user} 是上傳者：用 **stat -c %U** 取檔案擁有者
+B> 移動目的地 private/.violated/ 要事先存在（或由程式建立），而且監看時要排除它，避免搬進去又被處理一次
+B> 重啟測試：`systemctl restart sftp_watchd` 後再上傳一次；`systemctl stop` 後確認沒有殘留的 inotifywait（`pgrep -af inotifywait`）
+B> 重開機後 `systemctl is-enabled sftp_watchd` 與 `is-active` 都要正常
+X> cp /bin/true /tmp/evil && echo 'put /tmp/evil public/' | sftp -b - sftp-u1@hw2
+X> sudo ls -l /mnt/hw2/sftp/private/.violated/
+X> journalctl -u sftp_watchd -n 5 --no-pager
+?mc 測試 sftp_watchd 的 ELF 偵測，最簡單取得一個 ELF 檔的方法？
++ 複製系統上任何一個執行檔，例如 /bin/true
+- 寫一個 #!/bin/bash 開頭的腳本
+- 把 txt 檔改名成 .elf，副檔名決定類型
+- 把任何檔案的副檔名改成 .bin 即可
+E> shell script 的開頭是 #!，不是 ELF；副檔名與判斷無關。
+?cmd 確認 sftp_watchd 這個服務是否已設定為開機自動啟動：
+= systemctl is-enabled sftp_watchd
+= systemctl is-enabled sftp_watchd.service
+E> is-active 則是查現在有沒有在跑。
+?mc sftp_watchd 把違規檔搬進 private/.violated/ 之後，又對同一個檔案再處理了一次，log 出現兩筆。最可能的原因？
++ 監看範圍包含 .violated/
+- md5sum 計算了兩次
+- systemd 啟動了兩個實例
+- journald 重複記錄
+E> 監看範圍包含 .violated/，搬進去的 moved_to 事件又觸發了一次檢查。監看時排除 .violated（例如 inotifywait 的 --exclude），或處理時略過這個路徑。
+
+@CARD hw2.p_vmimport | Preflight：匯入 vmdk 與 UEFI 開機
+A> 助教給的是一顆「已經裝好但故意弄壞的硬碟」（vmdk）。先把它接到一台新 VM 上當第一顆硬碟（/dev/sda），韌體要選 UEFI，不然連 GRUB 的 EFI 版本都找不到。
+B> 依 CPU 選 **amd64 或 aarch64** 的 vmdk；VM 類型選 **Debian**
+B> 有些虛擬化軟體要先轉檔：**qemu-img convert -f vmdk -O qcow2 hw2.vmdk hw2.qcow2**
+B> 把 vmdk 接成 **/dev/sda**（第一顆 SATA/SCSI 碟）；韌體設定 **UEFI**（VirtualBox 勾 Enable EFI、QEMU 用 OVMF）
+B> 確認 UEFI：**/sys/firmware/efi** 存在、**efibootmgr -v** 看得到開機項目
+B> 預設帳密：judge/judge；root 密碼 judge；**不能重灌、不能對任何分割區 mkfs**
+?cmd 把 hw2.vmdk 轉成 qcow2 格式的 hw2.qcow2：
+= qemu-img convert -f vmdk -O qcow2 hw2.vmdk hw2.qcow2
+= qemu-img convert -O qcow2 hw2.vmdk hw2.qcow2
+= qemu-img convert -O qcow2 -f vmdk hw2.vmdk hw2.qcow2
+E> -f 來源格式、-O 輸出格式。
+?mc 開機後如何確認目前是以 UEFI 模式啟動？
++ /sys/firmware/efi 目錄存在
+- dmesg 中出現 BIOS-provided 字樣
+- lsblk 看得到 /dev/sda
+- uname -m 顯示 x86_64
+E> 以 BIOS（legacy）開機時沒有這個目錄。
+?tf HW2 允許在無法開機時重新安裝 Debian，只要最後設定一樣就好。
+=F
+E> 規格明寫 DO NOT reinstall the VM or use mkfs against any partition。
+
+@CARD hw2.p_luks2 | Preflight：LUKS 金鑰槽與密碼更換
+A> LUKS 像一個保險箱，有好幾個鑰匙孔（keyslot），每個孔可以放一把不同的密碼，任何一把都能打開。換密碼可以直接換鎖芯（luksChangeKey），也可以先加一把新的、確認能用，再拆掉舊的，比較安全。
+B> 查看分割區與 keyslot：**lsblk -f**（crypto_LUKS）、**cryptsetup luksDump /dev/sda3**
+B> 直接更換：**cryptsetup luksChangeKey /dev/sda3**（輸入舊密碼 judge → 新密碼 ilovesa2026）
+B> 較保險：**luksAddKey**（加新密碼）→ 重開機確認 → **luksRemoveKey**（移除舊密碼）
+B> 開機解鎖設定在 **/etc/crypttab**（name、device/UUID、key、options），initramfs 依它解鎖 root；換密碼**不需要**重建 initramfs
+B> 備份 header：**cryptsetup luksHeaderBackup**（header 壞掉資料就救不回來）
+X> lsblk -f
+X> sudo cryptsetup luksDump /dev/sda3 | grep -i -A2 keyslots
+X> sudo cryptsetup luksAddKey /dev/sda3
+X> sudo cryptsetup luksRemoveKey /dev/sda3
+?mt 配對 cryptsetup 子指令：
+> luksChangeKey :: 把某個 keyslot 的密碼換成新密碼
+> luksAddKey :: 新增一組密碼到空的 keyslot
+> luksRemoveKey :: 移除輸入的那組密碼
+> luksDump :: 顯示 LUKS header 與 keyslot 資訊
+E> LUKS2 預設有 32 個 keyslot，每組密碼各佔一個。
+?cmd 顯示 /dev/sda3 的 LUKS header 與 keyslot 資訊：
+= cryptsetup luksDump /dev/sda3
+= sudo cryptsetup luksDump /dev/sda3
+E> 可以看到 Keyslots 區段中哪些 slot 已使用，以及使用的金鑰衍生函式（如 argon2id）。
+?mc 改完 LUKS 密碼後，下列何者「不必要」？
++ update-initramfs 重建 initramfs
+- reboot 一次，實際在開機畫面輸入新密碼，確認可以解鎖
+- 確認舊密碼 judge 已無法解鎖
+- 確認 /etc/crypttab 指到正確的裝置
+E> 密碼存在 LUKS header 裡，initramfs 只負責詢問密碼並呼叫 cryptsetup。
+
+@CARD hw2.p_rescuefix | Preflight：為什麼一直進 rescue mode
+A> 每次開機都掉進 rescue，代表有人在某處下了「去 rescue」的指令。可能藏在三個地方：預設 target 的 symlink、GRUB 傳給 kernel 的參數、或某個 unit 的依賴。逐一檢查、修正後還要讓 GRUB 設定重新產生。
+B> ① **systemctl get-default** → 若是 rescue.target：**systemctl set-default multi-user.target**
+B> ② **cat /proc/cmdline** 是否有 **systemd.unit=rescue.target**、**single**、**rescue**、**1** → 修 **/etc/default/grub** 的 GRUB_CMDLINE_LINUX(_DEFAULT) → **update-grub**
+B> ③ 某個開機必要元件失敗（fstab 掛不上、LUKS 解不開）會進 **emergency**，看 **journalctl -xb**
+B> 當下離開 rescue：**systemctl isolate multi-user.target**（或修好後 systemctl default）
+B> 不知道是哪裡：在 GRUB 選單按 **e** 檢查 linux 那一行的參數
+X> systemctl get-default
+X> cat /proc/cmdline
+X> grep -n CMDLINE /etc/default/grub
+X> sudo update-grub
+?mc /proc/cmdline 出現 systemd.unit=rescue.target，set-default multi-user.target 後重開機還是進 rescue。下一步該做什麼？
++ 移除 /etc/default/grub 中的 systemd.unit=rescue.target 並執行 update-grub
+- 再執行一次 systemctl set-default multi-user.target，並重新開機兩次確認
+- 在 /etc/systemd/system 建立 rescue.target 指向 multi-user.target 的 symlink，再重新開機
+- 刪除 /etc/systemd/system/default.target，讓 systemd 自動找預設值
+E> kernel 參數 systemd.unit= 的優先順序高於 default.target。
+?cmd 不重開機，直接從 rescue 切換到 multi-user.target：
+= systemctl isolate multi-user.target
+= sudo systemctl isolate multi-user.target
+= systemctl isolate multi-user
+E> isolate 會停止不屬於目標 target 的 unit。
+?cmd 修改 /etc/default/grub 後重新產生 GRUB 設定（Debian）：
+= update-grub
+= sudo update-grub
+= grub-mkconfig -o /boot/grub/grub.cfg
+= sudo grub-mkconfig -o /boot/grub/grub.cfg
+E> update-grub 是 grub-mkconfig -o /boot/grub/grub.cfg 的包裝。
+
+@CARD hw2.p_shrinkroot | 2-1 實戰：縮小正在用的 root LV
+A> ext4 可以「邊住邊擴建」（線上放大），但不能「邊住邊縮小」。root 一直被系統使用，所以縮 root 要先讓它下線：從 Live 光碟或救援環境開機，解開 LUKS、啟用 VG，才能先縮檔案系統、再縮 LV。順序錯了資料就毀了。
+B> 目標：**debian-vg/root 縮到 15G**，剩餘空間建 **new-part**（ext4，掛在 **/mnt/new-part**，開機持久）
+B> **ext4 不能線上縮小** → 用 Live ISO 或救援環境開機，root 不能是掛載狀態
+B> 在 Live 環境：**cryptsetup open /dev/sda3 cryptroot** → **vgchange -ay** → **e2fsck -f** → **lvreduce --resizefs -L 15G debian-vg/root**
+B> 順序：**先縮檔案系統再縮 LV**（手動時 resize2fs 比目標小一點 → lvreduce → resize2fs 撐滿）；**放大**則相反
+B> device mapper 名稱：VG 名稱裡的 **- 會變成 --**：debian-vg/root → **/dev/mapper/debian--vg-root**
+B> 之後：**lvcreate -l 100%FREE -n new-part debian-vg** → **mkfs.ext4** → fstab（UUID 或 /dev/mapper/debian--vg-new--part）→ **mount -a**、**findmnt --verify**
+X> # Live 環境中
+X> cryptsetup open /dev/sda3 cryptroot
+X> vgchange -ay
+X> e2fsck -f /dev/debian-vg/root
+X> lvreduce --resizefs -L 15G /dev/debian-vg/root
+X> # 回到系統後
+X> lvcreate -l 100%FREE -n new-part debian-vg
+X> mkfs.ext4 /dev/debian-vg/new-part
+X> echo '/dev/mapper/debian--vg-new--part /mnt/new-part ext4 defaults 0 2' >> /etc/fstab
+?mc 為什麼縮小 root LV 要從 Live 環境操作？
++ ext4 不支援線上縮小，而 root 在系統執行時一定是掛載狀態
+- lvreduce 這個工具只存在於 Live ISO 中
+- 執行中的系統會鎖住 LUKS header，lvreduce 無法更新
+- root LV 在系統執行時是唯讀的
+E> ext4 可以線上放大（resize2fs 在掛載時也能擴大），但縮小必須卸載。
+?fill VG debian-vg 的 LV new-part，在 /dev/mapper 底下的名稱是 /dev/mapper/＿＿
+= debian--vg-new--part
+E> device mapper 用單一 - 分隔 VG 與 LV，所以名稱中原本的 - 都會變成 --。
+?ord 縮小 LV（手動、不用 --resizefs）的正確順序：
+> 卸載檔案系統並 e2fsck -f
+> resize2fs 把檔案系統縮到比目標小
+> lvreduce 把 LV 縮到目標大小
+> resize2fs 不帶大小，讓檔案系統撐滿 LV
+E> 如果先縮 LV，檔案系統尾端的資料會被切掉。
+?cmd 在 Live 環境把 debian-vg/root 連同檔案系統一起縮到 15G（一個指令）：
+= lvreduce --resizefs -L 15G /dev/debian-vg/root
+= lvreduce -r -L 15G /dev/debian-vg/root
+= lvreduce --resizefs -L 15G debian-vg/root
+= lvreduce -r -L 15G debian-vg/root
+= lvresize --resizefs -L 15G /dev/debian-vg/root
+= lvresize -r -L 15G /dev/debian-vg/root
+E> -r（--resizefs）會先呼叫 fsadm/resize2fs 縮檔案系統，再縮 LV，順序由工具保證。
+
+@CARD hw2.p_raid | 2-1 實戰：4 個 PV 與 LVM RAID10
+A> RAID10 是「先鏡像再分散」：資料切成兩條（stripe）同時寫，每條再各存一份副本（mirror），所以至少要 4 個 PV。用一顆新硬碟切 4 個分割區就能滿足作業的結構要求，但真正的容錯需要 4 顆獨立的硬碟。
+B> 加一顆（或多顆）虛擬硬碟 → 用 **parted / fdisk** 切成 4 個分割區（或直接加 4 顆）→ **pvcreate** 4 個
+B> **vgcreate SA2026vg /dev/sdb1 /dev/sdb2 /dev/sdb3 /dev/sdb4**
+B> **lvcreate --type raid10 -m 1 -i 2 -l 100%FREE -n SARaid10 SA2026vg**（-m 1：一份鏡像；-i 2：2 條 stripe → 需要 4 個 PV）
+B> 觀察：**lvs -a -o name,segtype,copy_percent,devices SA2026vg**（看到 rimage / rmeta 子 LV、同步進度 Cpy%Sync）
+B> **mkfs.btrfs -L SAHW2 /dev/mapper/SA2026vg-SARaid10**；確認 **btrfs filesystem show**
+X> sudo parted -s /dev/sdb mklabel gpt mkpart p1 0% 25% mkpart p2 25% 50% mkpart p3 50% 75% mkpart p4 75% 100%
+X> sudo pvcreate /dev/sdb1 /dev/sdb2 /dev/sdb3 /dev/sdb4
+X> sudo vgcreate SA2026vg /dev/sdb1 /dev/sdb2 /dev/sdb3 /dev/sdb4
+X> sudo lvcreate --type raid10 -m 1 -i 2 -l 100%FREE -n SARaid10 SA2026vg
+X> sudo lvs -a -o name,segtype,copy_percent,devices SA2026vg
+?mc lvcreate --type raid10 -m 1 -i 2 至少需要幾個 PV？
++ 4
+- 2
+- 3
+- 8
+E> 2 條 stripe × 每條 2 份（原本 + 1 份鏡像）= 4。
+?mc lvs -a 列出 SARaid10_rimage_0、SARaid10_rmeta_0 等子 LV，它們是？
++ 組成 RAID 的資料與 metadata 子卷
+- LVM 自動建立的 snapshot 子卷
+- RAID 同步失敗、損壞的 LV
+- 預留給 swap 使用的空間
+E> RAID 的資料映像與 metadata 子卷，LVM 用來組成 RAID10。rimage 存資料、rmeta 存 RAID 的 metadata。
+?cmd 查看 SA2026vg 中所有 LV（含隱藏子 LV）的類型、同步百分比與所在裝置：
+= lvs -a -o name,segtype,copy_percent,devices SA2026vg
+= sudo lvs -a -o name,segtype,copy_percent,devices SA2026vg
+= lvs -a -o +segtype,devices SA2026vg
+= lvs -a -o +devices SA2026vg
+E> Cpy%Sync 到 100 才代表鏡像同步完成。
+
+@CARD hw2.p_fstab2 | 2-1 實戰：fstab 的每一欄與持久化陷阱
+A> fstab 是開機時的「掛載清單」，六個欄位：誰、掛去哪、什麼格式、什麼選項、要不要 dump、開機檢查順序。寫錯一行就可能開不了機，所以每次改完都先 mount -a 和 findmnt --verify 演練，再重開機確認。
+B> 六欄：**device  mountpoint  fstype  options  dump  pass**
+B> pass：root 為 **1**、其他 ext4 為 **2**；**btrfs 用 0**（btrfs 不靠開機 fsck）
+B> HW2 規定 Btrfs 的來源都寫 **/dev/mapper/SA2026vg-SARaid10**；子卷用 **subvol=名稱**（不要用 subvolid，rollback 後 ID 會變）
+B> 掛載點的父子關係：**/mnt/hw2 要先掛**，sftp、pool1、pool2 的掛載點是 root 子卷裡的目錄
+B> 改完：**systemctl daemon-reload** → **mount -a**（不報錯）→ **findmnt --verify** → **findmnt -t btrfs**；最後**重開機**確認
+X> /dev/mapper/SA2026vg-SARaid10  /mnt/hw2        btrfs  subvol=root   0 0
+X> /dev/mapper/SA2026vg-SARaid10  /mnt/hw2/sftp   btrfs  subvol=sftp   0 0
+X> /dev/mapper/debian--vg-new--part  /mnt/new-part  ext4  defaults   0 2
+?mt 配對 fstab 欄位：
+> 第 1 欄 :: 裝置（或 UUID=、LABEL=）
+> 第 2 欄 :: 掛載點
+> 第 4 欄 :: 掛載選項（如 subvol=sftp）
+> 第 6 欄 :: 開機時 fsck 的順序（0 表示不檢查）
+E> 第 3 欄是檔案系統類型，第 5 欄是 dump（現在幾乎都填 0）。
+?mc fstab 用 subvolid=258 掛 pool1，做完 SnApper rollback 後重新掛載，看到的是舊資料或掛載失敗。原因？
++ rollback 後子卷 ID 變了
+- subvolid 不能用在 fstab
+- rollback 沒有成功
+- 需要重新 mkfs
+E> rollback 建立的是新子卷，ID 改變了；應改用 subvol=pool1 依名稱掛載。依名稱掛載，rollback 把新子卷取名為 pool1 後就會掛到它。
+?fill btrfs 在 fstab 第 6 欄（pass）通常填＿＿
+= 0
+E> btrfs 有自己的檢查機制（btrfs check / scrub），不靠開機 fsck。
+
+@CARD hw2.p_rollback | 2-1 實戰：SnApper rollback 的原理
+A> rollback 不是「把照片貼回去」，而是「用照片洗出一份新的、可以寫的副本，換掉原本的房間」。照片（唯讀 snapshot）留著，舊房間刪掉，新房間取原本的名字，fstab 依名字掛，所以重新掛載後看到的就是回滾後的內容。
+B> 從 ID 找 snapshot 路徑：snapshot/**<SUBVOL>**/@時間 → 由路徑**自動推出 SUBVOL**
+B> 步驟：掛 top-level（**subvolid=5**）→ **umount /mnt/hw2/<SUBVOL>** → 舊子卷**改名**（mv 子卷目錄）→ **btrfs subvolume snapshot 唯讀快照 <top>/<SUBVOL>**（不加 -r → 可寫）→ 刪掉舊子卷 → **mount /mnt/hw2/<SUBVOL>**（依 fstab 的 subvol= 名稱）
+B> 要求：**snapshot 仍存在**、子卷**可寫**、**umount / remount 後仍是回滾後的狀態**
+B> 子卷正在使用（SFTP 連線、sftp_watchd 監看）→ umount 會 **target is busy**：先 **fuser -vm** 找出 process，必要時暫停服務
+B> 驗證：**btrfs property get -ts <子卷> ro** 應為 false；touch 測試可寫
+X> mount -o subvolid=5 /dev/mapper/SA2026vg-SARaid10 /mnt/root5
+X> umount /mnt/hw2/pool2
+X> mv /mnt/root5/pool2 /mnt/root5/pool2.old
+X> btrfs subvolume snapshot /mnt/root5/snapshot/pool2/@20251003-194529 /mnt/root5/pool2
+X> btrfs subvolume delete /mnt/root5/pool2.old
+X> mount /mnt/hw2/pool2
+?mc rollback 時用 btrfs subvolume snapshot（不加 -r）從唯讀快照建立新子卷，目的是？
++ 讓回滾後的子卷可寫，同時保留原本的唯讀快照
+- 讓新的子卷也維持唯讀，避免回滾後又被改壞
+- 新子卷建立後會自動取代原本的快照
+- 加快建立 snapshot 的速度
+E> 規格要求 snapshot 仍存在、subvolume 可寫。
+?cmd 檢查子卷 /mnt/root5/pool2 是否為唯讀：
+= btrfs property get -ts /mnt/root5/pool2 ro
+= btrfs property get /mnt/root5/pool2 ro
+= sudo btrfs property get -ts /mnt/root5/pool2 ro
+E> 輸出 ro=true 或 ro=false。
+?mc rollback 時 umount /mnt/hw2/sftp 出現 target is busy，第一步該做什麼？
++ 用 fuser -vm 找出佔用者
+- 直接 reboot
+- 用 mkfs 重建
+- 把 sftp 從 fstab 刪掉
+E> fuser -vm /mnt/hw2/sftp（或 lsof）找出佔用的 process。常見是 sftp_watchd 或還沒結束的 sftp session。
+?sa 請說明 Btrfs 中「唯讀快照」如何用來實作 rollback，並解釋為什麼 fstab 應該用 subvol=名稱 而不是 subvolid= 掛載。
+R> Btrfs 的 snapshot 本身也是一個 subvolume，以 copy-on-write 方式共享資料，建立時幾乎不佔空間。唯讀快照用來保存某個時間點的狀態，不會被意外修改。
+R> rollback 時不能直接把唯讀快照拿來用（它不可寫，也要保留），所以對它再做一次「可寫的 snapshot」，得到一份內容相同、可寫的新 subvolume；把原本的 subvolume 改名或刪除，新 subvolume 取原本的名稱放在同一個位置（top-level 下），再重新掛載。
+R> 新 subvolume 的 ID 和原本不同。若 fstab 寫 subvolid=，重新掛載時會找不到（舊的已刪）或掛到舊的；寫 subvol=名稱 則依路徑名稱尋找，自動掛到新建的那個，達成「umount/remount 後仍維持回滾狀態」。
+P> snapshot 是 CoW 的 subvolume
+P> 從唯讀快照建立可寫快照，取代原 subvolume 名稱
+P> 原快照保留
+P> 新 subvolume ID 不同，所以 fstab 要依名稱掛載
+
+@CARD hw2.p_snapcli | 2-1 實戰：SnApper 的參數解析與輸出格式
+A> 評分程式會一字一字比對輸出，所以 SnApper 的「外觀」跟功能一樣重要：help 文字、Snap / Destroy ID / Rollback 這幾行的格式、list 的欄位，都要跟規格完全一樣；錯誤訊息則印到 stderr，exit code 非 0。
+B> 子指令在第一個參數：**case "$1" in snapshot|list|delete|rollback|-h)**，shift 後再用 **getopts** 解析 -c、-p、-i
+B> 成功輸出：**Snap '<SNAPSHOT_PATH>' [<ID>]**、**Destroy ID <ID>**（刪全部時每個一行）、**Rollback '<SNAPSHOT_PATH>' [<ID>] to <SUBVOL>**
+B> list 標頭 **ID    SUBVOLUME TIME**，欄位用**空白**（printf "%-5s %-10s %s\n"），**不能用 TAB**；-p 與 -i 可同時給，沒有符合時只印標頭
+B> 「受 SnApper 管理」的快照：路徑符合 **snapshot/<SUBVOL>/@YYYYMMDD-hhmmss**
+B> 取 ID：**btrfs subvolume show 路徑**（Subvolume ID:）或 list 的第 2 欄；刪除可用 **btrfs subvolume delete --subvolid ID <top>**
+B> 錯誤處理：**>&2** 印訊息、**exit 1**；需要 root（[ "$(id -u)" -eq 0 ]）；用 **trap 'umount …' EXIT** 清理暫時掛載
+X> cmd=$1; shift
+X> case $cmd in
+X>   snapshot) sub=$1; shift; count=5
+X>             while getopts c: opt; do case $opt in c) count=$OPTARG;; *) usage >&2; exit 1;; esac; done ;;
+X>   list)     while getopts p:i: opt; do case $opt in p) fp=$OPTARG;; i) fi=$OPTARG;; esac; done ;;
+X>   -h|'')    usage; exit 0 ;;
+X> esac
+X> printf '%-5s %-10s %s\n' ID SUBVOLUME TIME
+?mc SnApper snapshot pool1 -c 3 中，為什麼要先 shift 掉 snapshot 與 pool1 才用 getopts？
++ getopts 遇到非選項參數就停止
+- getopts 只能處理一個選項
+- shift 會自動解析 -c
+- 不 shift 的話 -c 會被當成檔名刪除
+E> getopts 從 $1 開始解析，遇到第一個非選項參數就停止，所以要先移除子指令與 SUBVOL。getopts 解析的是「目前的」位置參數。
+?fill 刪除 ID 為 549 的子卷，不必先找出路徑：btrfs subvolume delete ＿＿ 549 /mnt/root5
+= --subvolid
+= -i
+E> --subvolid 是長選項，-i 是它的短寫，最後要給該檔案系統內的任一路徑。
+?mc SnApper list 用 printf '%s\t%s\t%s\n' 輸出，評分會出什麼問題？
++ 規格禁止用 TAB 分隔欄位，應改用空白對齊
+- printf 不能用 %s 印出數字
+- \n 在 bash 的 printf 中無效
+- 每次呼叫都會多印一行標頭
+E> 用 SnApper list | cat -A 檢查，TAB 會顯示成 ^I。
+?tf SnApper 的錯誤訊息印到 stdout 也沒關係，只要 exit code 是 0。
+=F
+E> 慣例：錯誤印到 stderr，失敗時 exit code 非 0，評分程式和使用者才分得出成功與失敗。
+
+@CARD hw2.p_users | 2-2 實戰：建立 SFTP 帳號與金鑰
+A> 四個角色：sysadm 是館長（能 SSH、不被關、什麼都能動），sftp-u1/u2 是會員，anonymous 是訪客。會員和訪客只能用 SFTP，被關在 $SFTP_ROOT 裡。大家都用跟 judge 一樣的公鑰登入，所以要把 judge 的 authorized_keys 複製一份，並且權限要正確，否則 sshd 會拒絕。
+B> 建帳號：**useradd -m -s /bin/bash sysadm**；**useradd -m -s /usr/sbin/nologin sftp-u1**（u2、anonymous 同理）
+B> 群組：例如 **sftpusers**（sftp-u1、sftp-u2）、**sftponly**（sftp-u1、sftp-u2、anonymous，給 Match Group 用）
+B> 金鑰：複製 judge 的 **~/.ssh/authorized_keys**；**~/.ssh 是 700、authorized_keys 是 600**，擁有者是該使用者（**StrictModes** 會檢查）
+B> chroot 使用者的 authorized_keys 仍在**原本的家目錄**（/home/...），sshd 在 chroot 之前讀取
+B> 驗證：**ssh sftp-u1@vm** 應失敗（只能 SFTP）；**sftp sftp-u1@vm** 成功且 pwd 為 /；sysadm 可 SSH、不被 chroot
+X> sudo groupadd sftpusers; sudo groupadd sftponly
+X> sudo useradd -m -s /usr/sbin/nologin -G sftpusers,sftponly sftp-u1
+X> sudo useradd -m -s /usr/sbin/nologin -G sftponly anonymous
+X> sudo install -d -m 700 -o sftp-u1 -g sftp-u1 /home/sftp-u1/.ssh
+X> sudo install -m 600 -o sftp-u1 -g sftp-u1 /home/judge/.ssh/authorized_keys /home/sftp-u1/.ssh/
+?mc sftp-u1 的 ~/.ssh/authorized_keys 權限是 666，用金鑰登入一直失敗、退回要求密碼。原因？
++ StrictModes 拒絕權限太寬的檔案
+- 666 讓 sshd 讀不到檔案
+- 666 讓 sshd 讀不到這個檔案
+- 需要重開 sshd
+E> sshd 的 StrictModes 檢查到檔案可被他人寫入，因此不採用這個 authorized_keys。~/.ssh 700、authorized_keys 600，且家目錄不能是 group/other 可寫。
+?cmd 建立使用者 sftp-u1：建立家目錄、shell 設為 /usr/sbin/nologin、加入附加群組 sftponly：
+= useradd -m -s /usr/sbin/nologin -G sftponly sftp-u1
+= sudo useradd -m -s /usr/sbin/nologin -G sftponly sftp-u1
+= useradd -m -G sftponly -s /usr/sbin/nologin sftp-u1
+E> -G 指定附加群組；-g 是主要群組。
+?tf 被 chroot 到 /mnt/hw2/sftp 的使用者，authorized_keys 必須放在 /mnt/hw2/sftp 底下。
+=F
+E> sshd 在認證階段（chroot 之前）讀取原本家目錄的 ~/.ssh/authorized_keys。
+
+@CARD hw2.p_matchcfg | 2-2 實戰：sshd 的 Match 設定與起始目錄
+A> sshd_config 用 Match 區塊替「某些人」換一套規則。會員和訪客：被 chroot、強制只能用 internal-sftp、起始目錄是 /（在 chroot 裡就是 $SFTP_ROOT）。館長 sysadm 不 chroot，走一般的 Subsystem，但起始目錄也指向 $SFTP_ROOT。這也解釋了規格裡 log 為什麼同時有 internal-sftp 與 sftp-server 兩種名字。
+B> chroot 使用者：**Match Group sftponly** → **ChrootDirectory /mnt/hw2/sftp**、**ForceCommand internal-sftp -d / -u 0007 -l INFO**、AllowTcpForwarding no、X11Forwarding no、PermitTTY no
+B> **-d /**：chroot 後的起始目錄（chroot 內的 / = $SFTP_ROOT）
+B> sysadm：**Subsystem sftp /usr/lib/openssh/sftp-server -d /mnt/hw2/sftp -l INFO -u 0007** → log 名稱是 **sftp-server**；chroot 使用者的 log 名稱是 **internal-sftp**
+B> **Match 一直到下一個 Match 或檔案結尾**：Match 放在檔案最後面
+B> 陷阱：Debian 主檔開頭有 **Include /etc/ssh/sshd_config.d/*.conf**，若在被 include 的檔案寫 Match，主檔後面所有設定都會被吞進那個 Match
+B> ChrootDirectory 每一層（/、/mnt、/mnt/hw2、/mnt/hw2/sftp）都必須 **root 擁有、group/other 不可寫**
+X> Subsystem sftp /usr/lib/openssh/sftp-server -d /mnt/hw2/sftp -l INFO -u 0007
+X> Match Group sftponly
+X>     ChrootDirectory /mnt/hw2/sftp
+X>     ForceCommand internal-sftp -d / -u 0007 -l INFO
+X>     AllowTcpForwarding no
+X>     X11Forwarding no
+X>     PermitTTY no
+?mc 規格範例 log 中 sysadm 的紀錄是 sftp-server[1979]，sftp-u1 卻是 internal-sftp[2029]。原因？
++ 兩者使用的 SFTP 實作不同
+- 兩個使用者連到不同的 sshd
+- sftp-u1 使用了比較新的 SFTP 協定
+- 這是 rsyslog 改名的結果
+E> sysadm 走 Subsystem 的 sftp-server 程式；chroot 使用者被 ForceCommand internal-sftp 使用 sshd 內建的 SFTP。journalctl -t internal-sftp -t sftp-server 兩個識別字都要查，才能看到所有使用者的紀錄。
+?mc 在 /etc/ssh/sshd_config.d/sftp.conf 寫了 Match Group sftponly 區塊，結果 PasswordAuthentication no 等全域設定好像只對 sftponly 生效。原因？
++ 主設定檔開頭就 Include 了這個檔案，Match 區塊延續到主檔後面的設定
+- sshd_config.d/ 中的檔案不支援 Match，所以整個區塊被當成全域設定
+- 被 include 的檔名必須以數字開頭（如 00-sftp.conf）才會照順序生效
+- Match 的變更只有 restart 才生效，reload 只會重新讀取全域設定
+E> 把 Match 寫在主檔最後，或確保 include 的檔案只放全域設定。
+?fill internal-sftp 指定起始目錄的選項是＿＿（例：internal-sftp ＿＿ /）
+= -d
+E> -d 的路徑在 chroot 之後解讀，所以 / 指的是 ChrootDirectory。
+?mc ChrootDirectory /mnt/hw2/sftp 設好後，sftp 連線立刻斷線，log 顯示 bad ownership or modes for chroot directory。應該怎麼修？
++ 路徑每一層都改成 root 擁有、755
+- 把 /mnt/hw2/sftp 改成 777
+- 把擁有者改成 sftp-u1
+- 關閉 StrictModes
+E> 讓 /mnt/hw2/sftp 及其所有上層目錄都是 root 擁有，且 group/other 不可寫（例如 755）sshd 對 chroot 路徑的要求很嚴格，與 StrictModes 無關。
+
+@CARD hw2.p_acldesign | 2-2 實戰：umask 007 與 anonymous 唯讀的衝突
+A> 規格有兩個看起來打架的要求：「上傳的檔案要拿掉 other 的所有權限」，以及「anonymous 要能讀 public 裡的檔案」。anonymous 不在會員群組裡，對檔案來說它就是 other，other 沒權限它就讀不到。解法是 ACL：給 anonymous 一個「具名讀取權」，它就不必靠 other 位元。
+B> 上傳檔案 other 為 ---（umask 007 或預設 ACL 的 **o::---**）→ anonymous（屬於 other）**讀不到**
+B> 解法：在 public 設 **預設 ACL**：**d:u:anonymous:r-x**、d:u:sysadm:rwx、**d:o::---**；新建的檔案、目錄自動繼承
+B> 有預設 ACL 的目錄裡，新檔權限由預設 ACL 決定、**不套用 umask**；要確認 **mask** 沒把 anonymous 的 r 截掉
+B> 已存在的內容用 **setfacl -R -m** 補上（預設 ACL 只影響之後建立的）
+B> public 本身：擁有者 sysadm、群組 sftpusers、**setgid + sticky（3770）** + ACL u:anonymous:r-x
+B> 檢查：**getfacl** 看 ACL、**ls -l** 中權限後面有 **+** 代表有 ACL；以 anonymous 實際 get 測試
+X> chown sysadm:sftpusers /mnt/hw2/sftp/public
+X> chmod 3770 /mnt/hw2/sftp/public
+X> setfacl -m u:anonymous:rx,u:sysadm:rwx /mnt/hw2/sftp/public
+X> setfacl -d -m u::rwx,g::rwx,o::---,u:anonymous:rx,u:sysadm:rwx /mnt/hw2/sftp/public
+X> getfacl /mnt/hw2/sftp/public
+?mc sftp-u1 上傳的檔案權限是 -rw-rw----（群組 sftpusers），沒有 ACL。anonymous 能 get 它嗎？
++ 不能，anonymous 不是擁有者也不在 sftpusers，屬於 other，而 other 沒有權限
+- 能，anonymous 是唯讀帳號，系統會讓它讀取 SFTP 根目錄底下所有的檔案
+- 能，SFTP 的 chroot 會讓 anonymous 以 sftpusers 群組的身分存取 public 底下的檔案
+- 只有在 public 設了 sticky bit 時，anonymous 才能讀取別人上傳的檔案
+E> 目錄的權限只決定能不能列出與進入，讀檔要看檔案本身的權限。
+?mc 為什麼用「預設 ACL 給 anonymous r」可以同時滿足「上傳檔 other 無權限」與「anonymous 可讀」？
++ anonymous 透過具名使用者 ACL 取得讀取權，不依賴 other 位元，other 仍可以是 ---
+- ACL 會把 anonymous 改成上傳檔案的擁有者，所以它能讀取
+- 設定預設 ACL 後，系統會在 anonymous 讀取時暫時把 other 改成 r--，讀完再改回 ---
+- 預設 ACL 會讓 umask 失效，other 變成 rwx，所以 anonymous 讀得到
+E> ls -l 看到的 other 欄位仍是 ---，滿足評分條件。
+?cmd 讓之後在 public 中新建的檔案，自動給使用者 anonymous 讀取（與目錄進入）權限：
+= setfacl -d -m u:anonymous:rx public
+= setfacl -d -m u:anonymous:r-x public
+= setfacl -m d:u:anonymous:rx public
+= setfacl -m d:u:anonymous:r-x public
+= setfacl --default -m u:anonymous:rx public
+E> -d（--default）設定預設 ACL；d:u:… 是等價寫法。
+?tf ls -l 顯示 -rw-rw----+，最後的 + 表示這個檔案有額外的 ACL。
+=T
+E> 用 getfacl 查看完整內容。
+
+@CARD hw2.p_privdesign | 2-2 實戰：private 與 hidden 的「能進不能看」
+A> private 像一條「沒有門牌的走廊」：大家能走進去（x），但看不到裡面有哪些房間（沒有 r 就不能 ls）；只要你知道房間名字（hidden），就能直接走到；房間裡的寶藏（treasure）有開放讀取，所以拿得到。
+B> 目錄的 **r**：列出內容（ls）；**x**：進入與存取已知名稱的檔案（cd、get 已知路徑）；**w + x**：新增、刪除、改名
+B> private、hidden：擁有者 **sysadm**，模式 **711**（group 與 other 只有 --x）→ 會員與訪客能 cd、不能 ls、不能寫
+B> **treasure**：**644**（other 可讀）→ 知道路徑就能 get
+B> sysadm 是擁有者 → private 底下 get/put/mkdir/rm/rmdir 都可以
+B> sftp_watchd 的 **private/.violated/**：建議 root 擁有、700，避免使用者讀取違規檔
+X> install -d -o sysadm -g sysadm -m 711 /mnt/hw2/sftp/private /mnt/hw2/sftp/private/hidden
+X> install -o sysadm -g sysadm -m 644 /dev/null /mnt/hw2/sftp/private/hidden/treasure
+X> install -d -o root -g root -m 700 /mnt/hw2/sftp/private/.violated
+?mt 配對目錄權限位元的效果：
+> r :: 可以列出目錄內容（ls）
+> x :: 可以進入目錄、存取已知名稱的項目
+> w（搭配 x） :: 可以新增、刪除、改名目錄中的項目
+E> 目錄的 x 也叫 search 權限：沿路徑往下走需要每一層都有 x。
+?mc private 目錄權限為 drwx--x--x（711），擁有者 sysadm。sftp-u1 執行 ls private 與 get private/hidden/treasure（treasure 為 644、hidden 也是 711）會？
++ ls 失敗；get 成功
+- 兩者都成功
+- 兩者都失敗
+- ls 成功；get 失敗
+E> 沒有 r 不能列目錄；有 x 可以沿已知路徑走到 treasure，而 treasure 對 other 可讀。
+?fill 讓 other「能進入但不能列出」的目錄權限（擁有者 rwx）是 chmod ＿＿ private
+= 711
+= 0711
+= u=rwx,go=x
+E> 7=rwx 給擁有者，1=--x 給 group 與 other。
+
+@CARD hw2.p_watchimpl | 2-3 實戰：sftp_watchd 實作細節
+A> sftp_watchd 是一位「收件室管理員」：盯著 SFTP 目錄，每當有人「寫完」一個檔案（close_write），就檢查前 4 個 byte 是不是 ELF 的魔術數字、算 MD5 比對黑名單，違規就搬進 .violated 並照固定格式記錄。它本身不能 fork 到背景，交給 systemd 管。
+B> 監看：**inotifywait -m -r -e close_write,moved_to --format '%w%f' --exclude '/\.violated/' /mnt/hw2/sftp**（需 apt install **inotify-tools**）
+B> **close_write**：檔案寫完才觸發（避免檢查到傳到一半的檔案）；**moved_to**：檔案被改名移入；**-r** 新建子目錄也會自動監看
+B> ELF 判斷：前 4 bytes 為 **7f 45 4c 46**（\x7fELF）：**head -c 4 "$f" | od -An -tx1**
+B> MD5：**md5sum "$f" | cut -d' ' -f1** 與黑名單比對；上傳者：**stat -c %U "$f"**
+B> 搬移：mv 到 **private/.violated/**（處理同名衝突）；log 印到 **stdout** → journal；訊息**一字不差**
+B> 規則：**不能呼叫其他自己寫的程式**（系統工具如 inotifywait、md5sum 可以）；放在 PATH（/usr/local/bin）、judge 讀得到
+X> inotifywait -m -r -q -e close_write,moved_to --format '%w%f' --exclude '/\.violated/' "$SFTP_ROOT" |
+X> while IFS= read -r f; do
+X>   [ -f "$f" ] || continue
+X>   user=$(stat -c %U "$f")
+X>   if [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ]; then
+X>     echo "File $f uploaded by user $user is an ELF file. Moving to violated directory"
+X>     mv -- "$f" "$SFTP_ROOT/private/.violated/"
+X>   fi
+X> done
+?mc 為什麼用 close_write 而不是 create 事件來觸發檢查？
++ create 時內容還沒傳完
+- create 事件只對目錄有效
+- close_write 比較省 CPU
+- inotify 沒有 create 事件
+E> create 在檔案剛建立（內容還沒傳完）就觸發；close_write 在寫入完成、關閉檔案時才觸發。檔案還沒傳完就計算 MD5，結果一定不對。
+?fill ELF 檔案開頭 4 個 byte 的十六進位是 7f 45 4c ＿＿
+= 46
+E> 也就是 0x7F 'E' 'L' 'F'。
+?mc 把違規檔搬進 private/.violated/ 後，watcher 又對它觸發 moved_to 事件而重複處理。最好的修法？
++ 監看時用 --exclude 排除 .violated 目錄（或處理前先檢查路徑）
+- 改用 cp 而不要 mv，這樣就不會產生 moved_to 事件
+- 把 .violated 放到 public 目錄裡，讓 watcher 把它當成一般檔案
+- 每次處理完一個檔案就重啟服務，清除 inotify 的事件佇列
+E> 搬移本身就是一個 moved_to 事件。
+?cmd 取得檔案 /mnt/hw2/sftp/public/a.bin 擁有者的使用者名稱：
+= stat -c %U /mnt/hw2/sftp/public/a.bin
+= stat --format=%U /mnt/hw2/sftp/public/a.bin
+= stat -c '%U' /mnt/hw2/sftp/public/a.bin
+E> 上傳的檔案由該 SFTP 使用者建立，擁有者就是上傳者。
+
+@CARD hw2.p_watchunit | 2-3 實戰：sftp_watchd 的 unit 檔
+A> 讓 systemd 當 sftp_watchd 的「保母」：開機自動啟動、掛了自動重來、log 自動進 journal。最重要的是它得等 /mnt/hw2/sftp 掛好才開始，不然會盯著一個空目錄。
+B> **[Unit]**：Description=、**After=local-fs.target**、**RequiresMountsFor=/mnt/hw2/sftp**
+B> **[Service]**：**Type=simple**、**ExecStart=/usr/local/bin/sftp_watchd**、**Restart=always**（或 on-failure）、RestartSec=2
+B> **[Install]**：**WantedBy=multi-user.target**
+B> 檔案放 **/etc/systemd/system/sftp_watchd.service** → **daemon-reload** → **enable --now**
+B> 支援 start / stop / status / restart；log 用 **journalctl -u sftp_watchd**；stop 後確認沒有殘留的 inotifywait（同一個 cgroup 會被一起殺掉）
+X> [Unit]
+X> Description=SFTP upload watcher
+X> After=local-fs.target
+X> RequiresMountsFor=/mnt/hw2/sftp
+X> [Service]
+X> Type=simple
+X> ExecStart=/usr/local/bin/sftp_watchd
+X> Restart=always
+X> RestartSec=2
+X> [Install]
+X> WantedBy=multi-user.target
+?mc systemctl stop sftp_watchd 後，為什麼它啟動的 inotifywait 子程序也會一起結束？
++ KillMode=control-group：對服務 cgroup 內所有 process 送訊號
+- inotifywait 會偵測到父程序結束，收到 SIGHUP 後自己跟著結束
+- systemd 會掃描所有名稱為 inotifywait 的 process，並把它們一起停掉
+- inotifywait 偵測到父程序結束，收到 SIGHUP 後自己跟著結束，與 systemd 無關
+E> cgroup 讓 systemd 能完整清掉服務的所有後代。
+?ord 安裝並啟用 sftp_watchd.service 的步驟：
+> 把 unit 檔放到 /etc/systemd/system/
+> systemctl daemon-reload
+> systemctl enable --now sftp_watchd
+> journalctl -u sftp_watchd 確認運作
+E> daemon-reload 讓 systemd 讀到新的 unit 檔；enable --now 同時設定開機啟動與立刻啟動。
+?tf sftp_watchd 印到 stdout 的訊息，在 systemd 管理下可以用 journalctl -u sftp_watchd 看到。
+=T
+E> StandardOutput 預設送進 journal。
+
+@CARD hw2.p_rsyslog2 | 2-3 實戰：rsyslog 過濾規則與檔案順序
+A> rsyslog 讀 /etc/rsyslog.d/*.conf 是照檔名順序，而且每條訊息會依序經過所有規則。所以 sftp 的規則要放在預設規則（50-default.conf）之前，寫完檔案就 stop，訊息才不會又被複製進 syslog 或 auth.log，sftp.log 也能保持「純 SFTP」。
+B> 新式（RainerScript）：**if $programname == 'internal-sftp' or $programname == 'sftp-server' then { action(type="omfile" file="/var/log/sftp.log") stop }**
+B> 舊式（property-based filter）：**:programname, isequal, "internal-sftp" /var/log/sftp.log** 下一行 **& stop**
+B> 檔名用小數字開頭（例如 **10-sftp.conf**），排在 50-default.conf 之前，stop 才能阻止重複寫入
+B> 驗證：**rsyslogd -N1**（語法檢查）→ **systemctl restart rsyslog** → logger 測試：**logger -t internal-sftp test**
+B> 長期維運：**/etc/logrotate.d/** 為 /var/log/sftp.log 加輪替設定
+X> # /etc/rsyslog.d/10-sftp.conf
+X> :programname, isequal, "internal-sftp" /var/log/sftp.log
+X> & stop
+X> :programname, isequal, "sftp-server" /var/log/sftp.log
+X> & stop
+X> $ logger -t sftp-server "rsyslog test"; tail -1 /var/log/sftp.log
+?mc sftp 規則寫在 /etc/rsyslog.d/99-sftp.conf 並加了 stop，但 sftp 訊息仍出現在 /var/log/auth.log。原因？
++ 50-default.conf 先處理了訊息
+- stop 只對 kern 有效
+- auth.log 由 journald 寫入
+- 需要重開機
+E> 50-default.conf 的規則先處理了訊息並寫進 auth.log，99 號檔案的 stop 太晚。檔名的數字決定處理順序。
+?cmd 不必真的用 SFTP，模擬一筆 SYSLOG 識別字為 internal-sftp 的訊息來測試 rsyslog 規則：
+= logger -t internal-sftp test
+= logger -t internal-sftp "test"
+= logger -t internal-sftp hello
+E> -t 設定 tag（programname）。
+?cmd 檢查 rsyslog 設定語法：
+= rsyslogd -N1
+= sudo rsyslogd -N1
+E> -N1 只做第一層的設定檢查，不會真的啟動。
+
+@CARD hw2.p_judge | HW2 評分機制與自保
+A> 評分機器人不只檢查，還會「搗亂」：可能 dd 把你的磁碟清零、重開機、用 judge 身分讀你的腳本。唯一的保險是提交前拍快照、確定所有設定都是持久的、腳本放對位置且讀得到。
+B> 評分：2-1 共 48%（Shrink 3、Btrfs setup 9、RAID10 5、Create 8、List 7、Delete 5、**Rollback 11**）、2-2 共 27%、2-3 共 25%
+B> judge 從 **$(which SnApper)**、**$(which sftp_watchd)** 取得腳本 → 放 /usr/local/bin、**chmod 755**、judge 的 PATH 找得到
+B> 腳本**不能呼叫其他自己寫的腳本或執行檔** → 單一檔案完成所有功能
+B> 規格提醒：評分時可能執行惡意動作（例如 **dd if=/dev/zero of=/dev/sda**）→ **每次提交前拍 VM snapshot**
+B> **重開機後一切仍要正常**：fstab、服務 enable、預設 target、LUKS 新密碼
+B> 只計最後一次提交；不收遲交
+?mc judge 用 $(which SnApper) 抓腳本，結果找不到。你把腳本放在 /root/bin/SnApper。問題在哪？
++ judge 的 PATH 與權限都碰不到它
+- 檔名必須全小寫，which 才找得到
+- 腳本必須是 ELF 執行檔
+- which 只找 /usr/bin
+E> /root/bin 不在 judge 的 PATH 中，且 judge 沒有權限讀 /root。放 /usr/local/bin 並給 755。
+?mc 下列哪個「違反」 HW2 對 SnApper 的要求？
++ SnApper 呼叫自己寫的 helper 腳本
+- SnApper 呼叫 btrfs 指令
+- SnApper 用 date 產生時間戳
+- SnApper 用 btrfs subvolume list 列出子卷
+E> SnApper 呼叫自己寫的 /usr/local/bin/snap-helper.sh 來做 rollback。must not invoke any other self-written scripts, binaries or executables。
+?tf 只要現在能用，重開機後失效也能拿到分數。
+=F
+E> 規格要求 Make sure everything works after reboot。

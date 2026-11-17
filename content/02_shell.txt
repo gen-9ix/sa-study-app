@@ -1,0 +1,810 @@
+@CH shell | Shell 基礎 | 🐚 | 03_Shell.pdf
+
+@CARD shell.layers | Terminal、Shell、Kernel
+A> 餐廳：Terminal 是「菜單和桌子」（顯示文字、收你的按鍵）、Shell 是「點餐服務生」（聽懂你的話、展開縮寫、幫你下單）、Kernel 是「廚房」（真正管 process、記憶體、裝置）。
+B> **Terminal**：使用者介面，顯示文字並送出按鍵
+B> **Shell**：跑在 terminal 裡的**程式**；解析指令、展開變數與 pattern，再執行 built-in 或外部程式
+B> **Kernel**：管理 process、memory、devices，提供 system call
+?mt 配對角色：
+> Terminal :: 顯示文字、傳送按鍵的介面
+> Shell :: 解析語法、展開變數並啟動程式
+> Kernel :: 管理 process、記憶體與裝置
+E> Shell 只是 terminal 裡的一支程式，不是 terminal 本身。
+?tf Shell 和 terminal 是同一個東西的兩種叫法。
+=F
+E> Terminal 是介面；shell 是在 terminal 裡執行的程式（例如 bash、tcsh）。
+
+@CARD shell.enter | 按下 Enter 之後發生什麼事
+A> 服務生收到點單後的流程：先讀懂（parse）→ 把「老樣子」換成實際菜名（expand）→ 判斷這道菜是吧台自己做還是送廚房（resolve）→ 下單（execute）→ 決定你要等著吃還是先去逛（前景/背景）。
+B> ① **Read & parse**：引號、operator、redirection
+B> ② **Expand**：變數、$(...)、wildcard
+B> ③ **Resolve**：built-in？function？還是在 PATH 裡找
+B> ④ **Execute**：built-in 直接做，或 **fork/exec** 外部程式
+B> ⑤ **Wait / manage job**：前景或背景
+B> 重點：**shell 會在大多數外部程式看到參數之前就先處理好語法**
+X> $ ls "$HOME"/*.txt | grep report > matches.txt 2> errors.txt
+?ord 依序排列 shell 處理指令的步驟：
+> Read & parse（引號、operator、redirection）
+> Expand（變數、$(...)、萬用字元）
+> Resolve（built-in / function / PATH）
+> Execute（built-in 或 fork/exec）
+> Wait / 管理 job（前景或背景）
+E> 所以 ls *.txt 的 * 是 shell 展開好才交給 ls 的，ls 根本看不到星號。
+?tf 執行 ls *.txt 時，是 ls 程式自己去展開 *.txt。
+=F
+E> 是 shell 在執行前就展開（globbing），ls 收到的是展開後的檔名清單。
+
+@CARD shell.kinds | 常見 Shell 與預設值
+A> 不同 shell 像不同方言：sh 是「普通話」（POSIX，寫腳本最通用）、bash 是 Linux 上最常見的口語、zsh 是 macOS 的預設、tcsh 是 BSD 老派方言、PowerShell 是物件導向的外國話。
+B> **sh**（/bin/sh）：POSIX Bourne 風格，**寫可攜腳本的基準**
+B> **bash**：Bourne Again Shell，Linux 常見互動 shell
+B> **zsh**：macOS 預設 login shell
+B> **tcsh**：C shell 家族，BSD/舊環境常見
+B> **PowerShell**（pwsh）：物件導向自動化 shell，跨平台
+B> 預設：Debian 新使用者多為 bash（/bin/sh 是另一個 POSIX shell，Debian 上是 dash）；FreeBSD 14+ 一般使用者與 root 都是 sh，bash 不在 base system；macOS zsh
+B> 查詢：getent passwd "$USER" 看設定的 login shell；echo "$SHELL" 只是提示
+?mc 寫要在 Debian 與 FreeBSD 都能跑的腳本，最適合指定哪個 shell？
++ /bin/sh（POSIX sh）
+- /bin/bash（Linux 預設）
+- /bin/tcsh（FreeBSD 預設）
+- /bin/zsh（功能最多）
+E> FreeBSD base system 沒有 bash；POSIX sh 是可攜的基準。
+?tf 在 FreeBSD 14 的 base system 中預設就有 bash。
+=F
+E> bash 不在 FreeBSD base system，要另外 pkg install。
+
+@CARD shell.modes | Login / Interactive / Non-interactive
+A> 三種上班方式：「打卡進公司」(login shell) 會先看公告欄 (.profile)；「已經在公司裡又開了一個新分頁」(interactive non-login) 看自己桌上的便利貼 (.bashrc)；「派機器人去做事」(non-interactive，跑腳本) 通常什麼都不看。
+B> **Interactive login**：console 登入、ssh 登入 → 讀 login 啟動檔
+B> **Interactive non-login**：開新 terminal 分頁、在 shell 裡再打 bash → 讀 rc 檔
+B> **Non-interactive**：執行腳本 ./backup.sh → 通常**不讀** interactive rc 檔
+B> 常見錯誤：只把腳本需要的變數放在 ~/.bashrc → 在 **cron、SSH 自動化、systemd** 下行為不同
+?mc 你在 ~/.bashrc 設了 export API_URL=…，手動執行腳本正常，但 cron 執行就找不到變數。最主要的原因是？
++ cron 的 shell 不會讀 ~/.bashrc
+- cron 的 shell 是 sh，不支援 export 這個語法
+- export 只在 root 身分下有效
+- ~/.bashrc 只有 zsh 才會讀取
+E> cron 跑的是 non-interactive shell，通常不會讀 ~/.bashrc。腳本需要的變數應在腳本內設定，或在 crontab 中設定。
+?mc 用 ssh 登入遠端主機得到的 shell 通常是哪一種？
++ Interactive login shell
+- Interactive non-login shell
+- Non-interactive shell
+- Subshell
+E> console 登入與 ssh 登入通常是 login shell，會讀 /etc/profile、~/.profile 等。
+
+@CARD shell.startup | Bash / sh / tcsh 啟動檔
+A> Bash 的 login shell 在三本日記（~/.bash_profile、~/.bash_login、~/.profile）中只讀「第一本找得到的」，所以常在 .bash_profile 裡寫一句「也去讀 .bashrc」。
+B> Bash **interactive login**：/etc/profile → 再讀 ~/.bash_profile、~/.bash_login、~/.profile 中**第一個可讀的**
+B> Bash **interactive non-login**：~/.bashrc
+B> Bash **non-interactive**：$BASH_ENV 指定的檔（若有設）
+B> Login shell 結束：~/.bash_logout
+B> 常見做法：~/.bash_profile 去 source ~/.bashrc
+B> FreeBSD **sh**：login 讀 ~/.profile；interactive 讀 $ENV 指定的檔
+B> **tcsh**：~/.tcshrc 或 ~/.cshrc（interactive）；~/.login / ~/.logout（login/logout）
+B> 安全編輯：先讀再改、先備份、開新 shell 或 source 套用；不要 curl | sh（應下載、檢查、驗證後再執行）
+?mt 配對 bash 情境與讀取的檔案：
+> Interactive login shell :: /etc/profile + ~/.bash_profile（或 .bash_login / .profile 第一個可讀的）
+> Interactive non-login shell :: ~/.bashrc
+> Non-interactive shell :: $BASH_ENV 指定的檔
+> Login shell 結束時 :: ~/.bash_logout
+E> 這是 GNU Bash 手冊「Bash Startup Files」的內容。
+?tf 同時存在 ~/.bash_profile 和 ~/.profile 時，bash login shell 兩個都會讀。
+=F
+E> 只讀「第一個可讀的」，所以有 .bash_profile 時 .profile 會被忽略（除非手動 source）。
+?mc 為什麼不建議用 curl https://x.sh | sh 安裝軟體？
++ 跳過了「下載 → 檢查 → 驗證來源」的步驟，直接執行遠端內容
+- 因為 curl 無法下載副檔名是 .sh 的檔案
+- 因為 sh 不能從 stdin 讀取指令，只能讀檔案
+- sh 執行 pipe 傳進來的內容時，會自動以 root 權限執行，非常危險
+E> 應先下載、檢查內容、確認來源，再執行。
+
+@CARD shell.envvar | Shell 變數 vs 環境變數、PATH
+A> Shell 變數是「寫在自己筆記本上的事」，只有自己看得到；export 之後變成「交代給小孩的家訓」，之後生的小孩（child process）都會繼承一份「影本」，小孩改影本不影響爸媽，已經出生的小孩也拿不到新家訓。
+B> **Shell 變數**：name=alice，只在目前 shell 可見，**不會**自動傳給 child
+B> **環境變數**：export EDITOR=vim，之後啟動的 **child process 會繼承**
+B> env / printenv 看環境變數；set 可看 shell 變數
+B> 常用：HOME、USER/LOGNAME、**SHELL**（設定的 login shell，不一定是目前執行的 shell）、**PATH**（以冒號分隔的指令搜尋目錄）、PWD、EDITOR/VISUAL、LANG/LC_*
+B> **PATH 從左往右找**，找到第一個就執行
+B> 環境變數只存在 **process 記憶體**中，重開機/登出就沒了；要永久 → 寫進啟動檔（~/.profile、~/.bashrc，或系統層 /etc/profile）
+?sa 有時我們會使用指令 export PATH="$PATH:/usr/local/sa/bin"，請回答：a. 執行前後的行為差異 b. 若在 process A 執行，除了 A 還有哪些 process 的 $PATH 被更新？ c. 重開機後 $PATH 是哪種狀態？為什麼？ d. 怎麼讓它永久保存？ e. 改成 export PATH="/usr/local/sa/bin:$PATH" 有何差異？
+S> 2025 期末 Q10
+R> a. 執行後 /usr/local/sa/bin 被加到搜尋路徑最後面，直接打指令名稱時也會到該目錄找（但優先順序最低）。
+R> b. 只有之後由 process A 建立的 child process（及其後代）會繼承新的 PATH；A 的 parent、其他已在執行的 process 都不受影響。
+R> c. 回到 export 之前的狀態，因為環境變數只存在 process 的記憶體中，重開機後所有 process 重新啟動，不會保留。
+R> d. 把這行寫進啟動檔，例如 ~/.profile 或 ~/.bashrc（個人），或 /etc/profile、/etc/profile.d/*.sh（全系統），登入時就會自動執行。
+R> e. 放在前面 → 優先搜尋 /usr/local/sa/bin，若有與系統指令同名的程式會「蓋過」系統版本；放後面則系統指令優先。放前面若該目錄可被他人寫入有安全風險。
+P> a. 加到 PATH 尾端，可直接執行該目錄指令
+P> b. 只有之後產生的 child process 會繼承
+P> c. 回到原狀，環境變數只在記憶體中
+P> d. 寫入 ~/.profile / ~/.bashrc 等啟動檔
+P> e. 前面優先搜尋，會覆蓋同名指令
+?sa 撰寫 Bourne Shell (/bin/sh) 腳本時，直接使用 var=value 與使用 export var=value、local var=value 有何差別？
+S> 2023 期中 Q3
+R> var=value：一般 shell 變數，只在目前 shell（含其 function）中可見，不會傳給 child process。
+R> export var=value：設為環境變數，之後由此 shell 啟動的 child process 都會繼承一份副本。
+R> local var=value：只在目前 function 內有效（function 結束就消失，也不會影響外面同名變數）；local 不是 POSIX 標準，但 dash、bash 等多數 sh 實作支援。
+P> 一般變數只在目前 shell
+P> export 會被 child process 繼承
+P> local 限定在 function 範圍內
+?sa 試舉出三個 Unix 系統預先定義的環境變數，並說明用途。
+S> 2023 期中 Q7
+R> HOME：使用者家目錄路徑（cd 不加參數就回到這裡）。
+R> PATH：以冒號分隔的目錄清單，shell 依序在這些目錄中尋找要執行的指令。
+R> SHELL：使用者設定的 login shell 路徑。
+R> 其他可答：USER/LOGNAME（使用者名稱）、PWD（目前目錄）、EDITOR（預設編輯器）、LANG（語系）、TERM（終端機類型）。
+P> 正確舉出三個變數名
+P> 每個都說明正確用途
+?mc 小明在 shell A 中 export FOO=1，接著在 A 裡執行 bash 進入 shell B，再在 B 中 export FOO=2 後 exit 回到 A。此時 A 的 echo $FOO 會是？
++ 1
+- 2
+- 空字串
+- 錯誤
+E> child 拿到的是副本，改了不會傳回 parent。
+?tf 執行 export PATH="$PATH:/opt/bin" 之後重新開機，PATH 仍會包含 /opt/bin。
+=F
+E> 環境變數只存在 process 記憶體；要永久需寫進啟動檔。
+
+@CARD shell.assign | 變數設定與展開
+A> sh 的等號很「黏」：name=value 中間不能有空白；有空白時 shell 會以為你要執行一個叫 name 的指令。
+B> POSIX：course=sa、month=$(date +%m)、export EDITOR=vim
+B> tcsh：set course=sa、set month=`date +%m`、**setenv EDITOR vim**
+B> sh/bash 的簡單賦值 **= 兩邊不能有空白**
+B> 除非刻意要 field splitting / 路徑展開，否則**展開時加雙引號**："$var"
+B> 新程式優先用 **$(command)** 而非反引號
+?mc 在 sh 中執行 name = alice 會發生什麼？
++ 把 name 當成指令執行而失敗
+- 成功把 alice 指定給 name
+- 把 name 設成空字串
+- 產生語法錯誤並結束 shell
+E> shell 把 name 當成指令名稱，參數為 = 與 alice，通常出現 command not found。賦值時等號兩邊不能有空白。
+?cmd 在 tcsh 中設定環境變數 EDITOR 為 vim：
+= setenv EDITOR vim
+E> tcsh 用 setenv（環境變數）與 set（shell 變數）。
+
+@CARD shell.quote | 引號規則
+A> 單引號是「保鮮膜」：裡面的東西原封不動，$ 也不會被打開；雙引號是「透明袋」：看得到裡面，$var 和 $(...) 會被替換，但空白不會被拆開；沒加引號就是「散裝」，可能被拆開（field splitting）又被當萬用字元展開。
+B> **'text'**：全部字面，不做參數/指令替換 → echo '$HOME' 印出 $HOME
+B> **"text"**：參數與指令替換仍會發生 → echo "$HOME" 印出路徑
+B> **\**：跳脫下一個字元 → echo \*
+B> **不加引號**：可能發生 field splitting 與 pathname expansion → 危險
+B> 預設習慣：變數展開一律加雙引號 "$var"
+?sa 假設某目錄有三個檔案，以 /bin/sh 執行下列兩行。若再執行 echo 'Result: $var' 的結果為何？
+QX> $ /bin/ls
+QX> a1 b2 c3
+QX> $ var=`/bin/ls`
+S> 2023 期中 Q1
+R> 輸出為 Result: $var（字面上的 $var）。
+R> 因為使用單引號，單引號內的所有字元都是字面意義，不會做變數展開；雖然 var 已存有 ls 的輸出，但不會被替換。若改用雙引號 echo "Result: $var" 才會印出檔名。
+P> 輸出 Result: $var
+P> 單引號內不做變數展開
+?mc HOME=/home/amy，執行 echo "$HOME" '$HOME' 的輸出是？
++ /home/amy $HOME
+- /home/amy /home/amy
+- $HOME $HOME
+- $HOME /home/amy
+E> 雙引號會展開，單引號不會。
+?tf 雙引號 "..." 裡的 $(date) 仍然會被執行並替換。
+=T
+E> 雙引號內參數替換與指令替換都會發生。
+
+@CARD shell.cmdsub | 指令替換 $(...)
+A> $(command) 像「把小幫手做完的結果貼在這裡」：先執行括號裡的指令，再把它的 stdout 塞回原位（尾端換行會被剪掉）。
+B> **$(command)** 用指令的 stdout 取代整個運算式
+B> 尾端的換行會被移除
+B> $(...) 可以乾淨地巢狀，比反引號 `...` 好讀
+B> POSIX 兩種都支援，新程式優先用 $(...)
+X> now=$(date)
+X> count=$(wc -l < /etc/passwd)
+X> archive="$(basename "$(pwd)").tar.gz"
+?tf 指令替換 $(cmd) 會保留輸出尾端的換行字元。
+=F
+E> 尾端換行會被移除。
+?mc 為什麼新的 sh/bash 程式建議用 $(...) 而不是反引號？
++ 可以乾淨地巢狀，也比較好讀
+- 反引號在 POSIX 中不合法
+- $(...) 執行比較快
+- 反引號只能在 tcsh 使用
+E> 兩者 POSIX 都支援，但 $(...) 巢狀不用跳脫。
+
+@CARD shell.glob | 路徑展開 (Globbing)
+A> Glob 是「選檔名的萬用牌」：* 是任意長度鬼牌、? 是一張鬼牌、[12] 是「只能是 1 或 2」。它比正規表達式陽春，而且是 shell 在執行前就翻好牌。
+B> **\***：任意字串（包含空字串）→ ls test* 符合 test1 test2 test-5 testmess
+B> **?**：任意**單一**字元 → test?
+B> **[abc]**：集合中的一個字元；**[!abc]**：不在集合中的一個字元
+B> **不是 regex**！要讓程式（而非 shell）解讀 pattern 時，要加引號
+?mc 目錄中有 test1、test2、test-5、testmess，執行 ls test? 會列出？
++ test1 test2
+- test1 test2 test-5
+- 全部四個
+- testmess
+E> ? 只代表剛好一個字元。
+?mc 在 glob 中，「不屬於集合 a、b、c 的一個字元」怎麼寫？
++ [!abc]
+- [^abc]（這是 regex 寫法）
+- !(abc)
+- [-abc]
+E> POSIX glob 用 [!...]；regex 才用 [^...]。
+
+@CARD shell.ctrl | 控制運算子與 Exit Status
+A> Exit status 是指令交的成績單：0 分代表「沒問題」（跟一般考試相反！），非 0 代表出事。&& 是「考過了才繼續」、|| 是「考爛了才補救」、; 是「不管考幾分都繼續」。
+B> **;**：不管結果都執行下一個（cd /tmp; pwd）
+B> **&&**：前一個**成功**才執行（make && make test）
+B> **||**：前一個**失敗**才執行（mkdir out || exit 1）
+B> 慣例：**exit status 0 = 成功**，非 0 = 失敗或特殊狀況；$? 查看上一個指令的狀態
+X> $ false; echo $?
+X> 1
+X> $ true; echo $?
+X> 0
+?mc 執行 false && echo A || echo B 會輸出？
++ B
+- A
+- A 與 B
+- 沒有輸出
+E> false 失敗 → 跳過 && 的 echo A → 整體失敗 → 執行 || 的 echo B。
+?fill 慣例上，指令執行成功時 exit status 為＿＿
+= 0
+E> 0 成功，非 0 失敗。
+
+@CARD shell.bg | 跳脫、續行與背景執行 &
+A> & 是「叫外送」：下單後你不用在門口等，可以繼續做事；但外送員還是記得你的地址（terminal），所以不等於「完全斷開關係」。
+B> **\** 跳脫特殊字元（touch test\*），或放在行尾讓指令**續行**
+B> **&**：在 interactive shell 把指令當**背景 job** 啟動
+B> 背景 ≠ 脫離（detached）：terminal 訊號與輸出仍可能有影響
+B> 長期服務應交給 **systemd / rc.d / supervisor**，不要靠 &
+B> $! = 最近一個背景 process 的 PID
+?sa a. 解釋指令 sleep 10 &。 b. 在下列操作中，該 sleep process 會發生什麼事？請解釋原因。
+QX> $ ssh my-host
+QX> [user@my-host] $ echo $SHELL
+QX> /bin/bash
+QX> [user@my-host] $ sleep 10 &
+QX> [user@my-host] $ exit
+S> 2025 期末 Q2
+R> a. sleep 10 & 讓 shell fork 出 sleep process 並放到背景執行（成為一個 job），shell 不等它結束，立刻回到提示字元；sleep 會睡 10 秒後結束。
+R> b. 用 exit 正常登出時，bash 預設 huponexit 是關閉的，所以不會送 SIGHUP 給背景 job。sleep 的 parent（bash）結束後它變成 orphan，被 PID 1（systemd）或 subreaper 收養，繼續執行直到 10 秒後正常結束並被收屍。
+R> 補充：若是 ssh 斷線 / 關閉終端，bash 收到 SIGHUP 會把 SIGHUP 轉送給所有 job，sleep（預設動作 terminate）就會被終止；若設了 shopt -s huponexit，或 systemd-logind 設定 KillUserProcesses=yes，exit 時也會被終止。若想確保不被 SIGHUP 影響可用 nohup 或 disown。
+P> a. & 讓 sleep 在背景執行，shell 不等待
+P> b. bash 預設 huponexit off，exit 不送 SIGHUP
+P> b. 變成 orphan 被 PID 1 收養，繼續跑完 10 秒
+P> 提到 SIGHUP / huponexit / nohup 等條件差異
+?tf 用 & 放到背景的程式，就和 terminal 完全沒有關係了。
+=F
+E> 背景不等於 detached；terminal 訊號（如 SIGHUP）與輸出仍可能影響它。
+
+@CARD shell.builtin | Built-in vs 外部指令
+A> Built-in 是服務生「自己動手」做的事（在 shell process 裡做），所以能改變 shell 本身的狀態；外部指令要「送廚房」（fork 一個新 process），廚房改了什麼都影響不到服務生。所以 cd 一定是 built-in，如果 cd 是外部程式，它只會改到廚房的位置，你人還在原地。
+B> **Built-ins**：cd、export、alias、jobs、fg、bg、exit，**在 shell process 內執行**，可以修改 shell 狀態
+B> **外部指令**：ls、grep、awk、sort、ssh、python，透過 PATH 或明確路徑找到，以**獨立 process** 執行
+B> 查詢：**type cd** → cd is a shell builtin；**command -V grep** → grep is /usr/bin/grep
+?mc 為什麼 cd 必須是 shell built-in？
++ 外部程式在 child process 改目錄，不會影響 parent shell 的工作目錄
+- 因為 cd 太常用，做成 built-in 可以省下每次 fork 與 exec 外部程式的時間
+- 因為切換目錄需要 root 權限，只有 shell 本身有這個權限，外部程式沒有
+- PATH 裡的外部 cd 不能處理含空白的路徑，所以 bash 另外內建一個版本
+E> child 的狀態改變不會傳回 parent，所以會改變 shell 狀態的指令必須是 built-in。
+?cmd 查詢 cd 是 built-in 還是外部指令：
+= type cd
+= command -V cd
+E> type 或 command -V。
+
+@CARD shell.jobs | Job Control
+A> Ctrl-Z 是「暫停鍵」（把正在吃飯的人叫停）、bg 是「讓他去旁邊慢慢吃」（背景繼續）、fg 是「叫回桌前」（前景）。%1 是號碼牌。
+B> 背景啟動：**command &**
+B> 暫停前景 job：**Ctrl-Z**（送 stop 訊號 SIGTSTP）
+B> 列出 job：**jobs**
+B> 背景繼續：**bg %1**；拉回前景：**fg %1**
+B> 終止：**kill %1** 或 kill PID
+X> $ sleep 300
+X> ^Z
+X> [1]+ Stopped   sleep 300
+X> $ bg %1
+X> [1]+ sleep 300 &
+X> $ fg %1
+?ord 正在前景跑 sleep 300，想讓它改到背景繼續跑，再拉回前景：
+> 按 Ctrl-Z 暫停
+> jobs 確認 job 編號
+> bg %1 讓它在背景繼續
+> fg %1 拉回前景
+E> Ctrl-Z 只是「停住」，要 bg 才會繼續在背景跑。
+?cmd 把 job 編號 2 拉回前景：
+= fg %2
+E> %N 是 job specification。
+?tf 按下 Ctrl-Z 後，程式會在背景繼續執行。
+=F
+E> Ctrl-Z 只會讓它停止（Stopped），要 bg 才會在背景繼續。
+
+@CARD shell.alias | Alias 與目錄堆疊
+A> alias 是「暱稱」：叫 ll 就是 ls -lah。pushd/popd 像書籤疊：pushd 把目前位置壓進去再跳過去、popd 彈出跳回上一個。
+B> alias ll="ls -lah"、alias ..="cd .."：互動時少打字
+B> **腳本中不要依賴 alias**；alias 太複雜時改用 function
+B> ⚠ alias 可能隱藏危險指令或改變選項 → 管理工作前先知道它展開成什麼
+B> **pushd / popd / dirs**：bash、zsh、tcsh 的目錄堆疊
+X> [~] % pushd /var/log    → /var/log ~
+X> [/var/log] % pushd /etc  → /etc /var/log ~
+X> [/etc] % popd            → /var/log ~
+?mc 目前在 ~，執行 pushd /var/log、pushd /etc、popd 之後，所在目錄是？
++ /var/log
+- /etc
+- ~（popd 會回到最一開始的目錄）
+- /
+E> popd 彈出 /etc，回到堆疊頂端的 /var/log。
+?mc 為什麼不建議在 shell script 中依賴 alias？
++ 非互動式 shell 預設不展開 alias，別人的環境也不一定有定義
+- alias 只在登入的 shell 中有效，script 一定要用 source 執行才讀得到
+- alias 不能帶參數所以一定會出錯
+- script 中的 alias 會永久寫入 ~/.bashrc
+E> 複雜的需求改用 function。
+?cmd 查看 ll 這個名稱實際會被展開成什麼（它是 alias、function 還是外部指令）：
+= type ll
+= alias ll
+= type -a ll
+E> 做管理工作前先確認 alias 展開成什麼，避免被隱藏的選項影響。
+
+@CARD shell.fd | 標準串流與 File Descriptor
+A> 每個 process 出生就有三根水管：0 號是進水管（stdin，預設接鍵盤）、1 號是一般出水管（stdout，接螢幕）、2 號是「警報」出水管（stderr，也接螢幕）。
+B> **0 = stdin**：預設鍵盤 / 呼叫者
+B> **1 = stdout**：預設 terminal
+B> **2 = stderr**：預設 terminal（錯誤訊息）
+M> 0 進 1 出 2 錯
+?mt 配對 file descriptor：
+> 0 :: stdin
+> 1 :: stdout
+> 2 :: stderr
+E> 0 進 1 出 2 錯。
+?fill 錯誤訊息預設寫到的 file descriptor 編號是＿＿
+= 2
+E> 0 stdin、1 stdout、2 stderr。
+?mc 為什麼要把錯誤訊息（stderr）和正常輸出（stdout）分成兩個 fd？
++ 這樣可以把正常輸出接給下一個指令或存檔，而錯誤訊息仍顯示在螢幕上
+- 因為 stderr 沒有緩衝，寫入速度比 stdout 快很多
+- 因為 stdout 只能寫入檔案，錯誤訊息需要另一條路顯示
+- 為了讓錯誤訊息自動存進 /var/log 的系統紀錄
+E> 例如 cmd > out.txt 時，錯誤仍會出現在 terminal。
+
+@CARD shell.redir | Redirection 與 2>&1
+A> 2>&1 的意思是「把 2 號水管接到 1 號水管**現在**接的地方」。所以順序很重要：先把 1 接到檔案再接 2（>out 2>&1）→ 兩個都進檔案；如果先 2>&1 再 >out → 2 接到的是「1 原本的地方（螢幕）」。
+B> **cmd < file**：file 當 stdin
+B> **cmd > file**：stdout 寫入檔案（先清空 truncate）
+B> **cmd >> file**：stdout 附加 (append)
+B> **cmd 2> file**：stderr 寫入檔案
+B> **cmd > out 2>&1**：stdout 與 stderr 都進同一個檔
+B> **2>&1 = 讓 fd 2 指向 fd 1「此刻」指向的地方**；由左到右處理，**順序會影響結果**
+B> printf ... >&2：把訊息送到 stderr
+?sa 請解釋 echo "2025 SA Final" 2>&1 中的 2>&1 代表什麼。
+S> 2025 期末 Q8
+R> 2>&1 是 redirection：把 file descriptor 2（stderr）重新導向到 file descriptor 1（stdout）目前指向的地方，也就是讓錯誤訊息和一般輸出走同一個去處。
+R> 在這個例子中 stdout 本來就是 terminal，所以 stderr 也指向 terminal，輸出看起來沒有差別（echo 也沒有錯誤輸出）；它常和 > file 一起用，如 cmd > log 2>&1 把兩者都寫進檔案，且順序重要。
+P> 2 是 stderr、1 是 stdout
+P> 把 stderr 導向 stdout 目前指向的位置
+P> （加分）此例中兩者都指向 terminal / 順序重要
+?mc cmd 2>&1 > out.txt 的結果是？
++ stdout 進 out.txt，stderr 仍印在 terminal
+- stdout 與 stderr 都會寫進 out.txt
+- 只有 stderr 會寫進 out.txt
+- stdout 與 stderr 都寫進 out.txt，但 stderr 會排在檔案最前面
+E> 由左到右：先讓 2 指向 1 當下的地方（terminal），之後才把 1 改成 out.txt。
+?cmd 執行 make，並把 stdout 與 stderr 都寫進 build.log（可攜寫法）：
+= make > build.log 2>&1
+= make >build.log 2>&1
+E> 先 > build.log，再 2>&1。
+?cmd 執行 ./run.sh，stdout 存到 output.log、stderr 存到 error.log：
+= ./run.sh > output.log 2> error.log
+= ./run.sh >output.log 2>error.log
+= ./run.sh 2> error.log > output.log
+E> 分開導向就分開寫。
+?tf > file 會先把檔案清空再寫入。
+=T
+E> > 會 truncate；要附加用 >>。
+
+@CARD shell.pipe | Pipeline 與 tee
+A> Pipe 是生產線輸送帶：左邊工人的成品（stdout）直接送到右邊工人的手上（stdin）。注意：輸送帶只運「產品」（stdout），不運「客訴」（stderr），除非你先把客訴也丟上輸送帶（2>&1 |）。tee 是 T 型水管，一邊流向下一站、一邊存一份到檔案。
+B> **|**：把左邊的 stdout 接到右邊的 stdin；每一站只做一件小事
+B> **stderr 不會被 | 傳過去**，除非明確 redirect
+B> 合併再 pipe：command 2>&1 | tee combined.log
+B> **tee**：把資料同時送到 stdout 與檔案
+B> bash 捷徑 **|&**（不是 POSIX sh）；2>&1 才是可攜寫法
+?tf cmd1 | cmd2 會把 cmd1 的 stderr 也傳給 cmd2。
+=F
+E> 只有 stdout 會進 pipe；要用 cmd1 2>&1 | cmd2。
+?cmd 執行 ./build.sh，把 stdout 和 stderr 一起顯示在螢幕上，同時存一份到 all.log（POSIX 寫法）：
+= ./build.sh 2>&1 | tee all.log
+= ./build.sh |& tee all.log
+E> 先合併 2>&1，再 pipe 給 tee。
+
+@CARD shell.files | 檔案與目錄指令
+A> 基本工具箱：ls 看、pwd 問我在哪、cd 走、mkdir 蓋房、rmdir 拆空房、cp 影印、mv 搬家/改名、rm 丟掉（沒有垃圾桶！）、ln 做連結、stat 看身分證。
+B> ls、pwd、cd、mkdir（-p 建多層）、**rmdir 只能刪空目錄**、cp、mv（搬移或改名）、rm、ln（hard / symbolic link）、stat（metadata）
+B> ⚠ rm **沒有**通用的資源回收筒；遞迴或特權刪除前檢查路徑、引號與萬用字元
+?cmd 一次建立 lab/logs 兩層目錄（lab 不存在）：
+= mkdir -p lab/logs
+= mkdir --parents lab/logs
+= mkdir -p lab/logs/
+E> -p 會建立所有缺少的上層目錄。
+?mc rmdir dir_2 失敗，訊息為 Directory not empty。原因是？
++ rmdir 只能刪除空目錄
+- 沒有 root 權限
+- dir_2 是 symbolic link
+- 需要加 -f
+E> 非空目錄要用 rm -r。
+
+@CARD shell.textmap | 文字處理工具地圖
+A> 工具箱分類記憶：頭尾 head/tail、找行 grep、切欄 cut/awk、排序分組 sort/uniq、計數 wc、換字元 tr、改內容 sed、把輸入變參數 xargs。
+B> 頭/尾幾行 → **head / tail**
+B> 符合 pattern 的行 → **grep**
+B> 取欄位 → **cut / awk**
+B> 排序、分組 → **sort / uniq**
+B> 計數 → **wc / uniq -c**
+B> 字元轉換/刪除 → **tr**
+B> 串流編輯 → **sed**
+B> 把輸入轉成指令參數 → **xargs**
+?mt 配對需求與工具：
+> 把小寫轉大寫（逐字元） :: tr
+> 找出含有 ERROR 的行 :: grep
+> 取 /etc/passwd 第 1 和第 7 欄 :: cut
+> 把 find 的輸出變成 rm 的參數 :: xargs
+> 把每行的 foo 換成 bar :: sed
+E> 選對工具，pipeline 就簡單。
+?mc 想知道 access.log 中每個來源 IP（第 1 欄）各出現幾次，由多到少排列。正確的工具組合順序是？
++ cut / awk 取欄位 → sort → uniq -c → sort -nr
+- uniq -c 先計數 → sort 排序 → cut 取出 IP 欄位
+- grep 找出 IP → wc -l 計算行數 → head 取前幾名
+- sort -nr 先排序 → uniq -c 計數 → cut 取出 IP 欄位
+E> uniq 只合併「相鄰」的重複行，所以要先 sort。
+
+@CARD shell.grep | head、tail、grep
+A> tail -f 是「盯著 log 看新留言」；grep 是「螢光筆」，把符合的行標出來。
+B> head -n 20 file、tail -n 50 file
+B> **tail -f**：持續追蹤成長中的 log
+B> grep **-n** 顯示行號、**-l** 只列出符合的檔名、**-F** 固定字串（不用 regex）、**-E** 延伸 regex、**-q** 安靜（只看 exit status）
+B> pattern 要加引號，避免 shell 先展開
+B> systemd 系統上很多服務改用 journalctl 看 log
+?cmd 持續追蹤 /var/log/messages 的新內容：
+= tail -f /var/log/messages
+= tail -F /var/log/messages
+E> -f = follow。
+?cmd 列出目前目錄所有 .log 檔中「包含 ERROR 的檔案名稱」：
+= grep -l ERROR *.log
+= grep -l "ERROR" *.log
+= grep -l 'ERROR' *.log
+E> -l 只印檔名。
+?cmd 在 file.txt 中搜尋 sshd，並顯示行號：
+= grep -n sshd file.txt
+= grep -n "sshd" file.txt
+= grep -n 'sshd' file.txt
+E> -n = line number。
+
+@CARD shell.cutawk | cut 與 awk 取欄位
+A> cut 是剪刀：只會照固定分隔符剪；awk 是會思考的剪刀：能加條件、計算、格式化。
+B> **cut -d: -f1,3,6,7**：以 : 分隔取第 1,3,6,7 欄
+B> **awk -F:** 設分隔符；'$1=="tsaimh" {print $1, $3}'
+B> cut：簡單固定分隔、字元範圍；無法做條件或計算
+B> awk：欄位感知的過濾、格式化、計算
+B> ⚠ 腳本中**不要 parse ls 的輸出**（是給人看的，可能有歧義）
+X> grep '^tsaimh:' /etc/passwd | cut -d: -f1,3,6,7
+X> awk -F: '$1=="tsaimh" {print $1, $3, $6, $7}' /etc/passwd
+?cmd 從 /etc/passwd 取出每一行的帳號名稱（第 1 欄）與 login shell（第 7 欄），用 cut：
+= cut -d: -f1,7 /etc/passwd
+= cut -d ':' -f1,7 /etc/passwd
+= cut -d: -f 1,7 /etc/passwd
+= cut -f1,7 -d: /etc/passwd
+E> -d 指定分隔字元，-f 指定欄位。
+?cmd 用 awk 印出 /etc/passwd 中 login shell（第 7 欄）不是以 nologin 結尾的帳號名稱與 shell：
+= awk -F: '$7 !~ /nologin$/ {print $1, $7}' /etc/passwd
+H> 用 !~ 表示「不符合 regex」
+E> !~ 是 awk 的 regex 不匹配運算子。
+
+@CARD shell.sortuniq | sort、uniq、wc
+A> uniq 是「近視眼」：只看得到「相鄰」的重複，所以一定要先 sort 讓同樣的東西排在一起。sort 沒加 -n 時是「字典排序」：逐字元比較，"123" 會排在 "14" 前面（第二個字元 2 < 4），跟數值大小剛好相反。
+B> sort **-n** 數值、**-r** 反向、**-u** 唯一、**-k** key 欄位、**-t** 分隔符
+B> **uniq 只偵測相鄰的重複行** → 通常先 sort
+B> uniq **-c** 計數
+B> wc **-l** 行數、**-w** 字數、**-c** bytes
+B> 沒加 -n 是字串比較，非數值比較
+X> sort ip.txt | uniq -c | sort -nr     # 依出現次數由多到少
+?cmd 統計 ip.txt 中每個 IP 出現次數，並依次數由多到少排序：
+= sort ip.txt | uniq -c | sort -nr
+= sort ip.txt | uniq -c | sort -rn
+= sort ip.txt | uniq -c | sort -n -r
+E> uniq 前先 sort；最後 sort -nr 數值反向排序。
+?tf 不先排序直接用 uniq，也能把整份檔案中所有重複的行合併。
+=F
+E> uniq 只合併「相鄰」的重複。
+?cmd 計算 /etc/passwd 有幾行：
+= wc -l /etc/passwd
+= wc -l < /etc/passwd
+E> -l 行數。
+
+@CARD shell.trsed | tr 與 sed（入門）
+A> tr 是「換字母的印章」，一個字元換一個字元，不懂單字；sed 是「自動修改的紅筆」，一行一行讀、用 regex 改。
+B> **tr '[:lower:]' '[:upper:]'**：小寫轉大寫
+B> **tr -d '\t'**：刪除 tab；**tr -s ' '**：壓縮連續空白
+B> tr 逐字元處理，不懂單字、沒有 capture group
+B> **sed 's/old/new/'**：每行只換第一個；**/g** 全部替換
+B> 可攜性：用 [:lower:] 這類 locale-aware 字元類別
+?cmd 把 file.txt 中連續的空白壓縮成一個（輸出到 stdout）：
+= tr -s ' ' < file.txt
+= tr -s " " < file.txt
+= cat file.txt | tr -s ' '
+E> -s = squeeze。tr 只讀 stdin，所以要 < file。
+?mc echo "aaa bbb aaa" | sed 's/aaa/X/' 的輸出是？
++ X bbb aaa
+- X bbb X
+- aaa bbb X
+- X
+E> 沒有 g 只替換每行第一個符合處。
+
+@CARD shell.xargs | xargs
+A> xargs 是「把一疊名單變成一封指令信」：stdin 送來的每一行，變成後面指令的參數。-n1 是「一次只念一個名字」；-I % 是「把名字填進信裡 % 的位置」。
+B> 把 stdin 轉成指令的**參數**（給不讀 stdin、只吃參數的程式）
+B> **-n N**：每次最多用 N 個參數（POSIX）
+B> **-I token**：用每一行輸入取代 token（POSIX）
+B> **-s size**：限制指令長度（POSIX）
+B> **-J token**：FreeBSD 擴充，把輸入插在第一個 token 處
+B> 安全處理檔名：**find . -type f -print0 | xargs -0 grep -l TODO**（NUL 分隔，檔名可含空白/換行）
+B> 更簡單：find ... **-exec command {} +**
+X> $ printf "%s\n" a b c | xargs echo
+X> a b c
+X> $ printf "%s\n" a b c | xargs -n1 echo
+X> a
+X> b
+X> c
+?cmd 安全地在目前目錄下所有檔案中找出含 TODO 的檔名（檔名可能含空白）：
+= find . -type f -print0 | xargs -0 grep -l TODO
+= find . -type f -print0 | xargs -0 grep -l 'TODO'
+= find . -type f -print0 | xargs -0 grep -l "TODO"
+E> -print0 搭配 xargs -0 以 NUL 分隔。
+?mc printf "a\nb\nc\n" | xargs echo 的輸出是？
++ a b c（一行）
+- a、b、c 各一行
+- abc
+- 沒有輸出
+E> xargs 預設把多個輸入合成參數一次呼叫；-n1 才會分三次。
+?mc 下列哪個 xargs 選項是 FreeBSD 擴充、不是 POSIX？
++ -J
+- -I
+- -n
+- -s
+E> -J 只在 FreeBSD 的 xargs 文件中。
+
+@CARD shell.pipeex | Pipeline 實戰與 UNIX 哲學
+A> UNIX 哲學像樂高：每塊積木只做一件事、介面統一（文字串流），組合起來無所不能。
+B> **Do one thing well**、**Text as glue**、**Automate repetition**
+B> 例：找出 access.log 前 10 名 IP：awk 取欄 → sort 分組 → uniq -c 計數 → sort -nr 排名 → head 取前 10
+B> 每一站要有清楚的輸入輸出契約
+B> 現代觀點：結構化 API、資料庫、真正的程式語言更安全時就不要硬用文字管線
+X> awk '{print $1}' access.log | sort | uniq -c | sort -nr | head -n 10
+?ord 排出「找出 access.log 中出現最多次的前 10 個 IP」的 pipeline 順序：
+> awk '{print $1}' access.log
+> sort
+> uniq -c
+> sort -nr
+> head -n 10
+E> 取欄 → 分組 → 計數 → 排名 → 取前幾名。
+?cmd 計算 /etc/passwd 中每種 login shell（第 7 欄）被幾個帳號使用，由多到少：
+= cut -d: -f7 /etc/passwd | sort | uniq -c | sort -nr
+= cut -d: -f7 /etc/passwd | sort | uniq -c | sort -rn
+= awk -F: '{print $7}' /etc/passwd | sort | uniq -c | sort -nr
+E> 典型「取欄 → sort → uniq -c → sort -nr」。
+
+@CARD shell.shellcheck | ShellCheck
+A> ShellCheck 是寫腳本的「文法老師」，會圈出沒加引號、可攜性問題、可疑的 test 等等。但它不能取代實際測試。
+B> 靜態分析工具：抓**未加引號的展開**、可攜性問題、可疑 test、未使用變數、常見邏輯錯誤
+B> 例：SC2086，Double quote to prevent globbing and word splitting
+B> commit 前跑；把警告當成「理解 shell 語意的提示」，不是取代測試
+?mc ShellCheck 的 SC2086 警告「Double quote to prevent globbing and word splitting」通常是因為？
++ 變數展開沒有加雙引號，例如 rm $f
+- 用了 $(...) 而非反引號
+- 用了 printf 而非 echo
+- 缺少 shebang
+E> 應改成 rm "$f"。
+?cmd 用 ShellCheck 檢查腳本 deploy.sh：
+= shellcheck deploy.sh
+= shellcheck ./deploy.sh
+E> 會列出 SC 編號的警告與說明。
+?tf ShellCheck 是靜態分析工具，不會實際執行腳本。
+=T
+E> 所以它不能取代測試，只能找出可疑的寫法。
+
+@CARD shell.history | 指令歷史
+A> !! 是「再來一次」、!n 是「點播第 n 首」、!str 是「點最近一首以 str 開頭的歌」。但小心：歷史展開在危險指令上可能嚇到你。
+B> history 列出歷史；上鍵；Ctrl-R 反向搜尋（bash/zsh）
+B> **!n** 執行第 n 筆、**!-n** 往回第 n 筆、**!!** 上一個指令、**!str** 最近以 str 開頭、**!?str** 最近包含 str
+B> **!!:*** 上一個指令的所有參數；**!!:s/old/new/** 替換上一個指令中的文字
+B> 腳本裡應寫明確指令，不要用歷史展開
+?cmd 以 sudo 重新執行上一個指令：
+= sudo !!
+E> !! 代表上一個完整指令。
+?mt 配對歷史展開：
+> !! :: 上一個指令
+> !n :: 第 n 筆歷史
+> !str :: 最近一個以 str 開頭的指令
+> !?str :: 最近一個包含 str 的指令
+E> tcsh 與 bash 都支援這些。
+
+@CARD shell.p_find | 實作：find 把檔案找出來
+A> find 是「拿著條件清單逐間搜房間的搜查員」：你給起點目錄和條件（名字、類型、大小、時間、擁有者、權限），它一層層走進去比對。HW2 一開機就要用它：initramfs 被藏在 /root 底下，先找到才修得了。
+B> 基本型：**find 起點 條件 動作**，例如 `find /root -name 'initrd*'`；pattern 一定加引號，不然 shell 會先展開
+B> 常用條件：**-name / -iname**（檔名）、**-type f / d / l**、**-size +100M**、**-mtime -1**（一天內改過）、**-user judge**、**-perm -4000**（含 setuid）
+B> 動作：預設印出路徑；**-delete** 刪除；**-exec cmd {} \;** 每個檔跑一次、**-exec cmd {} +** 盡量湊成一次
+B> 從 / 找會噴一堆 Permission denied：尾巴接 **2>/dev/null** 把錯誤丟掉
+B> 只想查「指令在哪」用 `command -v` 或 `which`，不必 find
+X> find /root -type f -name 'initrd.img*'
+X> find / -type f -perm -4000 2>/dev/null        # 全系統 setuid 檔
+X> find /var/log -name '*.log' -size +50M -exec ls -lh {} +
+X> find /tmp -type f -mtime +7 -delete
+?cmd 在 /root 底下找出檔名以 initrd.img 開頭的檔案：
+= find /root -name 'initrd.img*'
+= find /root -type f -name 'initrd.img*'
+= find /root -name "initrd.img*"
+E> pattern 加引號，交給 find 自己比對。
+?mc `find . -name '*.sh' -exec chmod +x {} \;` 與結尾改成 `{} +` 的差別是？
++ `\;` 每找到一個檔就執行一次指令；`+` 把多個檔名湊在一起、執行次數少
+- `\;` 只處理找到的第一個檔案；`+` 會把找到的全部都處理
+- `\;` 會在每個檔名前後加上引號；`+` 不加引號，所以檔名有空白時會出錯
+- 兩者完全相同，`+` 只是新版 find 為了好打字加入的寫法
+E> `+` 的行為類似 xargs，檔案多時快很多。
+?cmd 找出整個系統中帶有 setuid 位元的一般檔案，並把錯誤訊息丟掉：
+= find / -type f -perm -4000 2>/dev/null
+= find / -perm -4000 -type f 2>/dev/null
+E> -perm -4000 表示「至少含有」setuid 位元。
+?tf `find /etc -name *.conf`（pattern 沒加引號）在任何目錄下執行，結果都和加了引號一樣。
+=F
+E> 若目前目錄剛好有 .conf 檔，shell 會先把 *.conf 展開成那些檔名，find 收到的條件就變了。
+
+@CARD shell.p_which | 實作：command not found 怎麼查
+A> shell 找指令像「照 PATH 這張清單一間一間店問有沒有賣」。找不到是 127、找到了但不能執行是 126。HW2 的 SnApper 與 sftp_watchd 規定要在 $PATH 裡，judge 是用 `which` 找它們的，所以放哪、權限給多少都要驗證。
+B> **type 名稱**：告訴你它是 alias、builtin、function 還是哪個路徑的檔案；**command -v**（可攜、適合腳本）、**which**（只找 PATH 上的檔）
+B> **exit 127**：command not found（PATH 上沒有）；**exit 126**：找到但不能執行（沒 x 權限、或是目錄）
+B> `echo "$PATH" | tr ':' '\n'` 一行一個看清楚；自己的工具慣例放 **/usr/local/bin**
+B> **sudo 會把 PATH 換成 sudoers 的 secure_path**，所以「自己跑得到、sudo 跑不到」先查這裡
+B> 剛搬動過執行檔還是跑到舊路徑：bash 有快取，**hash -r** 清掉
+X> type ls cd SnApper
+X> command -v sftp_watchd || echo "not in PATH"
+X> sudo sh -c 'echo $PATH'
+?mc 執行自己的腳本得到 exit status 126，最可能的原因是？
++ 檔案找到了，但沒有執行權限
+- PATH 上找不到這個指令
+- 腳本裡某個指令回傳失敗
+- 腳本被 SIGKILL 終止
+E> 127 = not found、126 = 不能執行、137 = 128 + 9（SIGKILL）。
+?cmd 用可攜（POSIX）的方式查出 SnApper 會被解析到哪個路徑：
+= command -v SnApper
+= which SnApper
+= type SnApper
+E> 腳本中建議 command -v；type 還能看出 alias / builtin。
+?mc `mytool` 自己執行正常，但 `sudo mytool` 顯示 command not found。最可能的原因？
++ sudo 使用 sudoers 的 secure_path，其中沒有 mytool 所在的目錄
+- sudo 只能執行 ELF 執行檔，不能執行 shell script 或其他腳本
+- root 沒有權限讀取一般使用者的家目錄，所以找不到 mytool
+- mytool 沒有設定 setuid bit，所以 sudo 拒絕以 root 身分執行它
+E> 放到 /usr/local/bin 這類 secure_path 內的目錄就解決。
+
+@CARD shell.p_less | 實作：看大檔、追 log
+A> 看 log 有三種視角：less 是「可前後翻的閱讀器」、tail -f 是「站在檔尾等新的一行」、watch 是「每隔幾秒重拍一張快照」。debug 服務時幾乎都是一個視窗 tail -f，另一個視窗操作。
+B> **less 檔案**：`/字串` 搜尋、`n` 下一個、`G` 跳到尾、`g` 回到頭、`F` 進入追蹤模式、`q` 離開
+B> **tail -n 20**、**tail -f**（持續追）、**tail -F**（檔案被 rotate 換新檔也會重新跟上）
+B> **tail -n +2**：從第 2 行開始印（跳過表頭）；**head -n -1**：去掉最後一行
+B> **head -c 4**：只取前 4 個 bytes（檢查檔案簽章用）
+B> **watch -n 1 'cmd'**：每秒重跑並刷新畫面，適合盯 lvs 的 sync 進度、目錄內容
+X> tail -F /var/log/sftp.log
+X> journalctl -u ssh --no-pager | tail -n 30
+X> watch -n 2 'lvs -a -o name,sync_percent'
+?mc log 檔會被 logrotate 定期換成新檔。要長時間追蹤它，應該用？
++ tail -F
+- tail -f
+- head -f
+- less -n
+E> -f 跟的是原本那個檔案（inode），被換掉就追不到；-F 會依檔名重新開啟。
+?cmd 印出 list.txt 從第 2 行開始的全部內容（跳過表頭）：
+= tail -n +2 list.txt
+= sed 1d list.txt
+= sed '1d' list.txt
+= awk 'NR>1' list.txt
+= tail -n+2 list.txt
+E> +N 表示「從第 N 行開始」，不是最後 N 行。
+?cmd 每 1 秒重新執行一次 `ls /mnt/hw2/sftp/public` 並刷新畫面：
+= watch -n 1 ls /mnt/hw2/sftp/public
+= watch -n 1 'ls /mnt/hw2/sftp/public'
+= watch -n1 ls /mnt/hw2/sftp/public
+E> 預設間隔是 2 秒，-n 指定秒數。
+
+@CARD shell.p_grep | 實作：grep 進階選項
+A> grep 是 log 與設定檔的「金屬探測器」。學會幾個旗標，就能回答「哪個檔有設這一行」「錯誤前後發生什麼」「到底出現幾次」。
+B> **-r** 遞迴整個目錄、**-n** 顯示行號、**-i** 忽略大小寫、**-v** 反向（不含）、**-l** 只列檔名、**-c** 計數
+B> **-E** 延伸正規表達式（可用 `|`、`+`、`()`）；**-F** 當純字串比對；**-x** 整行完全相同；**-o** 只印出符合的部分
+B> **-A 3 / -B 3 / -C 3**：連同後 / 前 / 前後 3 行一起印，看錯誤的上下文
+B> **-q**：不輸出，只用 exit status（0 有找到、1 沒有），寫 if 的標準配備
+B> 看設定檔的有效內容：`grep -Ev '^\s*(#|$)' file` 去掉註解與空行
+X> grep -rn 'PermitRootLogin' /etc/ssh/
+X> grep -Ev '^\s*(#|$)' /etc/ssh/sshd_config
+X> journalctl -u ssh | grep -i -C 2 'error'
+X> if grep -qxF "$hash" blacklist.txt; then echo banned; fi
+?cmd 在 /etc/ssh/ 底下遞迴搜尋 Banner，並顯示行號：
+= grep -rn Banner /etc/ssh/
+= grep -rn 'Banner' /etc/ssh/
+= grep -rn Banner /etc/ssh
+= grep -nr Banner /etc/ssh/
+E> sshd_config.d/ 裡的檔案也會被找到。
+?mc 腳本中想判斷「$h 這個雜湊值是否整行出現在 list.txt」，且不要有任何輸出，最適合的是？
++ grep -qxF "$h" list.txt
+- grep -c "$h" list.txt
+- grep -v "$h" list.txt
+- grep -o "$h" list.txt
+E> -q 安靜、-x 整行相符、-F 當固定字串，避免特殊字元被當成 regex。
+?fill 要連同符合那一行的「前後各 3 行」一起印出，grep 的選項是 -＿ 3
+= C
+E> -A after、-B before、-C context（前後）。
+
+@CARD shell.p_disk | 實作：磁碟與掛載現況一把抓
+A> 動磁碟之前先「看地圖」。lsblk 是樹狀地圖（哪顆碟切了哪些分割、上面疊了 LUKS / LVM / 檔案系統）、df 是各區的剩餘空間、du 是「誰吃掉空間」。HW2 每一步做完都該回來看一次 lsblk。
+B> **lsblk**：block device 樹；**lsblk -f** 多顯示 FSTYPE、LABEL、UUID、掛載點
+B> **df -h**：各檔案系統用量；**df -i**：inode 用量（空間還有但 inode 用完，一樣建不了檔）；**df -T** 顯示類型
+B> **du -sh 目錄**：總大小；`du -h --max-depth=1 | sort -h`：找出最肥的子目錄
+B> **findmnt**：目前掛載樹；**findmnt /mnt/hw2** 查單一點、**findmnt -t btrfs** 只看 btrfs
+B> **blkid**：查裝置的 UUID / TYPE / LABEL，寫 fstab 前必查
+X> lsblk -f
+X> df -hT /mnt/hw2
+X> du -h --max-depth=1 /var | sort -h | tail
+X> findmnt -t btrfs
+?mc `df -h` 顯示還有 40% 空間，但建立新檔時出現 No space left on device。應該接著查？
++ df -i，看 inode 是否用完
+- free -h，看記憶體
+- uptime，看 load average
+- lsmod，看 kernel module
+E> 大量小檔會把 inode 用完；Btrfs 則要看 btrfs filesystem usage。
+?cmd 顯示所有 block device，並包含檔案系統類型、LABEL 與 UUID：
+= lsblk -f
+= lsblk --fs
+E> 也可以用 blkid 查單一裝置。
+?cmd 以人類可讀的單位顯示 /var/log 這個目錄的總大小：
+= du -sh /var/log
+= du -hs /var/log
+E> -s 只印總和、-h 自動換算單位。
+
+@CARD shell.p_editor | 實作：vim 最小生存包
+A> 救援模式、visudo、crontab -e 都會把你丟進編輯器，而且常常只有 vi。把它想成「有兩種檔位的車」：一般模式下每個鍵都是指令，按 i 才進入打字模式，Esc 回到指令模式。
+B> **i** 進入輸入、**Esc** 回一般模式；**:w** 存檔、**:q** 離開、**:wq** 存檔離開、**:q!** 不存檔強制離開
+B> 一般模式：**dd** 刪一行、**u** 復原、**/字串** 搜尋後 **n** 找下一個、**gg / G** 跳到頭 / 尾、**:行號** 跳到指定行
+B> **:set nu** 顯示行號；檔案唯讀時 **:w !sudo tee %** 可以救急
+B> 想換編輯器：`export EDITOR=nano`，或 Debian 的 `update-alternatives --config editor`
+B> nano：畫面下方有提示，**Ctrl+O** 存檔、**Ctrl+X** 離開
+?mc 在 vim 裡亂改了一通，想「不存檔直接離開」，要輸入？
++ 先按 Esc，再輸入 :q!
+- 直接按 Ctrl+C
+- 先按 Esc，再輸入 :wq
+- 輸入 :x
+E> :x 與 :wq 都會存檔；! 表示強制。
+?mt 配對 vim 一般模式的操作：
+> dd :: 刪除游標所在的整行
+> u :: 復原上一步
+> /Port :: 向下搜尋 Port
+> G :: 跳到檔案最後一行
+E> 都要在一般模式（先按 Esc）下操作。
+?tf 在 vim 的一般模式下直接打字，文字就會被插入到游標處。
+=F
+E> 要先按 i（或 a、o）進入輸入模式。
+
+@CARD shell.p_copy | 實作：tar、scp、rsync 搬檔案
+A> 動手改系統前先備份，是 SA 的反射動作。tar 是「打包裝箱」、scp 是「隔著 SSH 丟一個檔案過去」、rsync 是「只搬有差異的部分」的聰明搬家工。
+B> tar：**c** 建立、**x** 解開、**t** 列出內容、**z** gzip、**f** 指定檔名、**-C 目錄** 指定解到哪；`tar czf etc.tgz /etc`、`tar xzf etc.tgz -C /tmp`
+B> 改設定檔前留一份：`cp -a sshd_config sshd_config.bak`（**-a** 保留權限、擁有者、時間）
+B> **scp 檔案 user@host:路徑**；port 用大寫 **-P**；目錄加 **-r**
+B> **rsync -av 來源/ 目的/**：來源結尾的 **/** 表示「目錄裡的內容」，沒有 / 則是把整個目錄搬進去；**--delete** 讓目的端多的檔案也刪掉
+B> **cp -a** 與 **rsync -a** 都會保留權限，搬資料到新的檔案系統時用它們
+X> tar czf /root/etc-$(date +%F).tgz /etc
+X> scp -P 2222 SnApper judge@10.113.0.5:/tmp/
+X> rsync -av /home/ /mnt/newhome/
+?cmd 把 /etc 打包並用 gzip 壓縮成 /root/etc.tgz：
+= tar czf /root/etc.tgz /etc
+= tar -czf /root/etc.tgz /etc
+= tar zcf /root/etc.tgz /etc
+= tar -zcf /root/etc.tgz /etc
+E> c 建立、z gzip、f 後面接檔名。
+?mc `rsync -av /data /backup/` 與 `rsync -av /data/ /backup/` 的差別？
++ 前者多一層 data 目錄，後者沒有
+- 前者不遞迴，後者才遞迴
+- 前者會刪除目的端多餘的檔案
+- 後者會順便刪除 /backup 裡多餘的檔案
+E> 前者得到 /backup/data/...；後者把 data 裡的內容直接放進 /backup/。來源結尾有沒有 / 是 rsync 最常見的坑。
+?fill scp 要指定遠端的 SSH port 為 2222，選項是 ＿ 2222（注意大小寫）
+= -P
+E> ssh 用小寫 -p，scp 與 sftp 用大寫 -P。
