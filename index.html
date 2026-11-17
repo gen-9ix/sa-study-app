@@ -11182,6 +11182,7 @@ function nextNewQs(limitCards, opts={}){
   if(f) for(const x of queue(f)) if(take(x)) return res;
   const pools=CH.filter(ch=>ch!==f).map((ch,k)=>({k,q:queue(ch),n:Math.max(1,ch.cards.length),st:ch.cards.filter(cardStarted).length}));
   for(const P of pools) while(P.q.length&&P.q[0].st){ if(take(P.q.shift())) return res; }   // finish what was started
+  if((S.set.mix??1)===0){ for(const P of pools) for(const x of P.q) if(take(x)) return res; return res; }
   for(;;){ let best=null; for(const P of pools){ if(!P.q.length) continue; if(!best||P.st/P.n<best.st/best.n-1e-9) best=P; }
     if(!best) break; best.st++; if(take(best.q.shift())) break; }
   return res;
@@ -11882,7 +11883,7 @@ VIEWS.home=()=>{
     if(PC){ const ok=PC.behind<=0, heavy=PC.need>20;
       exam=`<div class="card alert info"><span class="ic-tile">${icon('cal')}</span><div class="grow"><div class="row between"><div class="h2">距離筆試 ${PC.days} 天</div><span class="chip ${ok?'g':'y'}">${PC.left?(ok?'今天跟上了':`還差 ${PC.behind} 張`):'全部學過了'}</span></div>
       ${PC.left||PC.done?`<div class="small muted mt-2xs">還有 <b>${PC.left}</b> 張卡沒學過。要在考前 3 天學完，今天要認識 <b>${PC.need}</b> 張新卡</div>
-      <div class="bar thin mt-xs"><i style="--v:${Math.min(1,PC.done/Math.max(1,PC.need)).toFixed(3)}"></i></div><div class="tiny muted mt-2xs">今天新卡 ${PC.done} / ${PC.need}${heavy?'。量很大，學不完也沒關係：新卡已經輪流從各章出、考古題考過的排在前面':''}</div>`:'<div class="small muted mt-2xs">所有卡都學過了，接下來專心複習和練簡答。</div>'}</div></div>`; }
+      <div class="bar thin mt-xs"><i style="--v:${Math.min(1,PC.done/Math.max(1,PC.need)).toFixed(3)}"></i></div><div class="tiny muted mt-2xs">今天新卡 ${PC.done} / ${PC.need}${heavy?'。量很大，學不完也沒關係：'+((S.set.mix??1)?'新卡已經輪流從各章出、':'')+'考古題考過的卡排在前面':''}</div>`:'<div class="small muted mt-2xs">所有卡都學過了，接下來專心複習和練簡答。</div>'}</div></div>`; }
     else if(!S.set.exam&&learnedQ>0) exam=`<div class="card alert info"><span class="ic-tile">${icon('cal')}</span><div class="grow"><div class="h2">還沒設定筆試日期</div><div class="small muted">設定後會幫你算每天要學幾張新卡，才來得及學完</div></div><button class="btn sm" data-act="go" data-v="settings">去設定</button></div>`; }
   const banner = S.cv<CONTENT_VERSION ? `<div class="card alert info"><span class="ic-tile">${icon('box')}</span><div class="grow small"><b>內容更新 v${CONTENT_VERSION}</b><br>${esc(CHANGELOG[CHANGELOG.length-1].note)}<br><span class="muted">你的學習紀錄完整保留。</span></div><button class="btn sm" data-act="ackcv">好</button></div>`:'';
   const hpN=ms.n?Math.max(1,Math.round(ms.avg*20)):0, hpC=!ms.n?'':ms.avg>=0.85?'':ms.avg>=0.7?' mid':' low';
@@ -12011,6 +12012,7 @@ VIEWS.settings=()=>{
   <div class="card"><div class="row"><div class="grow"><div class="h2">背景音樂</div><div class="small muted">慢速的環境音樂，即時合成，每段和弦上的鈴聲都隨機。切到別的 app 會自動停</div></div><button class="btn sm ${s.bgm?'pri':''}" data-act="togglebgm" aria-pressed="${!!s.bgm}">${s.bgm?'開啟':'關閉'}</button></div><div class="row mt-sm"><div class="grow"><div class="h2">魔王戰音樂</div><div class="small muted">進入魔王戰才會響，緊張一點的 8-bit 戰鬥曲。魔王剩 3 格血時會加快</div></div><button class="btn sm ${s.bbgm?'pri':''}" data-act="togglebbgm" aria-pressed="${!!s.bbgm}">${s.bbgm?'開啟':'關閉'}</button></div>${(s.bgm||s.bbgm)?`<div class="small muted" style="margin:var(--space-sm) 0 var(--space-xs)">音量</div>${seg('bgmv',[1,2,3],v=>['','小','中','大'][v])}`:''}</div>
   <div class="card"><div class="h2">每日目標</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">答到這個題數就算今天打卡。目標小一點，比較容易天天做到</div>${seg('goal',[10,20,30,50],v=>v+' 題')}</div>
   <div class="card"><div class="h2">專項練習每回合題數</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">工具箱裡各模式一回合的長度</div>${seg('size',[5,10,15,20])}</div>
+  <div class="card"><div class="h2">新卡的出現順序</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">${(s.mix??1)?'各章輪流：每章都會先碰到重點，穿插著學記得比較久':'照章節順序：一章學完才換下一章，比較有連貫感'}。兩種都會把考古題考過的卡往前排，章節地圖設的「主線」也一樣優先</div><div class="seg">${[[1,'各章輪流'],[0,'照章節順序']].map(([v,l])=>`<button class="${(s.mix??1)===v?'on':''}" aria-pressed="${(s.mix??1)===v}" data-act="set" data-k="mix" data-val="${v}">${l}</button>`).join('')}</div></div>
   <div class="card"><div class="h2">每回合新觀念卡</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">章節地圖「學下一批新卡」一次學幾張</div>${seg('newPer',[1,2,3,4,6])}</div>
   <div class="card"><div class="h2">筆試日期</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">設定後首頁會倒數，並依剩下的卡數自動安排每天的新卡量</div><input class="field" type="date" id="examdate" value="${esc(s.exam)}"></div>
   ${window.SA_STANDALONE?"":`<div class="card row"><div class="grow"><div class="h2">AI 家教（Claude）</div><div class="small muted">批改簡答題、換個比喻講解、回答你的問題${AI.ready?'':'（此檢視目前無法使用）'}</div></div><button class="btn sm ${s.ai?'pri':''}" data-act="toggleai">${s.ai?'開啟':'關閉'}</button></div>`}
