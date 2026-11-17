@@ -268,6 +268,8 @@ details summary{cursor:pointer}
 
 .star-row{display:flex;align-items:center;gap:var(--space-2xs)}
 .star-row>.li{flex:1;min-width:0}
+.mynote{display:flex;gap:var(--space-xs);align-items:flex-start;margin-top:var(--space-xs);padding:var(--space-xs) var(--space-sm);border-radius:var(--radius-card);border:var(--rule-hair) dashed var(--color-accent);font-size:var(--text-sm)}
+.mynote svg{flex:none;color:var(--color-accent);margin-top:var(--space-3xs)}
 /* practice */
 .prog{display:flex;gap:var(--space-2xs);flex:1}
 .prog i{flex:1;height:6px;background:var(--color-paper-3)}
@@ -10912,7 +10914,7 @@ function mergeState(a,b){ // pure merge of two progress states (per-item newest 
   for(const id of new Set([...Object.keys(a.bm||{}),...Object.keys(b.bm||{})])) o.bm[id]=pick(a.bm?.[id],b.bm?.[id],'t');
   for(const d of new Set([...Object.keys(a.days||{}),...Object.keys(b.days||{})])){
     const x=a.days?.[d]||{}, y=b.days?.[d]||{};
-    o.days[d]={n:Math.max(x.n||0,y.n||0),c:Math.max(x.c||0,y.c||0),x:Math.max(x.x||0,y.x||0),nw:Math.max(x.nw||0,y.nw||0),g:(x.g||y.g)?1:0};
+    o.days[d]={n:Math.max(x.n||0,y.n||0),c:Math.max(x.c||0,y.c||0),x:Math.max(x.x||0,y.x||0),nw:Math.max(x.nw||0,y.nw||0),nc:Math.max(x.nc||0,y.nc||0),sa:Math.max(x.sa||0,y.sa||0),g:(x.g||y.g)?1:0};
   }
   o.xp=Math.max(a.xp||0,b.xp||0);
   o.set=((b.set?.t||0)>=(a.set?.t||0))?Object.assign(fresh().set,b.set):Object.assign(fresh().set,a.set);
@@ -11087,6 +11089,7 @@ function seen(id){ const s=S.q[id]; return !!(s&&s.n); }
 // grade: 0 wrong, 1 partial/hard, 2 good, 3 easy
 function grade(id,g,opt={}){
   const t=now(); let s=S.q[id]||{n:0,c:0,l:0,e:2.5,i:0,d:t,t:0,h:''};
+  const cardNew=!s.n&&Q[id]&&!Q[id].card.q.some(x=>seen(x.id));
   const wasNew=!s.n, L0=lvl().i, P0=petStage(), i0=s.i||0, R=wasNew?1:retr(s,t), el=wasNew?0:(t-s.t)/DAY;
   s.n++; s.h=(s.h+(g>=2?'1':g===1?'h':'0')).slice(-8);
   if(g>=2) s.c++;
@@ -11107,7 +11110,7 @@ function grade(id,g,opt={}){
   }
   s.t=t; S.q[id]=s;
   const d=today(); const D=S.days[d]||(S.days[d]={n:0,c:0,x:0,nw:0});
-  D.n++; if(g>=2) D.c++; if(wasNew) D.nw++;
+  D.n++; if(g>=2) D.c++; if(wasNew) D.nw++; if(cardNew) D.nc=(D.nc||0)+1;
   const xp = opt.xp!=null?opt.xp : (g>=2?10:g===1?5:2);
   D.x+=xp; S.xp+=xp;
   if(D.n===1){ const st=streak(); if(st>0&&st%7===0&&S.fz.n<2){ S.fz.n++; S.fz.t=t; setTimeout(()=>toast(icon('ice')+' 連續 '+st+' 天！獲得 1 張補簽卡',2800),900); } }
@@ -11158,21 +11161,29 @@ function weakness(c){
   return {c,score,why};
 }
 function weakCards(n=8){ return CLIST.map(weakness).filter(w=>w&&w.why.length&&w.score>0.6).sort((a,b)=>b.score-a.score).slice(0,n); }
+/* Pacing: how many NEW cards today so that every card is met before the exam (last 3 days = review only). */
+function pace(){
+  if(!S.set.exam) return null; const days=Math.ceil((new Date(S.set.exam+'T09:00')-new Date())/DAY); if(days<0) return null;
+  const left=CLIST.filter(c=>!cardStarted(c)).length, done=(S.days[today()]||{}).nc||0;
+  const need=left+done?Math.ceil((left+done)/Math.max(1,days-3)):0;
+  return {days,left,need,done,behind:Math.max(0,Math.min(left,need-done))};
+}
+const cardHot=c=>c.q.some(q=>q.src);   // has a real past-exam question
+/* Next cards to learn. Unfinished cards first; then chapters are interleaved (the chapter with the lowest
+   share of started cards goes next) and, inside a chapter, past-exam cards are pulled a few places forward. */
 function nextNewQs(limitCards, opts={}){
-  // returns array of {card, qs:[...]} for the next unseen questions in learning order
-  const order=[]; const f=S.set.focus&&CHMAP[S.set.focus];
-  if(f) order.push(f); for(const ch of CH) if(ch!==f) order.push(ch);
-  const res=[]; const per=opts.per||2;
-  for(const ch of order){
-    if(opts.only&&ch.id!==opts.only) continue;
-    for(const c of ch.cards){
-      const obj=c.q.filter(x=>x.k!=='sa');
-      const un=c.q.filter(q=>!seen(q.id)&&(opts.allowSA||q.k!=='sa'||obj.every(x=>seen(x.id))));
-      if(!un.length) continue;
-      res.push({card:c,qs:un.slice(0,per)});
-      if(res.length>=limitCards) return res;
-    }
-  }
+  const per=opts.per||2, res=[];
+  const unOf=c=>{ const obj=c.q.filter(x=>x.k!=='sa'); return c.q.filter(q=>!seen(q.id)&&(opts.allowSA||q.k!=='sa'||obj.every(x=>seen(x.id)))); };
+  const queue=ch=>ch.cards.map((c,i)=>({c,i,un:unOf(c),st:cardStarted(c)})).filter(x=>x.un.length&&!(opts.fresh&&x.st))
+    .sort((a,b)=>(b.st-a.st)||((a.i-(cardHot(a.c)?3:0))-(b.i-(cardHot(b.c)?3:0)))||(a.i-b.i));
+  const take=x=>{ res.push({card:x.c,qs:x.un.slice(0,per)}); return res.length>=limitCards; };
+  if(opts.only){ for(const x of queue(CHMAP[opts.only])) if(take(x)) break; return res; }
+  const f=S.set.focus&&CHMAP[S.set.focus];
+  if(f) for(const x of queue(f)) if(take(x)) return res;
+  const pools=CH.filter(ch=>ch!==f).map((ch,k)=>({k,q:queue(ch),n:Math.max(1,ch.cards.length),st:ch.cards.filter(cardStarted).length}));
+  for(const P of pools) while(P.q.length&&P.q[0].st){ if(take(P.q.shift())) return res; }   // finish what was started
+  for(;;){ let best=null; for(const P of pools){ if(!P.q.length) continue; if(!best||P.st/P.n<best.st/best.n-1e-9) best=P; }
+    if(!best) break; best.st++; if(take(best.q.shift())) break; }
   return res;
 }
 function streak(){ let n=0; const d=new Date(); if(!(S.days[today()]?.n>0)) d.setDate(d.getDate()-1);
@@ -11867,8 +11878,12 @@ VIEWS.home=()=>{
   let mAll=0; for(const ch of CH) mAll+=chMastery(ch); mAll/=CH.length;
   const weak=weakCards(1)[0];
   let exam='';
-  if(S.set.exam){ const days=Math.ceil((new Date(S.set.exam+'T09:00')-new Date())/DAY); const left=QLIST.length-learnedQ;
-    if(days>=0){ const pace=Math.ceil(left/Math.max(1,days-3)); exam=`<div class="card alert info"><span class="ic-tile">${icon('cal')}</span><div class="grow"><div class="h2">距離筆試 ${days} 天</div><div class="small muted">${left>0?`還有 ${left} 題沒見過，建議每天學 <b>${pace}</b> 題新題（今天已學 ${D.nw||0}）`:'全部題目都見過了，專心複習盲點！'}</div></div></div>`; } }
+  { const PC=pace();
+    if(PC){ const ok=PC.behind<=0, heavy=PC.need>20;
+      exam=`<div class="card alert info"><span class="ic-tile">${icon('cal')}</span><div class="grow"><div class="row between"><div class="h2">距離筆試 ${PC.days} 天</div><span class="chip ${ok?'g':'y'}">${PC.left?(ok?'今天跟上了':`還差 ${PC.behind} 張`):'全部學過了'}</span></div>
+      ${PC.left||PC.done?`<div class="small muted mt-2xs">還有 <b>${PC.left}</b> 張卡沒學過。要在考前 3 天學完，今天要認識 <b>${PC.need}</b> 張新卡</div>
+      <div class="bar thin mt-xs"><i style="--v:${Math.min(1,PC.done/Math.max(1,PC.need)).toFixed(3)}"></i></div><div class="tiny muted mt-2xs">今天新卡 ${PC.done} / ${PC.need}${heavy?'。量很大，學不完也沒關係：新卡已經輪流從各章出、考古題考過的排在前面':''}</div>`:'<div class="small muted mt-2xs">所有卡都學過了，接下來專心複習和練簡答。</div>'}</div></div>`; }
+    else if(!S.set.exam&&learnedQ>0) exam=`<div class="card alert info"><span class="ic-tile">${icon('cal')}</span><div class="grow"><div class="h2">還沒設定筆試日期</div><div class="small muted">設定後會幫你算每天要學幾張新卡，才來得及學完</div></div><button class="btn sm" data-act="go" data-v="settings">去設定</button></div>`; }
   const banner = S.cv<CONTENT_VERSION ? `<div class="card alert info"><span class="ic-tile">${icon('box')}</span><div class="grow small"><b>內容更新 v${CONTENT_VERSION}</b><br>${esc(CHANGELOG[CHANGELOG.length-1].note)}<br><span class="muted">你的學習紀錄完整保留。</span></div><button class="btn sm" data-act="ackcv">好</button></div>`:'';
   const hpN=ms.n?Math.max(1,Math.round(ms.avg*20)):0, hpC=!ms.n?'':ms.avg>=0.85?'':ms.avg>=0.7?' mid':' low';
   return `${banner}
@@ -11890,7 +11905,7 @@ VIEWS.home=()=>{
     <div class="xpline"><span class="lv">Lv.${L.i}</span><span class="grow"><span class="bar thin" style="display:block"><i style="--v:${L.p.toFixed(3)}"></i></span></span><span class="num">${S.xp}${L.next?' / '+L.next:''} XP</span></div>
     <div class="tiny muted mt-2xs">稱號：${esc(L.name)}</div>
     ${weekRow()}
-    <button class="cta" data-act="daily">${icon('play')}<span class="grow"><span class="l1">繼續冒險</span><span class="l2">${ms.low?`先救 ${ms.low} 個快忘的記憶，隨時可停`:ms.n?'記憶都還穩，來學新觀念，隨時可停':'從第一張觀念卡開始'}</span></span></button>
+    <button class="cta" data-act="daily">${icon('play')}<span class="grow"><span class="l1">繼續冒險</span><span class="l2">${(()=>{ const PC=pace(), b=PC&&PC.behind>0?`今天還差 ${PC.behind} 張新卡`:''; return ms.low?`先救 ${ms.low} 個快忘的記憶${b?'，'+b:'，隨時可停'}`:b?b+'才跟得上進度':ms.n?'記憶都還穩，來學新觀念，隨時可停':'從第一張觀念卡開始'; })()}</span></span></button>
   </section>
   ${expPanel()}
   ${weak?`<div class="card alert"><span class="ic-tile">${icon('heal')}</span><div class="grow"><div class="h2">${md(weak.c.t)}</div><div class="small muted">盲點：${esc(weak.why.join('、'))}</div></div><button class="btn sm warn" data-act="rescue" data-c="${weak.c.id}">30 秒救援</button></div>`:''}
@@ -11997,7 +12012,7 @@ VIEWS.settings=()=>{
   <div class="card"><div class="h2">每日目標</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">答到這個題數就算今天打卡。目標小一點，比較容易天天做到</div>${seg('goal',[10,20,30,50],v=>v+' 題')}</div>
   <div class="card"><div class="h2">專項練習每回合題數</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">工具箱裡各模式一回合的長度</div>${seg('size',[5,10,15,20])}</div>
   <div class="card"><div class="h2">每回合新觀念卡</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">章節地圖「學下一批新卡」一次學幾張</div>${seg('newPer',[1,2,3,4,6])}</div>
-  <div class="card"><div class="h2">筆試日期</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">設定後首頁會倒數並建議每天的新題量</div><input class="field" type="date" id="examdate" value="${esc(s.exam)}"></div>
+  <div class="card"><div class="h2">筆試日期</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)">設定後首頁會倒數，並依剩下的卡數自動安排每天的新卡量</div><input class="field" type="date" id="examdate" value="${esc(s.exam)}"></div>
   ${window.SA_STANDALONE?"":`<div class="card row"><div class="grow"><div class="h2">AI 家教（Claude）</div><div class="small muted">批改簡答題、換個比喻講解、回答你的問題${AI.ready?'':'（此檢視目前無法使用）'}</div></div><button class="btn sm ${s.ai?'pri':''}" data-act="toggleai">${s.ai?'開啟':'關閉'}</button></div>`}
   ${syncCard()}
   <div class="card"><div class="h2">進度與備份</div><div class="small muted" style="margin:var(--space-2xs) 0 var(--space-sm)" id="syncb">${syncLabel()}${SYNC.last?'，上次同步 '+new Date(SYNC.last).toLocaleTimeString():''}</div>
@@ -12050,6 +12065,7 @@ function conceptHTML(c,opts={}){
     <ul>${c.b.map(b=>`<li>${md(b)}</li>`).join('')}</ul>
     ${c.x?`<pre class="code">${esc(c.x.join('\n'))}</pre>`:''}
     ${c.m?`<div class="mnemo">${icon('star')}<span>${md(c.m)}</span></div>`:''}
+    ${opts.nonote?'':noteLine(c)}
   </div>`;
 }
 VIEWS.card=()=>{
@@ -12057,7 +12073,7 @@ VIEWS.card=()=>{
   const stat=c.q.map(q=>{ const s=S.q[q.id]; const m=qMastery(q.id); return `<span class="chip ${!s?'':m>=0.7?'g':m>=0.35?'y':'r'}" title="${KIND[q.k]}">${icon(KIND_IC[q.k])} ${KIND[q.k]}</span>`; }).join(' ');
   return topbar('觀念卡')+`<div class="card">${conceptHTML(c)}</div>
   <div class="card"><div class="small muted">這張卡的 ${c.q.length} 題狀態</div><div class="row wrap mt-xs">${stat}</div>
-  <div class="row wrap mt-sm"><button class="btn sm pri" data-act="cardpractice" data-c="${c.id}">${icon('pencil')} 練這張</button>${aiOn()?`<button class="btn sm" data-act="aiexplain" data-c="${c.id}">${icon('spark')} 換個講法</button><button class="btn sm" data-act="aiask" data-c="${c.id}">${icon('chat')} 問 Claude</button>`:''}</div></div>`;
+  <div class="row wrap mt-sm"><button class="btn sm pri" data-act="cardpractice" data-c="${c.id}">${icon('play')} 練這張</button><button class="btn sm" data-act="noteedit" data-c="${c.id}">${icon('pencil')} ${S.c[c.id]?.note?'改筆記':'寫筆記'}</button>${aiOn()?`<button class="btn sm" data-act="aiexplain" data-c="${c.id}">${icon('spark')} 換個講法</button><button class="btn sm" data-act="aiask" data-c="${c.id}">${icon('chat')} 問 Claude</button>`:''}</div></div>`;
 };
 AFTER.card=()=>{ viewCardOnce(VIEW.c); };
 let lastViewed='';
@@ -12080,24 +12096,35 @@ function startFeed(){
 function feedFill(){
   const R=RUN, out=[];
   // 'used' only blocks repeats within the last 12 items, so lapses can come back later in a long session
-  const used={has:id=>R.used.has(id)&&(R.items.length+out.length-R.used.get(id))<12, add:id=>R.used.set(id,R.items.length+out.length), clear:()=>R.used.clear()};
+  const used={has:id=>R.used.has(id)&&(R.items.length+out.length-R.used.get(id))<18, add:id=>R.used.set(id,R.items.length+out.length), clear:()=>R.used.clear()};
   const due=dueList(q=>!used.has(q.id));
   const rev=[]; let sa=0;
   for(const q of due){ if(rev.length>=3) break; if(q.k==='sa'&&sa++) continue; rev.push(q); used.add(q.id); }
-  const wantNew=due.length<6?2:(due.length<30||R.batch%2===0)?1:0;
-  const blocks=[];
-  if(wantNew) for(const L of nextNewQs(wantNew+3)){ if(blocks.length>=wantNew) break; const qsL=L.qs.filter(q=>!used.has(q.id)); if(!qsL.length) continue;
+  const PC=pace(), behind=PC?PC.behind:0;
+  const wantNew=behind>0?2:due.length<6?2:(due.length<30||R.batch%2===0)?1:0;
+  const blocks=[]; let newL=wantNew?nextNewQs(wantNew+3,{fresh:1}):[]; if(wantNew&&newL.length<wantNew) newL=newL.concat(nextNewQs(wantNew+6));
+  if(wantNew) for(const L of newL){ if(blocks.length>=wantNew) break; const qsL=L.qs.filter(q=>!used.has(q.id)&&q.k!=='sa'); if(!qsL.length) continue;
     const b=[]; if(!cardStarted(L.card)) b.push({t:'learn',c:L.card.id}); for(const q of qsL){ b.push({t:'q',id:q.id,nw:1}); used.add(q.id); } blocks.push(b); }
   if(rev.length+blocks.length<2){ const t=now(); for(const q of QLIST.filter(q=>seen(q.id)&&!used.has(q.id)&&q.k!=='sa').sort((a,b)=>retr(S.q[a.id],t)-retr(S.q[b.id],t)).slice(0,4)){ rev.push(q); used.add(q.id); } }
   rev.slice(0,2).forEach(q=>out.push({t:'q',id:q.id}));
   if(blocks[0]) out.push(...blocks[0]);
   rev.slice(2).forEach(q=>out.push({t:'q',id:q.id}));
   if(blocks[1]) out.push(...blocks[1]);
+  if(R.batch>=1&&!R.saGiven&&!((S.days[today()]||{}).sa)){ const q=dailySA(used); if(q){ out.push({t:'q',id:q.id,daily:1}); used.add(q.id); R.saGiven=1; } }
   if(R.batch%3===2){ const c=CLIST.filter(c=>cardStarted(c)&&!R.recalled.has(c.id)).sort((a,b)=>(S.c[a.id]?.rt||0)-(S.c[b.id]?.rt||0)||cardMastery(a)-cardMastery(b))[0]; if(c){ R.recalled.add(c.id); out.push({t:'recall',c:c.id}); } }
   if(R.batch%4===3){ const t=now(); const pool=QLIST.filter(q=>(q.k==='tf'||q.k==='mc')&&seen(q.id)&&!used.has(q.id)).sort((a,b)=>retr(S.q[a.id],t)-retr(S.q[b.id],t)).slice(0,4); if(pool.length>=3) for(const q of pool){ out.push({t:'q',id:q.id,fast:1}); used.add(q.id); } }
   if(!out.length){ used.clear(); for(const q of shuffle(QLIST.filter(q=>q.k!=='sa')).slice(0,5)){ out.push({t:'q',id:q.id}); used.add(q.id); } }
   R.batch++; R.items.push(...out);
 }
+/* One written answer a day inside the main stream: past-exam questions first, then never-tried, then lowest best score. */
+function dailySA(used){
+  const pool=QLIST.filter(q=>q.k==='sa'&&!used.has(q.id)&&q.card.q.filter(x=>x.k!=='sa').every(x=>seen(x.id)));
+  return pool.sort((a,b)=>{ const x=S.q[a.id]||{}, y=S.q[b.id]||{}; return ((x.n?1:0)-(y.n?1:0))||((b.src?1:0)-(a.src?1:0))||((x.sb||0)-(y.sb||0))||((x.t||0)-(y.t||0)); })[0];
+}
+/* Stubborn questions: after 4 lapses repetition is not working, so switch method (re-read + write it in your own words). */
+function stubborn(q){ const st=S.q[q.id], n=S.c[q.card.id]?.note; return !!(st&&st.l>=(n?(n.l||0)+3:4)); }
+function noteLine(c){ const n=S.c[c.id]?.note; return n&&n.s?`<div class="mynote">${icon('pencil')}<span><b>我的筆記</b>　${esc(n.s)}</span></div>`:''; }
+function saveNote(cid,text,lapses){ const cc=S.c[cid]||(S.c[cid]={v:0}); cc.note={s:text.slice(0,200),l:lapses!=null?lapses:(cc.note?.l||0),t:now()}; cc.t=now(); save(); }
 function memLine(m,g){
   if(g===0) return m.wasNew?'第一次見面就記不住很正常，10 分鐘後再考你一次，這時候複習效果最好':'記憶斷線了。趁還有印象，10 分鐘後再來一次';
   const pre=m.wasNew?'新記憶建立！':(m.el>=1&&m.i0>=1?`隔了 ${Math.round(m.el)} 天、記憶約剩 ${pct(m.R)}% 時成功想起來。`:'');
@@ -12149,6 +12176,12 @@ VIEWS.run=()=>{
   if(it.t==='recall'){ const c=CARD[it.c];
     return head+(R.st.flip?`<div class="card">${conceptHTML(c)}</div><div class="sp-dock"></div>${RATE_DOCK('rrate')}`
       :`<div class="card flash"><button class="face" data-act="rflip"><span class="chip b">${icon('cards')} 回想挑戰</span><span class="h1 big">${md(c.t)}</span><span class="muted small">不看答案，先在心裡講一遍：比喻？重點？指令？<br>主動回想比重讀一遍更能留住記憶</span><span class="chip mt-lg">點一下翻面對答案</span></button></div>`); }
+  if(it.t==='reteach'){ const c=CARD[it.c], sq=S.q[it.q]||{l:0}, old=S.c[c.id]?.note?.s||'';
+    return head+`<div class="card alert info"><span class="ic-tile">${icon('repeat')}</span><div class="grow"><div class="h2">換個方法學這張</div><div class="small muted">這題已經錯了 ${sq.l} 次，一直重複出題沒有用。先慢慢讀一次，再用自己的話寫一句重點。</div></div></div>
+    <div class="card">${conceptHTML(c,{nonote:1})}</div>
+    <div class="card"><label class="h2" for="mynote">用自己的話寫一句重點</label><div class="small muted mt-2xs">不要照抄。假裝在教同學：這張卡最容易搞錯的是什麼？</div>
+    <textarea class="field mt-xs" id="mynote" rows="3" maxlength="200" placeholder="例如：awk 的 $1 是第一欄，-F 指定分隔符號">${esc(old)}</textarea></div><div class="sp-dock"></div>
+    <div class="dock"><div class="row"><button class="btn" data-act="noteskip">先跳過</button><button class="btn pri grow" data-act="notesave">存成我的筆記，繼續 →</button></div></div>`; }
   if(it.t==='chest'){
     return head+`<div class="card chest">${mascot('happy',96)}<div class="h1 mt-xs">意外寶箱！</div><div class="muted small">認真作答的隨機獎勵</div><div class="xpbig">+${it.xp} XP</div></div><div class="dock"><div><button class="btn pri" data-act="chestok">收下，繼續 →</button></div></div>`; }
   if(it.t==='goal'){ const tm=QLIST.filter(q=>{ const s=S.q[q.id]; return s&&s.n&&s.d<=now()+DAY; }).length; const D=S.days[today()]||{x:0};
@@ -12215,7 +12248,7 @@ function questionHTML(q,st,o={}){
     let extra='';
     if(q.k==='cmd'||q.k==='fill'){ extra=`<div class="small mt-2xs"><b>參考答案：</b>${q.a.slice(0,3).map(a=>`<code>${esc(a)}</code>`).join(' 或 ')}</div>`; }
     if(q.k==='tf') extra=`<div class="small mt-2xs">正確答案：<b>${q.a?'對':'錯'}</b></div>`;
-    fb=`<div class="fb ${good?'ok':mid?'mid':'no'}" role="status"><div class="ttl">${mascot(good?'happy':'care',44)}<span class="grow">${title}</span>${st.xp?`<span class="chip g">+${st.xp} XP</span>`:''}</div>${st.mem?`<div class="mem">${icon('heart')}<span>${st.mem}</span></div>`:''}${extra}${q.e?`<div class="small mt-2xs">${md(q.e)}</div>`:''}
+    fb=`<div class="fb ${good?'ok':mid?'mid':'no'}" role="status"><div class="ttl">${mascot(good?'happy':'care',44)}<span class="grow">${title}</span>${st.xp?`<span class="chip g">+${st.xp} XP</span>`:''}</div>${st.mem?`<div class="mem">${icon('heart')}<span>${st.mem}</span></div>`:''}${extra}${q.e?`<div class="small mt-2xs">${md(q.e)}</div>`:''}${noteLine(q.card)}
       ${(!good&&(q.k==='cmd'||q.k==='fill'))&&!st.override?`<button class="btn sm ghost mt-xs" data-act="override">我的寫法其實也對</button>`:''}
       ${!good?`<details><summary>${icon('search')} 回顧觀念卡：${md(q.card.t)}</summary><div class="mt-xs">${conceptHTML(q.card,{nobm:1})}</div></details>${aiOn()?`<button class="btn sm mt-sm" data-act="aiwhy">${icon('spark')} 為什麼我錯了？換個方式講</button>`:''}`:''}
       <div id="aiout"></div></div>`;
@@ -12254,6 +12287,7 @@ function answer(g,ok,mid){
   R.xp+=xp; R.res[R.pos]=g;
   st.anim=ok?'pop':'shake'; vibrate(ok?12:[20,40,20]); sfx(ok?'ok':mid?'mid':'no',R.combo-1);
   if(R.boss) bossOnAnswer(R,g,ok);
+  if(g===0&&!R.boss&&!R.retaught?.[q.card.id]&&stubborn(q)){ (R.retaught||(R.retaught={}))[q.card.id]=1; R.items.splice(R.pos+1,0,{t:'reteach',c:q.card.id,q:q.id}); }
   if(g===0&&!R.requeued[q.id]){ R.requeued[q.id]=1; if(R.endless&&R.items.length-R.pos<5) feedFill(); const at=Math.min(R.items.length,R.pos+4); R.items.splice(at,0,{t:'q',id:q.id,re:1}); }
   if(R.endless){ if(ok&&R.sinceChest>=6&&Math.random()<0.12){ R.sinceChest=0; R.items.splice(R.pos+1,0,{t:'chest',xp:[15,20,20,25,30,50][Math.random()*6|0]}); } else R.sinceChest++; }
   render();
@@ -12470,7 +12504,7 @@ function scoreSA(){
   const hits=(st.hit||[]).filter(Boolean).length; const ratio=hits/q.p.length;
   const g= ratio>=0.8?2: ratio>=0.4?1:0;
   st.done=true; st.ok=g===2; st.g=g;
-  const xp=grade(q.id,g,{xp:Math.round(5+15*ratio)}); R.xp+=xp; R.res[R.pos]=g; { const sq=S.q[q.id]; if(sq){ sq.sb=Math.max(sq.sb||0,ratio); save(); } }
+  const xp=grade(q.id,g,{xp:Math.round(5+15*ratio)}); R.xp+=xp; R.res[R.pos]=g; { const sq=S.q[q.id]; if(sq){ sq.sb=Math.max(sq.sb||0,ratio); } const D=S.days[today()]; if(D) D.sa=(D.sa||0)+1; save(); }
   if(g===0&&!R.requeued[q.id]){ R.requeued[q.id]=1; }
   toast(g===2?icon('star')+' 得分點都掌握了':g===1?'抓到一部分，會再排複習':'這題會很快再回來找你');
   next();
@@ -12486,6 +12520,13 @@ const ACT={
   hub:()=>{ RUN=null; STACK.length=0; VIEW={name:'home'}; window.scrollTo(0,0); render(); },
   rflip:()=>{ sfx('flip'); RUN.st.flip=true; viewCard(RUN.items[RUN.pos].c); window.scrollTo(0,0); render(); },
   rrate:d=>{ const r=+d.r; rateCard(RUN.items[RUN.pos].c,r); RUN.xp+=2; RUN.res[RUN.pos]=r?2:0; toast(r===2?'記得！這張卡先放心':r===1?'有點模糊，相關題目會早一點回來':'沒關係，相關題目已排進接下來的複習'); next(); },
+  notesave:()=>{ const it=RUN.items[RUN.pos], v=($('#mynote')?.value||'').trim(); if(v.length<4){ toast('寫一句就好，用自己的話'); return; }
+    blurInput(); saveNote(it.c,v,(S.q[it.q]||{}).l||0); S.xp+=5; RUN.xp+=5; save(); toast('筆記存好了，答完這張卡的題目時會顯示給你'); next(); },
+  noteskip:()=>{ blurInput(); next(); },
+  noteedit:d=>{ const c=CARD[d.c], old=S.c[c.id]?.note?.s||'';
+    sheet(`<div class="row between"><h2 class="h2">我的筆記</h2><button class="iconbtn" data-act="closesheet" aria-label="關閉">${icon('x')}</button></div><div class="small muted mt-2xs">${md(c.t)}：用自己的話寫一句重點</div><textarea class="field mt-xs" id="mynote" rows="3" maxlength="200">${esc(old)}</textarea><button class="btn pri block mt-sm" data-act="noteput" data-c="${c.id}">儲存</button>`); },
+  noteput:d=>{ const v=($('#mynote')?.value||'').trim(); if(v.length<4&&v.length){ toast('再多寫幾個字'); return; }
+    if(v) saveNote(d.c,v); else if(S.c[d.c]){ delete S.c[d.c].note; S.c[d.c].t=now(); save(); } closeSheet(); render(); toast(v?'筆記已儲存':'筆記已刪除'); },
   chestok:()=>{ const x=RUN.items[RUN.pos].xp; S.xp+=x; const D=S.days[today()]||(S.days[today()]={n:0,c:0,x:0,nw:0}); D.x+=x; RUN.xp+=x; save(); next(); },
   who:()=>go('who'),
   saynext:()=>{ const x=nextTip(); if(!x) return; HOMETIP.cur=x; HOMETIP.n++; HOMETIP.anim=true; sfx('flip'); render(); },
