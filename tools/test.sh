@@ -7,6 +7,8 @@ cd "$(dirname "$0")/.." || exit 1
 : "${CHROME:=/usr/bin/google-chrome}"; [ -x "$CHROME" ] || CHROME=
 PORT=8765; export PW CHROME SA_URL="http://localhost:$PORT/" SA_DIST="file://$PWD/dist/index.html"
 python3 build/build.py && node tools/check.mjs || exit 1
+# whole-script syntax check (one missing comma blanks the app)
+node -e "new (require('vm').Script)(require('fs').readdirSync('src/js').sort().map(f=>require('fs').readFileSync('src/js/'+f,'utf8')).join(''))" || { echo 'FAIL syntax'; exit 1; }
 python3 -m http.server $PORT --directory . >/dev/null 2>&1 & SRV=$!; trap 'kill $SRV' EXIT; sleep 1
 fail=0
 for t in ${@:-v5 t3 fuzz f6 star backup feat4 fbmerge fbsync t8}; do

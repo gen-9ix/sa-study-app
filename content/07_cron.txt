@@ -142,39 +142,39 @@ E> 系統 crontab 有 who 欄位。
 - run-parts
 E> anacron 不假設系統持續運作。
 
-@CARD cron.periodic | FreeBSD periodic
-A> periodic 是 FreeBSD 的「定期保養套餐」：/etc/periodic/daily、weekly、monthly、security 目錄裡放好編號的保養腳本，由 cron 定時叫 periodic 去執行整個目錄。檔名前面的數字決定順序；是否真正動作由 periodic.conf 的 YES 開關控制。
-B> **periodic(8)**：執行 /etc/periodic 下的週期系統功能（daily、weekly、monthly、security）
-B> 第三方/自訂：**/usr/local/etc/periodic**
-B> 設定：**/etc/periodic.conf**（覆寫 /etc/defaults/periodic.conf），如 daily_clean_tmps_enable="YES"
-B> **執行順序依檔名**（數字前綴，如 100.clean-disks）
-B> 目錄下**所有腳本都會被執行**（不像 rc.conf 需要 YES 才跑），腳本內再依 periodic.conf 決定要不要做事
-B> **由 crontab 驅動**（/etc/crontab 的 periodic daily 等行）
-?mc FreeBSD 的 periodic 是被什麼觸發執行的？
-+ cron（/etc/crontab）
-- systemd timer
-- rc.conf 中的 periodic_enable
-- rc.conf
-E> cron（/etc/crontab 中的 periodic daily/weekly/monthly）periodic 本身不是 daemon。
-?tf periodic 目錄下的腳本執行順序由檔名的數字前綴決定。
+@CARD cron.periodic | Debian：/etc/cron.daily 與 run-parts
+A> Debian 的「定期保養套餐」放在 /etc/cron.hourly、daily、weekly、monthly 四個目錄：套件把保養腳本放進去（例如 logrotate、man-db），/etc/crontab 時間到就用 run-parts 把整個目錄的腳本依檔名順序跑一遍。筆電常關機就裝 anacron，錯過的會在開機後補跑。
+B> /etc/crontab：**17 * * * * root cd / && run-parts --report /etc/cron.hourly**；daily 每天 **6:25**、weekly 週日 6:47、monthly 每月 1 日 6:52
+B> daily / weekly / monthly 那幾行是 **test -x /usr/sbin/anacron || run-parts …**：**有裝 anacron 就交給 anacron**（開機後補跑錯過的），沒裝才由 cron 直接跑
+B> **run-parts**：依檔名**字典順序**執行目錄內所有可執行檔；檔名**含「.」的會被略過**（backup.sh 不會執行，要取名 backup）
+B> **run-parts --test /etc/cron.daily**：列出會執行哪些，但不真的執行
+B> 現代 Debian 也有不少保養工作改成 **systemd timer**（如 logrotate.timer、apt-daily.timer），用 systemctl list-timers 查看
+B> 對照：FreeBSD 對應的是 periodic(8) 與 /etc/periodic/{daily,weekly,monthly}
+?mc Debian 的 /etc/cron.daily 裡的腳本是被什麼觸發執行的？
++ cron 依 /etc/crontab 呼叫 run-parts
+- atd daemon 每天固定讀取一次這個目錄並執行
+- systemd 只在每次開機時把這個目錄執行一次
+- 每個使用者的 crontab 裡都要各自寫一行 @daily
+E> run-parts 本身不是 daemon，只是「把整個目錄的腳本跑一遍」的工具，由 cron 定時呼叫；有裝 anacron 時改由 anacron 呼叫。
+?tf run-parts 依檔名的字典順序執行目錄內的腳本，而且會略過檔名含有「.」的檔案。
 =T
-E> 例如 100.clean-disks 先於 200.backup-passwd。
+E> 所以放進 /etc/cron.daily 的腳本不要加 .sh 副檔名；可用 run-parts --test 確認。
 
 @CARD cron.at | at：一次性延後執行
-A> cron 是「每天都響的鬧鐘」，at 是「只響一次的便利貼提醒」。atq 看還有哪些便利貼、atrm 撕掉一張。
+A> cron 是「每天都響的鬧鐘」，at 是「只響一次的便利貼提醒」。atq 看還有哪些便利貼、atrm 撕掉一張。在 Debian 上，負責看便利貼的是另一個管家 atd，跟 cron 無關。
 B> **at**：在指定時間執行指令（一次性）；at [-q queue] [-f file] [-mldbv] time，或 -t [[CC]YY]MMDDhhmm[.SS]
 B> **atq**：查看 job 佇列；**atrm**：移除 job
-B> 權限：FreeBSD **/var/at/at.{allow,deny}**、Linux **/etc/at.{allow,deny}**
-B> 預設：**FreeBSD 只有 root** 能用 at；**Linux 預設每個使用者**都能用
-B> 驅動：**FreeBSD 由 cron 每 5 分鐘呼叫 /usr/libexec/atrun**；**Linux 由 atd.service** 驅動（systemctl status atd）
+B> 權限：**/etc/at.allow**、**/etc/at.deny**；Debian 預設**只有 at.deny**（列 daemon、bin 等系統帳號）→ **一般使用者都能用**；若建立 at.allow，就只有列在裡面的人能用
+B> 驅動：Debian 由獨立的 **atd.service** daemon 負責（systemctl status atd），佇列在 /var/spool/cron/atjobs，**不經過 cron**
 B> 指令預設用 /bin/sh 執行
-?sa 試說明 periodic 以及 at 分別與 cron 的關係，以及 periodic 和 at 之間的差異。
-S> 2023 期末 Q7
-R> 與 cron 的關係：FreeBSD 的 periodic 由 cron 驅動，/etc/crontab 中有 periodic daily / weekly / monthly 的排程，cron 時間到就呼叫 periodic 去執行對應目錄的腳本。at 在 FreeBSD 也依賴 cron：/etc/crontab 每 5 分鐘執行 /usr/libexec/atrun 檢查並執行到期的 at job（Linux 則改由 atd daemon 負責）。
-R> 差異：periodic 是「週期性、重複執行」的系統維護框架，執行 /etc/periodic/{daily,weekly,monthly,security} 中依編號排序的一組腳本，行為由 /etc/periodic.conf 控制；at 是「一次性」的延後執行，使用者指定某個時間執行一次指令，執行完就從佇列移除（可用 atq / atrm 管理）。
-P> periodic 由 cron 定期呼叫
-P> at 由 cron 每 5 分鐘跑 atrun（FreeBSD）/ Linux 為 atd
-P> periodic 週期性系統維護腳本 vs at 一次性使用者指令
+B> 對照：FreeBSD 由 cron 每 5 分鐘呼叫 /usr/libexec/atrun，且預設只有 root 能用 at
+?sa 試說明 /etc/cron.daily（run-parts）以及 at 分別與 cron 的關係，以及兩者之間的差異。
+S> 2023 期末 Q7（改編為 Debian 版）
+R> 與 cron 的關係：/etc/cron.daily 由 cron 驅動：/etc/crontab 每天 6:25 用 run-parts 執行整個目錄的腳本（若裝了 anacron 則交給 anacron，開機後會補跑錯過的）。at 在 Debian 與 cron 無關：由獨立的 atd daemon（atd.service）負責，它監看佇列 /var/spool/cron/atjobs，時間到就執行；cron 沒在跑也不影響 at，但 atd 沒跑 at job 就不會執行。
+R> 差異：cron.daily 是「週期性、重複執行」的系統維護腳本集合（以 root 身分、由套件或管理員放入、依檔名順序執行）；at 是「一次性」延後執行，使用者指定某個時間跑一次，跑完就從佇列移除（atq 查看、atrm 刪除），能不能用由 /etc/at.allow、at.deny 控制。
+P> cron.daily 由 /etc/crontab 的 run-parts 定期執行（或交給 anacron）
+P> at 由獨立的 atd daemon 驅動，不靠 cron
+P> cron.daily 週期性系統維護 vs at 一次性指令
 ?cmd 列出目前的 at job 佇列：
 = atq
 = at -l
@@ -184,13 +184,14 @@ E> atrm <job> 刪除。
 = at -r 23
 = at -d 23
 E> atrm 後接 job 編號。
-?mt 配對：at 在不同系統由誰驅動
-> FreeBSD :: cron 每 5 分鐘執行 /usr/libexec/atrun
-> Linux :: atd.service daemon
-E> 所以在 Linux 上 at 沒反應時，要檢查 atd 是否 active。
-?tf 在 FreeBSD 預設設定下，一般使用者就可以使用 at 指令。
-=F
-E> FreeBSD 預設只有 root；Linux 預設每個人都可以。
+?mt 配對：Debian 上的排程工具由誰負責執行
+> crontab 與 /etc/crontab :: cron.service（cron daemon）
+> at :: atd.service
+> systemd timer :: systemd（PID 1）
+E> 所以 at 沒反應時要檢查 atd 是否 active，跟 cron 無關。
+?tf 在 Debian 預設設定下，一般使用者就可以使用 at 指令。
+=T
+E> Debian 只附 /etc/at.deny（列系統帳號），沒有 at.allow，所以不在 deny 名單的使用者都能用。對照：FreeBSD 預設只有 root。
 
 @CARD cron.p_debug | 實作：cron 工作沒跑怎麼查
 A> 手動執行好好的腳本，放進 cron 就不動，這是 SA 最經典的謎題。答案幾乎都是「cron 的環境跟你的 shell 不一樣」：PATH 很短、沒有讀你的 .bashrc、工作目錄是家目錄、% 是特殊字元。

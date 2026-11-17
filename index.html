@@ -3676,10 +3676,12 @@ E> 考 Linux vs FreeBSD 差異時很好用。
 - nginx 的第 20 個設定檔
 - 只在 20 秒後啟動
 E> 進入 runlevel 3 時，以序號 20 的順序啟動（Start）nginx。S 開頭是 start、K 開頭是 kill，數字決定順序。
-?cmd 在 FreeBSD 上用 sysrc 設定開機啟用 sshd（寫入 rc.conf）：
-= sysrc sshd_enable=YES
-= sysrc sshd_enable="YES"
-E> FreeBSD 的服務開關在 /etc/rc.conf，用 sysrc 修改比手動編輯安全。
+?cmd 在 Debian 上讓 SSH 服務開機自動啟動，並且現在就啟動（一個指令）：
+= systemctl enable --now ssh
+= systemctl enable --now ssh.service
+= systemctl enable --now sshd
+= systemctl enable --now sshd.service
+E> Debian 的 unit 叫 ssh.service（sshd.service 是別名）。對照：FreeBSD 是 sysrc sshd_enable=YES 再 service sshd start。
 
 @CARD boot.login | 登入流程與 fork/exec
 A> fork 是「影分身」（多一個新 PID 的自己）、exec 是「變身」（PID 不變，但整個人換成另一個程式）。shell 執行 ls：先影分身，分身再變身成 ls。
@@ -4138,20 +4140,20 @@ E> getent 走 NSS，不只看本機檔案。
 
 @CARD user.shadow | Shadow 密碼與雜湊格式
 A> 為什麼要 shadow？/etc/passwd 必須讓每個人都能讀（程式要把 UID 轉成名字），如果雜湊放在那裡，任何人都能拿回家慢慢暴力破解。所以把雜湊搬進只有 root 能讀的「保險箱」/etc/shadow。$6$ 這種前綴是「保險箱的鎖型號」。
-B> Debian：**/etc/shadow**；FreeBSD：**/etc/master.passwd** 與資料庫（pwd.db / spwd.db）
+B> Debian：**/etc/shadow**（只有 root 與 shadow 群組可讀）；對照：FreeBSD 是 /etc/master.passwd
 B> 存的是 **salted password hash**，不是可還原的加密密碼
 B> 用帳號工具（passwd、adduser、usermod、vipw）保持紀錄一致
 B> 雜湊前綴：**$1$ = MD5**（舊、不安全）、**$2…$ = bcrypt**、**$5$ = SHA-256**、**$6$ = SHA-512 crypt**、**$y$ = yescrypt**（現代 Debian）
 B> shadow 欄位：1-2 名稱與 hash、3-6 上次修改日 / 最短 / 最長 / 警告天數、7-9 inactive 天數 / 帳號到期日 / 保留
 B> **密碼到期**要求改密碼；**帳號到期**會依政策阻擋存取
-?sa A. 使用者可以屬於多個 group，在 /etc/passwd 中設定 group 與寫在 /etc/group 有何差異？ B. 何謂 shadow passwd？為何現在大多數系統都採用？ C. 如何從 /etc/master.passwd（或 /etc/shadow）判斷使用者的密碼使用哪種 hash function？（例：root:$6$gW9y$NtFj3pni:0:0:root:/root:/bin/sh）
-S> 2023 期末 Q12
+?sa A. 使用者可以屬於多個 group，在 /etc/passwd 中設定 group 與寫在 /etc/group 有何差異？ B. 何謂 shadow passwd？為何現在大多數系統都採用？ C. 如何從 /etc/shadow 判斷使用者的密碼使用哪種 hash function？（例：root:$y$j9T$gW9yQ2kL$NtFj3pniXc:20400:0:99999:7:::）
+S> 2023 期末 Q12（改編為 Debian 版）
 R> A. /etc/passwd 的 GID 欄位是使用者的 primary group（只能有一個，建立檔案時預設的群組）；/etc/group 每行最後的成員清單列的是 supplementary（附加）群組成員，一個使用者可以出現在多個群組中。
-R> B. shadow passwd 是把密碼 hash（與密碼期限資訊）從所有人都可讀的 /etc/passwd 移到只有 root 可讀的 /etc/shadow（FreeBSD 為 /etc/master.passwd），/etc/passwd 的密碼欄只留 x 或 *。因為 /etc/passwd 必須公開讓程式查 UID↔名稱，若 hash 放在裡面任何人都能拿去離線暴力破解，所以分開存放更安全。
-R> C. 看密碼欄位 $id$salt$hash 的前綴 id：$1$ 是 MD5、$2a$/$2b$ 是 bcrypt、$5$ 是 SHA-256、$6$ 是 SHA-512、$y$ 是 yescrypt。例子中 $6$ 表示 SHA-512（salt 為 gW9y）。
+R> B. shadow passwd 是把密碼 hash（與密碼期限資訊）從所有人都可讀的 /etc/passwd 移到只有 root 可讀的 /etc/shadow，/etc/passwd 的密碼欄只留 x 或 *。因為 /etc/passwd 必須公開讓程式查 UID↔名稱，若 hash 放在裡面任何人都能拿去離線暴力破解，所以分開存放更安全。
+R> C. 看第 2 欄（密碼欄）$id$…$hash 的前綴 id：$1$ 是 MD5、$2a$/$2b$ 是 bcrypt、$5$ 是 SHA-256、$6$ 是 SHA-512、$y$ 是 yescrypt（Debian 11 起的預設）。例子中 $y$ 表示 yescrypt（j9T 是參數，gW9yQ2kL 是 salt）。
 P> A. passwd 的 GID 是 primary group；/etc/group 列 supplementary 成員
 P> B. hash 移到 root 才能讀的檔案，防止離線破解
-P> C. 由 $id$ 前綴判斷，$6$ = SHA-512
+P> C. 由 $id$ 前綴判斷，$y$ = yescrypt
 ?mt 配對 hash 前綴：
 > $1$ :: MD5（舊式，不適合新密碼）
 > $6$ :: SHA-512 crypt
@@ -4174,14 +4176,14 @@ B> **nologin** 阻擋一般 shell 登入，但不代表擋住所有認證路徑�
 ?cmd 把自己的 login shell 改成 /bin/sh：
 = chsh -s /bin/sh
 E> 先 cat /etc/shells 確認路徑合法。
-?sa a. 下列指令已把 shell 從 tcsh 改成 sh，但印 $SHELL 仍是 tcsh，為什麼？ b. 要怎麼知道目前的 shell 是什麼？
+?sa a. 下列指令已把 shell 從 bash 換成 sh，但印 $SHELL 仍是 /bin/bash，為什麼？ b. 要怎麼知道目前的 shell 是什麼？
 QX> $ echo $SHELL
-QX> /bin/tcsh
+QX> /bin/bash
 QX> $ sh
 QX> $ echo $SHELL
-QX> /bin/tcsh
-S> 2023 期中 Q11
-R> a. 執行 sh 只是在 tcsh 底下開了一個 sh 子行程，並沒有改變帳號設定。$SHELL 是登入時根據 /etc/passwd 設定的 login shell 所設的環境變數，sh 從父行程繼承了這個環境變數，且 sh 不會去改它，所以仍是 /bin/tcsh。
+QX> /bin/bash
+S> 2023 期中 Q11（改編為 Debian 版）
+R> a. 執行 sh（Debian 上是 dash）只是在 bash 底下開了一個 sh 子行程，並沒有改變帳號設定。$SHELL 是登入時根據 /etc/passwd 設定的 login shell 所設的環境變數，sh 從父行程繼承了這個環境變數，且 sh 不會去改它，所以仍是 /bin/bash。
 R> b. 用 echo $0（顯示目前 shell 程式名稱），或 ps -p $$（查看目前 shell PID 對應的程式），也可用 ps 看 process 樹。
 P> a. $SHELL 是 login shell 的環境變數，由父行程繼承，不會因執行 sh 而改變
 P> b. echo $0 或 ps -p $$
@@ -5189,39 +5191,39 @@ E> 系統 crontab 有 who 欄位。
 - run-parts
 E> anacron 不假設系統持續運作。
 
-@CARD cron.periodic | FreeBSD periodic
-A> periodic 是 FreeBSD 的「定期保養套餐」：/etc/periodic/daily、weekly、monthly、security 目錄裡放好編號的保養腳本，由 cron 定時叫 periodic 去執行整個目錄。檔名前面的數字決定順序；是否真正動作由 periodic.conf 的 YES 開關控制。
-B> **periodic(8)**：執行 /etc/periodic 下的週期系統功能（daily、weekly、monthly、security）
-B> 第三方/自訂：**/usr/local/etc/periodic**
-B> 設定：**/etc/periodic.conf**（覆寫 /etc/defaults/periodic.conf），如 daily_clean_tmps_enable="YES"
-B> **執行順序依檔名**（數字前綴，如 100.clean-disks）
-B> 目錄下**所有腳本都會被執行**（不像 rc.conf 需要 YES 才跑），腳本內再依 periodic.conf 決定要不要做事
-B> **由 crontab 驅動**（/etc/crontab 的 periodic daily 等行）
-?mc FreeBSD 的 periodic 是被什麼觸發執行的？
-+ cron（/etc/crontab）
-- systemd timer
-- rc.conf 中的 periodic_enable
-- rc.conf
-E> cron（/etc/crontab 中的 periodic daily/weekly/monthly）periodic 本身不是 daemon。
-?tf periodic 目錄下的腳本執行順序由檔名的數字前綴決定。
+@CARD cron.periodic | Debian：/etc/cron.daily 與 run-parts
+A> Debian 的「定期保養套餐」放在 /etc/cron.hourly、daily、weekly、monthly 四個目錄：套件把保養腳本放進去（例如 logrotate、man-db），/etc/crontab 時間到就用 run-parts 把整個目錄的腳本依檔名順序跑一遍。筆電常關機就裝 anacron，錯過的會在開機後補跑。
+B> /etc/crontab：**17 * * * * root cd / && run-parts --report /etc/cron.hourly**；daily 每天 **6:25**、weekly 週日 6:47、monthly 每月 1 日 6:52
+B> daily / weekly / monthly 那幾行是 **test -x /usr/sbin/anacron || run-parts …**：**有裝 anacron 就交給 anacron**（開機後補跑錯過的），沒裝才由 cron 直接跑
+B> **run-parts**：依檔名**字典順序**執行目錄內所有可執行檔；檔名**含「.」的會被略過**（backup.sh 不會執行，要取名 backup）
+B> **run-parts --test /etc/cron.daily**：列出會執行哪些，但不真的執行
+B> 現代 Debian 也有不少保養工作改成 **systemd timer**（如 logrotate.timer、apt-daily.timer），用 systemctl list-timers 查看
+B> 對照：FreeBSD 對應的是 periodic(8) 與 /etc/periodic/{daily,weekly,monthly}
+?mc Debian 的 /etc/cron.daily 裡的腳本是被什麼觸發執行的？
++ cron 依 /etc/crontab 呼叫 run-parts
+- atd daemon 每天固定讀取一次這個目錄並執行
+- systemd 只在每次開機時把這個目錄執行一次
+- 每個使用者的 crontab 裡都要各自寫一行 @daily
+E> run-parts 本身不是 daemon，只是「把整個目錄的腳本跑一遍」的工具，由 cron 定時呼叫；有裝 anacron 時改由 anacron 呼叫。
+?tf run-parts 依檔名的字典順序執行目錄內的腳本，而且會略過檔名含有「.」的檔案。
 =T
-E> 例如 100.clean-disks 先於 200.backup-passwd。
+E> 所以放進 /etc/cron.daily 的腳本不要加 .sh 副檔名；可用 run-parts --test 確認。
 
 @CARD cron.at | at：一次性延後執行
-A> cron 是「每天都響的鬧鐘」，at 是「只響一次的便利貼提醒」。atq 看還有哪些便利貼、atrm 撕掉一張。
+A> cron 是「每天都響的鬧鐘」，at 是「只響一次的便利貼提醒」。atq 看還有哪些便利貼、atrm 撕掉一張。在 Debian 上，負責看便利貼的是另一個管家 atd，跟 cron 無關。
 B> **at**：在指定時間執行指令（一次性）；at [-q queue] [-f file] [-mldbv] time，或 -t [[CC]YY]MMDDhhmm[.SS]
 B> **atq**：查看 job 佇列；**atrm**：移除 job
-B> 權限：FreeBSD **/var/at/at.{allow,deny}**、Linux **/etc/at.{allow,deny}**
-B> 預設：**FreeBSD 只有 root** 能用 at；**Linux 預設每個使用者**都能用
-B> 驅動：**FreeBSD 由 cron 每 5 分鐘呼叫 /usr/libexec/atrun**；**Linux 由 atd.service** 驅動（systemctl status atd）
+B> 權限：**/etc/at.allow**、**/etc/at.deny**；Debian 預設**只有 at.deny**（列 daemon、bin 等系統帳號）→ **一般使用者都能用**；若建立 at.allow，就只有列在裡面的人能用
+B> 驅動：Debian 由獨立的 **atd.service** daemon 負責（systemctl status atd），佇列在 /var/spool/cron/atjobs，**不經過 cron**
 B> 指令預設用 /bin/sh 執行
-?sa 試說明 periodic 以及 at 分別與 cron 的關係，以及 periodic 和 at 之間的差異。
-S> 2023 期末 Q7
-R> 與 cron 的關係：FreeBSD 的 periodic 由 cron 驅動，/etc/crontab 中有 periodic daily / weekly / monthly 的排程，cron 時間到就呼叫 periodic 去執行對應目錄的腳本。at 在 FreeBSD 也依賴 cron：/etc/crontab 每 5 分鐘執行 /usr/libexec/atrun 檢查並執行到期的 at job（Linux 則改由 atd daemon 負責）。
-R> 差異：periodic 是「週期性、重複執行」的系統維護框架，執行 /etc/periodic/{daily,weekly,monthly,security} 中依編號排序的一組腳本，行為由 /etc/periodic.conf 控制；at 是「一次性」的延後執行，使用者指定某個時間執行一次指令，執行完就從佇列移除（可用 atq / atrm 管理）。
-P> periodic 由 cron 定期呼叫
-P> at 由 cron 每 5 分鐘跑 atrun（FreeBSD）/ Linux 為 atd
-P> periodic 週期性系統維護腳本 vs at 一次性使用者指令
+B> 對照：FreeBSD 由 cron 每 5 分鐘呼叫 /usr/libexec/atrun，且預設只有 root 能用 at
+?sa 試說明 /etc/cron.daily（run-parts）以及 at 分別與 cron 的關係，以及兩者之間的差異。
+S> 2023 期末 Q7（改編為 Debian 版）
+R> 與 cron 的關係：/etc/cron.daily 由 cron 驅動：/etc/crontab 每天 6:25 用 run-parts 執行整個目錄的腳本（若裝了 anacron 則交給 anacron，開機後會補跑錯過的）。at 在 Debian 與 cron 無關：由獨立的 atd daemon（atd.service）負責，它監看佇列 /var/spool/cron/atjobs，時間到就執行；cron 沒在跑也不影響 at，但 atd 沒跑 at job 就不會執行。
+R> 差異：cron.daily 是「週期性、重複執行」的系統維護腳本集合（以 root 身分、由套件或管理員放入、依檔名順序執行）；at 是「一次性」延後執行，使用者指定某個時間跑一次，跑完就從佇列移除（atq 查看、atrm 刪除），能不能用由 /etc/at.allow、at.deny 控制。
+P> cron.daily 由 /etc/crontab 的 run-parts 定期執行（或交給 anacron）
+P> at 由獨立的 atd daemon 驅動，不靠 cron
+P> cron.daily 週期性系統維護 vs at 一次性指令
 ?cmd 列出目前的 at job 佇列：
 = atq
 = at -l
@@ -5231,13 +5233,14 @@ E> atrm <job> 刪除。
 = at -r 23
 = at -d 23
 E> atrm 後接 job 編號。
-?mt 配對：at 在不同系統由誰驅動
-> FreeBSD :: cron 每 5 分鐘執行 /usr/libexec/atrun
-> Linux :: atd.service daemon
-E> 所以在 Linux 上 at 沒反應時，要檢查 atd 是否 active。
-?tf 在 FreeBSD 預設設定下，一般使用者就可以使用 at 指令。
-=F
-E> FreeBSD 預設只有 root；Linux 預設每個人都可以。
+?mt 配對：Debian 上的排程工具由誰負責執行
+> crontab 與 /etc/crontab :: cron.service（cron daemon）
+> at :: atd.service
+> systemd timer :: systemd（PID 1）
+E> 所以 at 沒反應時要檢查 atd 是否 active，跟 cron 無關。
+?tf 在 Debian 預設設定下，一般使用者就可以使用 at 指令。
+=T
+E> Debian 只附 /etc/at.deny（列系統帳號），沒有 at.allow，所以不在 deny 名單的使用者都能用。對照：FreeBSD 預設只有 root。
 
 @CARD cron.p_debug | 實作：cron 工作沒跑怎麼查
 A> 手動執行好好的腳本，放進 cron 就不動，這是 SA 最經典的謎題。答案幾乎都是「cron 的環境跟你的 shell 不一樣」：PATH 很短、沒有讀你的 .bashrc、工作目錄是家目錄、% 是特殊字元。
@@ -6455,7 +6458,7 @@ B> **相對路徑**：從目前目錄開始，例 test/haha.c
 B> 限制（投影片）：單一元件 ≤ **255** 字元；單一絕對路徑 ≤ **1023** 字元
 ?fill 單一路徑元件（一個檔名）最長＿＿個字元
 = 255
-E> 絕對路徑上限為 1023（FreeBSD）。
+E> Linux 的完整路徑上限 PATH_MAX 是 4096 bytes（含結尾的 \0）。
 ?mc 目前目錄是 /home/amy，相對路徑 ../bob/a.txt 指的是？
 + /home/bob/a.txt
 - /home/amy/bob/a.txt
@@ -6483,12 +6486,12 @@ B> **/mnt**：暫時掛載點；/lib 共享函式庫；/libexec 關鍵系統工�
 > /dev :: 裝置檔
 > /tmp :: 不保證跨重開機保留的暫存檔
 E> hier(7) 有完整說明。
-?mc FreeBSD 上用 pkg 安裝的第三方軟體，設定檔通常放在？
-+ /usr/local/etc
-- /etc（和系統設定放在一起）
-- /var/etc（可變動的設定）
-- /opt/etc（第三方軟體專用）
-E> /usr/local/etc 是 /usr/local 版的 /etc。
+?mc 在 Debian 上用 apt 安裝 nginx，它的主要設定檔放在哪裡？
++ /etc/nginx
+- /usr/local/etc/nginx
+- /var/lib/nginx/etc
+- /opt/nginx/etc
+E> 套件裝的設定檔一律在 /etc；/usr/local 留給管理員自行編譯安裝的軟體（make install 的預設 prefix）。對照：FreeBSD 用 pkg 裝的第三方軟體，設定放 /usr/local/etc。
 
 @CARD fs.mount | mount 與 umount
 A> mount 是「把一個新的儲物櫃接到大樓的某個門口」：之後走進那個門（mount point）看到的就是新櫃子的內容，原本門後的東西暫時被擋住看不到（但沒消失）。有人正在櫃子裡（cd 在裡面或開著檔案）時，你沒辦法把櫃子拆走（busy）。
@@ -6591,7 +6594,7 @@ E> 檔名存在目錄的資料區塊（檔名 → inode 號碼）；inode 不含
 > Super block :: 檔案系統整體狀態（大小、block size…）
 > Inode list :: 所有 inode 的陣列
 > Data blocks :: 檔案的實際內容
-E> UFS 經典結構。
+E> 傳統 Unix 檔案系統的經典結構；ext2/3/4 把 inode 與 data block 分散到多個 block group，但概念相同。
 ?cmd 列出目前目錄檔案及其 inode 號碼：
 = ls -i
 = ls -li
@@ -6782,24 +6785,27 @@ E> user:group。
 = chgrp staff report.txt
 E> 也可以 chown :staff report.txt。
 
-@CARD fs.chflags | FreeBSD chflags（附錄）
-A> chflags 是 FreeBSD 的「封條」：schg（系統不可變）連 root 都不能改（在高 securelevel 下連拆封條都不行）；uappnd 是「只能在後面加字的日記本」。
-B> **schg** system immutable（root only）；**sunlnk** system undeletable；**sappnd** system append-only
-B> **uappnd** user append-only；**uunlnk** user undeletable（root 與 user 都可設）
-B> **ls -ol** 顯示 flags
-B> 例：設 uappend 後 ls > file 失敗（Operation not permitted），ls >> file 可以
-?mc 對檔案設了 uappnd flag 後，下列哪個操作會成功？
+@CARD fs.chflags | chattr / lsattr：檔案屬性（對應 FreeBSD chflags）
+A> chattr 是 Linux 檔案的「封條」：+i（immutable）貼上後連 root 都不能改、刪、改名，要先 chattr -i 拆封；+a 是「只能在後面加字的日記本」，適合 log。這些屬性存在檔案系統裡，ls -l 看不到，要用 lsattr。
+B> **chattr +i file**：immutable，不能修改、刪除、改名、建 hard link
+B> **chattr +a file**：append-only，只能用 >> 附加；不能覆寫、截斷、刪除
+B> +i 與 +a **只有 root**（CAP_LINUX_IMMUTABLE）能設定或移除
+B> **lsattr file** 顯示屬性（例如 ----i---------e-------）；**chattr -i file** 移除
+B> 其他：**A** 不更新 atime、**d** dump 備份時略過；支援程度依檔案系統而定（ext4、btrfs 大多支援）
+B> 例：設 +a 後 ls > file 失敗（Operation not permitted），ls >> file 可以
+B> 對照：FreeBSD 用 **chflags**（schg、sappnd、uappnd…），ls -ol 顯示
+?mc 對檔案設了 chattr +a 後，下列哪個操作會成功？
 + ls -al >> file
 - ls -al > file
 - rm file
 - 用編輯器修改中間內容
-E> append-only 只能附加。
-?mt 配對 FreeBSD file flags：
-> schg :: system immutable，只有 root 能設
-> sappnd :: system append-only
-> uappnd :: user append-only
-> uunlnk :: user undeletable
-E> s 開頭是 system 等級，u 開頭是 user 等級。
+E> append-only 只能附加；覆寫、截斷、刪除都會得到 Operation not permitted。
+?mt 配對 chattr 屬性：
+> i :: immutable，不能改、刪、改名
+> a :: append-only，只能附加
+> A :: 不更新 access time
+> d :: dump 備份時略過
+E> 用 lsattr 查看，chattr +x / -x 設定或移除。
 
 @CARD fs.journal | Journaling、CoW 與 Extended Attributes
 A> Journaling 像「先記帳再搬貨」：當機後看帳本就知道哪些做完、哪些要回滾，不用盤點整個倉庫（fsck 很快）。CoW 像「改作業時不在原稿上塗改，而是寫在新紙上再換掉」，沒改的部分共用同一張紙 → 快照幾乎不花空間。
@@ -11079,15 +11085,16 @@ E> Host header 在加密層內，握手時還看不到，所以需要 SNI。
 E> 靠 Host header（HTTPS 另外靠 SNI）區分網站。
 </script>
 <script type="text/plain" class="sa-src" data-ch="ext2">
-@CH ext2 | 考古延伸②：FreeBSD、syslog、防火牆與經典題 | 🦊 | 歷屆考古題
+@CH ext2 | 考古延伸②：Debian 套件、log、防火牆與經典題 | 🧰 | 歷屆考古題（2024 以前的 FreeBSD 題已改編為 Debian 版）
 
 @CARD ext2.syslog | syslog：facility.level 與 selector
-A> syslog 的每則訊息貼著兩張標籤：「哪個部門」（facility：kern、auth、mail、local0-7…）和「多嚴重」（level：debug < info < notice < warning < err < crit < alert < emerg）。syslog.conf 每行是「挑選條件 → 送去哪」；facility.level 表示「這個等級以上（含）」，.none 表示「排除這個部門」。
+A> syslog 的每則訊息貼著兩張標籤：「哪個部門」（facility：kern、auth、mail、local0-7…）和「多嚴重」（level：debug < info < notice < warning < err < crit < alert < emerg）。設定檔每行是「挑選條件 → 送去哪」；facility.level 表示「這個等級以上（含）」，.none 表示「排除這個部門」。Debian 上由 rsyslog 實作，語法沿用傳統 syslog.conf。
 B> Level 由低到高：**debug < info < notice < warning < err < crit < alert < emerg**
 B> selector **facility.level** = 該 facility **level 以上（含）**的訊息；**\*** 所有 facility；**facility.none** 排除該 facility
 B> 一行用 **;** 串多個 selector，逗號 **,** 列多個 facility 共用 level；後面的 selector 可以覆寫前面（如 .none 排除）
-B> 動作：檔案路徑、**@loghost** 送到遠端 syslog 主機、**使用者名稱**（寫到該使用者的 terminal）、/dev/console
-B> **logger -p facility.level "msg"**：手動送 log 測試設定
+B> 動作：檔案路徑、**@loghost** 送到遠端 syslog 主機（UDP；@@ 為 TCP）、**:omusrmsg:使用者**（寫到該使用者的 terminal）、/dev/console
+B> Debian 設定檔：**/etc/rsyslog.conf** 與 **/etc/rsyslog.d/*.conf**；Debian 12 起預設只有 **systemd-journald**（journalctl 查詢），要文字檔 log 就 apt install rsyslog
+B> **logger -p facility.level "msg"**：手動送 log 測試設定（journalctl -f 或 tail -f /var/log/syslog 看結果）
 M> 「低 (debug) 呦 (info) 你 (notice) 我 (warning) 惹 (err) 錯 (crit) 啊 (alert) 嗯 (emerg)」由輕到重
 ?ord syslog level 由「最不嚴重」到「最嚴重」排列：
 > debug
@@ -11099,104 +11106,139 @@ M> 「低 (debug) 呦 (info) 你 (notice) 我 (warning) 惹 (err) 錯 (crit) 啊
 > alert
 > emerg
 E> facility.level 選取該等級以上。
-?mc 下列哪一個命令列程式可對 syslog 發送日誌訊息，以測試 syslog 設定是否正確？
+?mc 下列哪一個命令列程式可對 syslog 發送日誌訊息，以測試 rsyslog 設定是否正確？
 + logger
-- syslogd
-- periodic
-- newsyslog
-S> 2023 期末 Q1
-E> logger -p local1.warning "message"。
-?sa 依下列 /etc/syslog.conf 回答：A. 執行 logger -p local1.warning "log message" 時，log 會出現在何處？ B. 執行 logger -p auth.notice "log message" 時，log 會出現在何處？
+- rsyslogd
+- logrotate
+- journalctl
+S> 2023 期末 Q1（改編為 Debian 版）
+E> logger -p local1.warning "message"；rsyslogd 是收 log 的 daemon，logrotate 負責輪替，journalctl 是查詢 journal。
+?sa 依下列 /etc/rsyslog.d/50-sa.conf 回答：A. 執行 logger -p local1.warning "log message" 時，log 會出現在何處？ B. 執行 logger -p auth.notice "log message" 時，log 會出現在何處？
 QX> *.emerg                                  /dev/console
-QX> *.err;kern,mark.debug;auth.notice        /dev/log/console.log
+QX> *.err;kern,mark.debug;auth.notice        /var/log/console.log
 QX> *.info;kern,user,mark,auth.none          @loghost
-QX> *.alert;kern.crit;local0,local1.info     tsaimh
-S> 2023 期末 Q14 A、B
-R> A. local1.warning：第 1 行 *.emerg 不符（warning < emerg）；第 2 行 *.err 不符（warning < err），kern/mark/auth 不是 local1；第 3 行 *.info 符合（warning ≥ info），且 local1 不在 .none 排除名單 → 送到遠端主機 @loghost；第 4 行 local1.info 符合（warning ≥ info）→ 寫到使用者 tsaimh 的 terminal（若已登入）。所以出現在 @loghost 與 tsaimh。
-R> B. auth.notice：第 1 行不符；第 2 行 auth.notice 符合 → 寫入 /dev/log/console.log；第 3 行 *.info 雖然符合等級，但 auth.none 把 auth 排除 → 不送 @loghost；第 4 行 *.alert 不符（notice < alert），kern.crit、local0/local1 也不符 → 不送 tsaimh。所以只出現在 /dev/log/console.log。
+QX> *.alert;kern.crit;local0,local1.info     :omusrmsg:tsaimh
+S> 2023 期末 Q14 A、B（改編為 Debian 版）
+R> A. local1.warning：第 1 行 *.emerg 不符（warning < emerg）；第 2 行 *.err 不符（warning < err），kern / mark / auth 也不是 local1；第 3 行 *.info 符合（warning ≥ info），且 local1 不在 .none 排除名單 → 送到遠端主機 @loghost；第 4 行 local1.info 符合（warning ≥ info）→ 寫到使用者 tsaimh 的 terminal（若已登入）。所以出現在 @loghost 與 tsaimh 的 terminal。
+R> B. auth.notice：第 1 行不符；第 2 行 auth.notice 符合 → 寫入 /var/log/console.log；第 3 行 *.info 雖然等級符合，但 auth.none 把 auth 排除 → 不送 @loghost；第 4 行 *.alert 不符（notice < alert），kern.crit、local0 / local1 也不符 → 不送 tsaimh。所以只出現在 /var/log/console.log。
 P> A. @loghost 與 tsaimh
-P> B. 只有 /dev/log/console.log
+P> B. 只有 /var/log/console.log
 P> 正確說明 level 比較與 .none 排除
 
-@CARD ext2.newsyslog | newsyslog（FreeBSD log rotation）
-A> newsyslog 是「定期把寫滿的帳本封存、換新本子」的管家：newsyslog.conf 每行寫「哪本帳本、權限、保留幾本舊的、多大要換、什麼時候換、怎麼壓縮」。由 cron 每小時叫它檢查一次。
-B> 欄位：**logfilename [owner:group] mode count size when flags**
-B> **mode**：新檔權限；**count**：保留幾份舊檔；**size**：超過多少 KB 就輪替（* = 不看大小）；**when**：時間條件（* = 不看時間）
-B> when 格式：**$W<0-6>D<hh>** 每週第幾天（0 = 週日）幾點；**$D<hh>** 每天幾點；**$M<dd>D<hh>** 每月；或 @ ISO 格式
-B> flags：**J = bzip2**、**Z = gzip**、**X = xz**、**Y = zstd**、C 檔案不存在就建立…
-B> 由 /etc/crontab 的 **0 * * * * root newsyslog** 每小時執行
-?sa 若 /etc/newsyslog.conf 設定如下，何時會做 log rotate？會保留幾份 log？會以什麼格式壓縮？
-QX> /dev/log/console.log   600   15   *   $W3D4   J
-S> 2023 期末 Q14 C
-R> 時間：when 欄位 $W3D4 表示每週第 3 天（0 為週日，所以是星期三）的 04:00 進行 rotate；size 欄位為 *，表示不依大小輪替。
-R> 保留：count 為 15，保留 15 份舊的 log（新檔權限 600）。
-R> 壓縮：flags 為 J，使用 bzip2 壓縮（產生 .bz2）。
-P> 每週三 04:00
+@CARD ext2.newsyslog | logrotate（Debian 的 log 輪替）
+A> logrotate 是「定期把寫滿的帳本封存、換新本子」的管家：/etc/logrotate.conf 與 /etc/logrotate.d/ 裡每個區塊寫「哪本帳本、多久換一次、保留幾本舊的、要不要壓縮」。Debian 由 logrotate.timer 每天叫它一次，它再依各區塊的條件決定這次要不要輪替。
+B> 設定：**/etc/logrotate.conf**（全域預設）＋ **/etc/logrotate.d/<服務>**（各服務一個檔）
+B> 時間：**daily / weekly / monthly / yearly**；大小：**size 100M**（超過就輪替、不看時間）
+B> 保留：**rotate N** 保留 N 份舊檔，更舊的刪掉；**create 640 root adm**：輪替後建新檔並設定權限與擁有者
+B> 壓縮：**compress**（預設 **gzip**，產生 .gz）；**delaycompress** 最新一份先不壓；換壓縮程式用 **compresscmd /usr/bin/xz** 加 **compressext .xz**
+B> 其他：**missingok** 檔案不存在不報錯；**notifempty** 空檔不輪替；**postrotate … endscript** 輪替後執行指令（例如通知服務重開 log 檔）
+B> 驅動：**logrotate.timer**（每天一次，systemctl list-timers 可見）；**logrotate -d** 試跑不動檔案、**logrotate -f** 強制輪替
+B> 對照：FreeBSD 用 newsyslog 與 /etc/newsyslog.conf，由 cron 每小時執行
+X> /var/log/myapp.log {
+X>     daily
+X>     rotate 7
+X>     compress
+X>     delaycompress
+X>     missingok
+X>     notifempty
+X>     create 640 root adm
+X> }
+?sa 若 /etc/logrotate.d/console 設定如下，何時會做 log rotate？會保留幾份 log？會以什麼格式壓縮？
+QX> /var/log/console.log {
+QX>     weekly
+QX>     rotate 15
+QX>     compress
+QX>     create 600 root root
+QX> }
+S> 2023 期末 Q14 C（改編為 Debian 版）
+R> 時間：weekly，每週輪替一次。logrotate 本身不是 daemon，Debian 由 logrotate.timer 每天執行一次 logrotate；執行時若距上次輪替已滿一週（或已進入新的一週），這次就輪替。沒有寫 size，所以不看檔案大小。
+R> 保留：rotate 15，保留 15 份舊 log（console.log.1 到 .15，更舊的刪除）；輪替後依 create 建立權限 600、擁有者 root:root 的新檔。
+R> 壓縮：compress 預設使用 gzip，舊檔變成 console.log.1.gz、console.log.2.gz…（沒寫 delaycompress，所以最新的 .1 也會壓縮）。
+P> 每週一次（由每天執行的 logrotate.timer 判斷）
 P> 保留 15 份
-P> J = bzip2
-?mt 配對 newsyslog flags：
-> J :: bzip2 壓縮
-> Z :: gzip 壓縮
-> X :: xz 壓縮
-E> 投影片外的 FreeBSD 知識，考古題出現過。
-?fill newsyslog 的 when 欄位要表示「每天凌晨 0 點」可寫 $D＿＿
-= 0
-= 00
-E> $D0 每天 0 點。
+P> compress = gzip（.gz）
+?mt 配對 logrotate 設定：
+> rotate 7 :: 保留 7 份舊檔
+> compress :: 用 gzip 壓縮舊檔
+> notifempty :: 檔案是空的就不輪替
+E> 每個服務在 /etc/logrotate.d/ 下各有一個設定檔。
+?fill logrotate 要讓舊檔壓縮、但「最新一份舊檔先不壓」（方便還在寫的程式收尾），要在 compress 之外再加＿＿
+= delaycompress
+E> Debian 套件附的 logrotate 設定常同時寫 compress 與 delaycompress。
 
-@CARD ext2.pf | 防火牆：PF / iptables 與 drop vs return
-A> drop 是「假裝沒聽到敲門」，對方只能一直等到逾時；return / REJECT 是「隔著門說：沒有人在」，對方立刻知道被拒絕。對 TCP 回 RST，對 UDP 回 ICMP port unreachable。
-B> **drop / DROP**：靜默丟棄，不回應；client 等到 **timeout**；不洩漏資訊但連線端等很久
-B> **return（PF）/ REJECT（iptables）**：TCP 回 **RST**；UDP 回 **ICMP port unreachable**（destination unreachable）→ client 立即得知失敗
-B> PF 與 iptables 都能過濾：ICMP、TCP flags、IPv6（ip6tables）、IP/port；**PF 不能比對 MAC address**（iptables 可用 -m mac）
-B> PF table：**{ 140.113.0.0/16, !140.113.235.0/24, 140.113.235.0/26 }** → 以**最長前綴**決定，! 表示排除
-?sa 試說明 PF 的 block policy 中 drop 與 return 的差異，請針對 TCP 與 UDP 封包的差異來說明。（iptables 中則為 DROP 和 REJECT）
-S> 2023 期末 Q9
+@CARD ext2.pf | 防火牆：nftables 與 drop vs reject
+A> drop 是「假裝沒聽到敲門」，對方只能一直等到逾時；reject 是「隔著門說：沒有人在」，對方立刻知道被拒絕。對 TCP 回 RST，對 UDP 回 ICMP port unreachable。
+B> Debian 13 的防火牆框架是 **nftables**：nft 指令、設定檔 **/etc/nftables.conf**、由 **nftables.service** 開機載入；iptables 指令其實是 iptables-nft 相容層
+B> **drop**：靜默丟棄，不回應；client 等到 **timeout**；不洩漏資訊，但連線端要等很久
+B> **reject**：TCP 回 **RST**（可寫 reject with tcp reset）；UDP 回 **ICMP port unreachable** → client 立即得知失敗
+B> 結構：**table**（如 inet filter）→ **chain**（hook input、policy drop）→ **rule**；同一條 chain **由上往下，第一個 accept / drop / reject 就決定結果**
+B> 可比對：IP / port、ICMP type、TCP flags、IPv4 與 IPv6（inet 家族）、介面、來源 MAC（ether saddr）、連線狀態（ct state）；**看不懂 HTTP 內容**（URL、header）
+B> 對照：FreeBSD 用 PF（block drop / block return、table <name>）
+X> table inet filter {
+X>   chain input {
+X>     type filter hook input priority 0; policy drop;
+X>     ct state established,related accept
+X>     iif lo accept
+X>     tcp dport 22 accept
+X>     udp dport 53 reject
+X>   }
+X> }
+?sa 試說明 nftables 規則中 drop 與 reject 的差異，請針對 TCP 與 UDP 封包的差異來說明。
+S> 2023 期末 Q9（改編為 Debian 版）
 R> drop：直接把封包丟掉、不做任何回應。TCP 的 client 送出 SYN 後收不到任何回應，只能不斷重送直到逾時；UDP 的 client 也收不到任何訊息，只能等應用層 timeout。好處是不讓對方知道主機存在，但合法使用者會等很久。
-R> return（REJECT）：丟棄封包但主動回覆拒絕。對 TCP 封包回送 TCP RST，對方立即得到 connection refused；對 UDP 封包回送 ICMP（port / destination）unreachable，對方立即知道無法送達。好處是 client 能快速失敗，但會暴露主機存在。
+R> reject：丟棄封包但主動回覆拒絕。對 TCP 封包回送 TCP RST，對方立即得到 connection refused；對 UDP 封包回送 ICMP port unreachable，對方立即知道無法送達。好處是 client 能快速失敗，但會暴露主機存在。
 P> drop 靜默丟棄，client 逾時
-P> return：TCP 回 RST
-P> return：UDP 回 ICMP unreachable
-?mc 下列何者無法透過 PF 與 iptables 來過濾？
-+ MAC Address
-- ICMP
-- TCP Flag
-- IPv6 Address
-S> 2023 期末 Part A Q4
-E> PF 無法依 MAC 過濾（以考古題答案為準）。
-?mc PF 的 table <hosts> { 140.113.0.0/16, !140.113.235.0/24, 140.113.235.0/26 }，下列哪一個「不符合」此 table？
+P> reject：TCP 回 RST
+P> reject：UDP 回 ICMP port unreachable
+?mc 下列何者是 nftables 規則「無法」直接拿來過濾的條件？
++ HTTP 請求中的 URL 路徑
+- ICMP 封包的 type 欄位
+- TCP flags（例如 SYN）
+- 封包的來源 IPv6 位址
+S> 2023 期末 Part A Q4（改編為 Debian 版）
+E> nftables 工作在 L2 到 L4：能比對 MAC（ether saddr）、ICMP type、TCP flags、IPv4 與 IPv6；HTTP 內容屬於應用層，要靠 nginx 等反向代理或 WAF。
+?mc nftables 的 input chain（policy accept）依序有下列三條規則，哪個來源位址的封包會被丟棄？
+QX> ip saddr 140.113.235.0/26 accept
+QX> ip saddr 140.113.235.0/24 drop
+QX> ip saddr 140.113.0.0/16 accept
 + 140.113.235.207
 - 140.113.17.32
 - 140.113.235.48
 - 140.113.121.112
-S> 2023 期末 Part A Q5
-E> PF table 用最長前綴比對：.235.48 落在 /26（0-63）被包含；.235.207 只落在被排除的 !/24；其他落在 /16。
+S> 2023 期末 Part A Q5（改編為 Debian 版）
+E> 由上往下第一條符合的決定結果：.235.48 落在 /26（0–63），先被 accept；.235.207 不在 /26 但在 /24，所以 drop；其他只符合 /16，accept。
 
-@CARD ext2.freebsd | FreeBSD：套件安裝與忘記 root 密碼
-A> FreeBSD 裝軟體三條路：pkg 是「買現成的冷凍食品」（預編譯、快）、ports 是「照食譜從頭煮」（從原始碼編譯、可自訂配料）、tarball 是「自己去市場買原料、沒有食譜管理」（手動 configure/make，系統不會幫你記帳）。
-B> **pkg**：二進位預編譯套件，pkg install，快速、自動處理依賴，但使用預設編譯選項
-B> **ports**：/usr/ports 原始碼建置框架（make install clean），可用 make config **自訂編譯選項**，較花時間；仍由套件資料庫管理
-B> **tarball**：手動下載原始碼壓縮檔，./configure && make && make install；**不追蹤依賴、不登記**到套件系統，難以升級與移除
-B> 忘記 root 密碼：開機選單選 **single user mode**（boot -s）→ 出現提示按 Enter 用 /bin/sh → **mount -u /**（root 改為可寫）→ **mount -a** → **passwd root** → exit / reboot
-?sa FreeBSD 系統上安裝軟體有 pkg、ports 與 tarball 三種方式，請簡述三者的差別。
-S> 2023 期中 Q2
-R> pkg：安裝官方預先編譯好的 binary package，由 pkg 工具自動下載並處理相依套件，安裝快速、易於升級與移除，但只能使用預設的編譯選項。
-R> ports：使用 Ports Collection（/usr/ports）中的 Makefile 從原始碼編譯安裝，會自動下載原始碼、套用 FreeBSD patch、處理相依，可透過 make config 自訂編譯選項，彈性高但編譯耗時；安裝結果仍登記在套件資料庫中。
-R> tarball：自行下載軟體原始碼壓縮檔，手動解壓縮、./configure、make、make install；不經過套件系統，不會自動處理相依、不會登記，之後升級或移除都要手動，容易弄亂系統。
-P> pkg：預編譯 binary，快、自動依賴、選項固定
-P> ports：從原始碼編譯，可自訂選項，慢
-P> tarball：手動編譯，不管理依賴與登記
-?sa 假設你在一台全新安裝且只有 root 使用者的 FreeBSD 中忘記了 root 密碼。在系統重開機後，請簡述該如何取回控制權並重新登入 root？
-S> 2023 期末 Q6
-R> ① 重開機，在 FreeBSD boot loader 選單選擇「Single user mode」（或在 loader 提示字元輸入 boot -s）。② 出現 Enter full pathname of shell 時直接按 Enter 使用 /bin/sh，此時不需密碼即以 root 身分進入。③ root 檔案系統預設以唯讀掛載，執行 mount -u /（必要時 fsck -p）讓它可寫，再 mount -a 掛上其他檔案系統。④ 執行 passwd root 設定新密碼。⑤ exit 或 reboot 回到多人模式，以新密碼登入 root。
-P> 進入 single user mode（boot -s）
-P> mount -u / 讓 root 可寫（mount -a）
-P> passwd root 重設後重開機
+@CARD ext2.freebsd | Debian：安裝軟體的三種方式與忘記 root 密碼
+A> Debian 裝軟體三條路：apt 是「買現成的冷凍食品」（官方預編譯 .deb，快）；從 Debian 原始碼套件自己建置是「照官方食譜自己煮」（可改配料，做出來仍是 .deb，照樣記帳）；tarball 是「自己去市場買原料、沒有食譜管理」（手動 configure / make，系統不會幫你記帳）。
+B> **apt install**：從套件庫下載**預編譯的 .deb**，自動處理相依；dpkg 登記裝了哪些檔案，易升級、移除；只能用 Debian 選好的編譯選項
+B> **原始碼套件**：apt source → 修改編譯選項或打 patch → **dpkg-buildpackage** 產生 .deb → 安裝；較花時間，但產物仍由 dpkg 管理
+B> **tarball**：手動下載上游原始碼，./configure && make && make install（預設裝到 **/usr/local**）；**不追蹤相依、不登記**到 dpkg，難升級、難移除
+B> **dpkg -i file.deb** 只裝這一個檔、不會自動補相依（改用 apt install ./file.deb）
+B> 忘記 root 密碼：rescue / emergency 模式會透過 sulogin **要 root 密碼**，行不通 → GRUB 選單按 **e**，在 linux 那行加 **init=/bin/bash**，Ctrl+X 開機 → **mount -o remount,rw /** → **passwd root** → **sync** → **exec /sbin/init**（或 reboot -f）
+B> 擋得住這招的是：**GRUB 密碼**、**磁碟加密**（LUKS 要先輸入密碼）、實體存取控制；最後手段是安裝光碟的 rescue mode 或 live USB 掛載後 chroot 改密碼
+?sa Debian 上安裝軟體，可以用 apt、從 Debian 原始碼套件自行建置（apt source + dpkg-buildpackage），或下載 tarball 自行編譯。請簡述三者的差別。
+S> 2023 期中 Q2（改編為 Debian 版）
+R> apt：從 Debian 套件庫下載官方預先編譯好的 .deb，自動處理相依套件，安裝快速；dpkg 會登記裝了哪些檔案，之後 apt upgrade 升級、apt remove 移除都很方便，但只能用 Debian 預設的編譯選項。
+R> 原始碼套件：用 apt source 取得 Debian 的原始碼與打包規則，可以修改編譯選項或打 patch，再用 dpkg-buildpackage 編成 .deb 安裝（先用 apt build-dep 裝好編譯相依）。彈性高但較花時間；產物仍是 .deb，照樣由 dpkg 管理、可正常移除。
+R> tarball：自行下載上游原始碼壓縮檔，解壓縮後 ./configure、make、make install（預設 prefix 是 /usr/local）。完全不經過套件系統：不會自動處理相依，dpkg 也不知道裝了哪些檔案，之後升級或移除都要手動，還可能和 apt 裝的版本衝突。
+P> apt：預編譯 .deb，快、自動處理相依、選項固定
+P> 原始碼套件：可自訂編譯選項，產物仍是 .deb，受 dpkg 管理
+P> tarball：手動編譯到 /usr/local，不管理相依、不登記
+?sa 假設你在一台全新安裝、只有 root 帳號的 Debian 中忘記了 root 密碼（磁碟沒有加密、GRUB 沒有設密碼）。系統重開機後，請簡述該如何取回控制權並重新登入 root？
+S> 2023 期末 Q6（改編為 Debian 版）
+R> ① 重開機，在 GRUB 選單選到 Debian 那一項，按 e 編輯開機參數。（rescue.target / emergency.target 會透過 sulogin 要求 root 密碼，忘記密碼時進不去，所以不能用。）
+R> ② 在 linux 開頭的那一行最後加上 init=/bin/bash，按 Ctrl+X（或 F10）用這次修改過的參數開機。kernel 會直接把 /bin/bash 當成 PID 1 執行，不經過登入程序，得到 root shell。這個修改只影響這一次開機，不會寫進 /etc/default/grub。
+R> ③ 此時 root 檔案系統是唯讀掛載，執行 mount -o remount,rw / 讓它可寫。
+R> ④ 執行 passwd root 設定新密碼，再執行 sync 確保寫入磁碟。
+R> ⑤ bash 此時是 PID 1，不能直接 exit（會 kernel panic），用 exec /sbin/init 繼續正常開機，或 reboot -f 重開機，之後用新密碼登入 root。
+P> GRUB 按 e，在 linux 行加 init=/bin/bash
+P> mount -o remount,rw / 讓 root 可寫
+P> passwd root，sync 後 exec /sbin/init 或 reboot -f
 
 @CARD ext2.man | man pages：章節與語法
 A> man 手冊分章節：1 是一般指令、2 是系統呼叫、3 是 C 函式庫、4 裝置、5 檔案格式、6 遊戲、7 雜項、8 系統管理指令。printf(1) 是 shell 指令，printf(3) 是 C 函式，同名不同章。語法裡的 [ ] 是「可以不寫」，... 是「可以寫很多個」。
 B> 章節：**1** 使用者指令、**2** system calls、**3** library functions、**4** 裝置 / 特殊檔、**5** 檔案格式（如 crontab(5)、fstab(5)）、6 遊戲、**7** 雜項（hier(7)）、**8** 系統管理指令（mount(8)）
-B> 查特定章節：**man 3 printf**（FreeBSD 也可 man -s 3 printf）；**man -k keyword** / apropos 搜尋
+B> 查特定章節：**man 3 printf**（也可 man -s 3 printf）；**man -k keyword** / apropos 搜尋
 B> SYNOPSIS 語法：**[ ]** 可省略的選項；**...** 可重複多個；底線 / 斜體為要替換的參數
 ?sa a. man printf 時會看到 SEE ALSO printf(3)，數字 3 代表什麼？ b. 承上，如何查詢 printf(3) 的資料？ c. sort 的 man page 中 "[ ]" 與 "..." 代表什麼？
 QX> sort [-bcCdfghiRMmnrsuVz] [-k field1[,field2]] [-S memsize] [-T dir] [-t char] [-o output] [file ...]
@@ -11219,43 +11261,43 @@ E> crontab(1) 是指令、crontab(5) 是檔案格式。
 = man -s 5 crontab
 E> 不加章節會先顯示 crontab(1)。
 
-@CARD ext2.linuxbsd | Linux vs FreeBSD
-A> Linux 是「一個引擎（kernel）+ 各家車廠組裝的車（發行版）」；FreeBSD 是「同一家廠把引擎和車身一起設計製造的整車」。
-B> **開發模式**：Linux 只是 kernel，userland（GNU 等）由各發行版組合；FreeBSD 的 kernel 與 base userland 在**同一個 source tree** 一起開發發行
-B> **授權**：Linux **GPL**（衍生作品須開源）；FreeBSD **BSD license**（寬鬆，可閉源商用）
-B> **init / 服務**：Linux 多為 **systemd**（systemctl）；FreeBSD 用 **rc.d + /etc/rc.conf**（service、sysrc）
-B> **套件**：Debian apt；FreeBSD **pkg / ports**，第三方軟體放 **/usr/local**
-B> **預設 shell**：Debian 使用者 bash；FreeBSD **sh**（舊版 root 為 csh/tcsh）
-B> **防火牆**：Linux netfilter（iptables / nftables）；FreeBSD **pf / ipfw**
-B> **檔案系統**：Linux ext4/xfs/btrfs；FreeBSD **UFS / ZFS**
-B> **隔離**：Linux namespaces/cgroups containers；FreeBSD **jails**
-B> **裝置名稱**：Linux /dev/sda；FreeBSD /dev/ada0、da0
-?sa 試舉出三個 Linux 與 FreeBSD 不同之處（需明確指出 Linux 如何、FreeBSD 如何，「名字 / 核心 / 開發者不同」這類答案不計分）。
-S> 2023 期中 Q13
-R> ① 服務管理：多數 Linux 發行版（如 Debian）用 systemd，以 unit 檔與 systemctl 管理；FreeBSD 用 rc.d 腳本，在 /etc/rc.conf 設定 xxx_enable="YES"，以 service / sysrc 管理。
-R> ② 套件管理：Debian 用 apt / dpkg 安裝 .deb；FreeBSD 用 pkg（binary）或 ports（原始碼），第三方軟體安裝在 /usr/local。
-R> ③ 系統組成與授權：Linux 只有 kernel，userland 來自 GNU 等不同專案由發行版組合，採 GPL；FreeBSD 的 kernel 與 base system 在同一個 source tree 中一起開發、一起發行，採 BSD license。
-R> 其他：防火牆 Linux 用 iptables/nftables，FreeBSD 用 pf/ipfw；檔案系統 ext4 vs UFS/ZFS；container 用 namespaces vs FreeBSD jails；預設 shell bash vs sh/tcsh；磁碟名稱 /dev/sda vs /dev/ada0。
-P> 三個具體差異，且每個都明確說明 Linux 與 FreeBSD 各自的做法
-?mt 配對 FreeBSD 對應的 Linux 工具：
-> pf :: iptables / nftables
-> jails :: containers（namespaces）
-> /etc/rc.conf + service :: systemd + systemctl
-> pkg :: apt
-E> 考差異題時要說清楚兩邊各怎麼做。
+@CARD ext2.linuxbsd | systemd vs 傳統 SysV init（Debian 的前後對照）
+A> SysV init 像「照號碼排隊、一個一個叫號」：/etc/rcN.d 裡 S20、S30 的連結決定先後，每個服務是一支 shell 腳本，自己記 PID 檔。systemd 像「看相依關係同時開好幾個窗口」：unit 檔宣告需要誰、排在誰之後，能平行啟動，並用 cgroup 盯住每個服務生出來的所有 process。
+B> **服務定義**：SysV 是 **/etc/init.d/** 的 shell 腳本（start / stop 自己寫）；systemd 是宣告式 **unit 檔**（ExecStart=、Restart=）
+B> **開機順序**：SysV 依 **rcN.d 的 S/K 編號**依序執行；systemd 依 **Requires= / Wants= + After=** 建相依關係，可**平行**啟動
+B> **執行等級**：SysV 是 **runlevel 0–6**；systemd 是 **target**（1 ≈ rescue.target、3 ≈ multi-user.target、5 ≈ graphical.target）
+B> **開機啟用**：SysV 用 update-rc.d 建 S/K 連結；systemd 用 **systemctl enable**（建 .wants/ symlink）
+B> **追蹤 process**：SysV 靠 **PID 檔**（/var/run/*.pid），fork 出去的子行程可能漏掉；systemd 用 **cgroup** 追蹤所有後代
+B> **log**：SysV 靠 syslog 寫文字檔；systemd 有 **journald**，journalctl -u 依服務查詢
+B> **自動重啟、資源限制**：SysV 要自己寫；systemd 有 **Restart=**、**MemoryMax=**、**CPUQuota=**
+B> 對照：FreeBSD 也是腳本式（/etc/rc.d 加上 /etc/rc.conf 的 xxx_enable="YES"、service、sysrc）
+?sa 試舉出三個 Debian 使用的 systemd 與傳統 SysV init 不同之處（需明確指出 systemd 如何、SysV 如何，「名字 / 開發者不同」這類答案不計分）。
+S> 2023 期中 Q13（改編為 Debian 版）
+R> ① 服務定義：SysV 的每個服務是 /etc/init.d/ 下的一支 shell 腳本，start / stop 的邏輯自己寫；systemd 用宣告式的 unit 檔（如 ExecStart=、Restart=），由 systemctl 統一管理。
+R> ② 啟動順序：SysV 依 /etc/rcN.d 裡 S/K 連結的編號，一個接一個執行；systemd 由 Requires= / Wants= 與 After= 建立相依關係，沒有相依的服務可以平行啟動，開機較快。
+R> ③ 執行等級：SysV 用數字 runlevel（0–6，例如 3 是多使用者文字模式）；systemd 用 target（multi-user.target、graphical.target、rescue.target），一個 target 是一組 unit 的集合，可以同時有多個 active。
+R> 其他：process 追蹤（PID 檔 vs cgroup）、log（syslog 文字檔 vs journald）、開機啟用（update-rc.d 建連結 vs systemctl enable 建 .wants symlink）、自動重啟與資源限制（自己實作 vs Restart=、MemoryMax=）。
+P> 三個具體差異，每個都明確說明 systemd 與 SysV 各自的做法
+?mt 配對傳統 SysV 做法與 Debian（systemd）的對應：
+> /etc/init.d 腳本 + rcN.d 連結 :: unit 檔 + systemctl enable
+> runlevel 3 :: multi-user.target
+> /var/run/*.pid 追蹤服務 :: cgroup 追蹤所有後代 process
+> 只寫 syslog 文字檔 :: journald + journalctl -u
+E> 寫差異題時，每一點都要講清楚兩邊各怎麼做。
 </script>
 <!--@@NEXT_CHAPTER@@-->
 
 <script>
 'use strict';
 /* ═════════════════════ 0. VERSION ═════════════════════ */
-const CONTENT_VERSION = 5;
+const CONTENT_VERSION = 6;
 const CHANGELOG = [
   {v:1, date:'2026-11-12', note:'初版：Shell、Shell Programming、網路、開機關機、使用者、Process、cron、檔案系統、LVM、Btrfs、Docker、HW2，加上歷屆考古題延伸（共 14 章）'},
   {v:2, date:'2026-11-15', note:'新增 56 張實作卡：find、grep、journalctl、systemd 除錯、LUKS 與 initramfs 救援、ACL、fstab 驗證、LVM 縮容與 RAID、Btrfs rollback、sshd 設定陷阱、SFTP 驗收與 chroot log、sftp_watchd 測試等。新卡排在各章最後，會自然混進每日新題。'},
   {v:3, date:'2026-11-16', note:'新增 3 章、65 張卡、239 題：systemd 深入（cgroups v2、資源控制、unit 依賴與順序、Type 與 Restart、timer、template）、Docker 進階（Dockerfile、layer cache、multi-stage、network driver、Compose、healthcheck、restart policy）、HW3 實戰觀念（PKI、NGINX、OIDC、PostgreSQL TLS、CI/CD、sandbox 網路與 syscall 監控、Prometheus、OpenTelemetry）。每章都有新魔王與房間家具。'},
   {v:4, date:'2026-11-16', note:'再補 64 張卡、201 題：systemd 實作（socket/path、fstab 與 mount unit、KillMode、hardening、journal 管理、cgroup 除錯）、Docker 實作（PID 1 與訊號、registry 與私有 CA、資源限制、docker.sock 風險、capabilities、防火牆繞過、.env）、HW2 逐項拆解（LUKS、rescue、縮 root、RAID10、rollback 原理、SnApper 參數、ACL 與 anonymous 的衝突、Match 設定、watchd 實作）、HW3 實作層（openssl、TLS 除錯、反向代理 header、容器 DNS 與 CA、Keycloak、JWT、PostgreSQL TLS、runner 與 workflow、SSH 部署、Docker API、sandbox 網路、MITM、DNS、Falco、SQL、Prometheus、OTel）。'},
-  {v:5, date:'2026-11-17', note:'內容檢修：36 張卡加上圖解（開機流程、fd 與重導向、NAT、SSH 轉發、LVM、process 狀態、Docker 網路與 layer cache、cgroup、PKI、HW3 架構等）；43 張原本只有 1 題的卡各補 1 到 2 題；新增 4 題簡答；約 300 題選擇題重寫錯誤選項或縮短正解，「正解是最長選項」的比例從 61% 降到 28%（接近隨機的 25%），不能再靠選最長的猜對；17 題打指令題接受更多等價寫法。'}
+  {v:5, date:'2026-11-17', note:'內容檢修：36 張卡加上圖解（開機流程、fd 與重導向、NAT、SSH 轉發、LVM、process 狀態、Docker 網路與 layer cache、cgroup、PKI、HW3 架構等）；43 張原本只有 1 題的卡各補 1 到 2 題；新增 4 題簡答；約 300 題選擇題重寫錯誤選項或縮短正解，「正解是最長選項」的比例從 61% 降到 28%（接近隨機的 25%），不能再靠選最長的猜對；17 題打指令題接受更多等價寫法。'},
+  {v:6, date:'2026-11-17', note:'考試範圍改用 Debian：2024 以前 FreeBSD 時期的考古題改編成 Debian 版（裝軟體 apt、忘記 root 密碼用 GRUB init=/bin/bash、logrotate、nftables、rsyslog、cron.daily 與 atd、/etc/shadow 的 yescrypt、systemd vs SysV），FreeBSD 專屬的練習也換成 Debian 對應（chattr、systemctl enable --now 等）。投影片本身有的 FreeBSD 對照仍保留。'},
 ];
 
 /* ═════════════════════ 1. CONTENT PARSER ═════════════════════

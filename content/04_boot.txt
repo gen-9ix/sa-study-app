@@ -438,10 +438,12 @@ E> 考 Linux vs FreeBSD 差異時很好用。
 - nginx 的第 20 個設定檔
 - 只在 20 秒後啟動
 E> 進入 runlevel 3 時，以序號 20 的順序啟動（Start）nginx。S 開頭是 start、K 開頭是 kill，數字決定順序。
-?cmd 在 FreeBSD 上用 sysrc 設定開機啟用 sshd（寫入 rc.conf）：
-= sysrc sshd_enable=YES
-= sysrc sshd_enable="YES"
-E> FreeBSD 的服務開關在 /etc/rc.conf，用 sysrc 修改比手動編輯安全。
+?cmd 在 Debian 上讓 SSH 服務開機自動啟動，並且現在就啟動（一個指令）：
+= systemctl enable --now ssh
+= systemctl enable --now ssh.service
+= systemctl enable --now sshd
+= systemctl enable --now sshd.service
+E> Debian 的 unit 叫 ssh.service（sshd.service 是別名）。對照：FreeBSD 是 sysrc sshd_enable=YES 再 service sshd start。
 
 @CARD boot.login | 登入流程與 fork/exec
 A> fork 是「影分身」（多一個新 PID 的自己）、exec 是「變身」（PID 不變，但整個人換成另一個程式）。shell 執行 ls：先影分身，分身再變身成 ls。

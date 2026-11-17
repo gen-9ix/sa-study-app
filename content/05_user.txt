@@ -60,20 +60,20 @@ E> getent 走 NSS，不只看本機檔案。
 
 @CARD user.shadow | Shadow 密碼與雜湊格式
 A> 為什麼要 shadow？/etc/passwd 必須讓每個人都能讀（程式要把 UID 轉成名字），如果雜湊放在那裡，任何人都能拿回家慢慢暴力破解。所以把雜湊搬進只有 root 能讀的「保險箱」/etc/shadow。$6$ 這種前綴是「保險箱的鎖型號」。
-B> Debian：**/etc/shadow**；FreeBSD：**/etc/master.passwd** 與資料庫（pwd.db / spwd.db）
+B> Debian：**/etc/shadow**（只有 root 與 shadow 群組可讀）；對照：FreeBSD 是 /etc/master.passwd
 B> 存的是 **salted password hash**，不是可還原的加密密碼
 B> 用帳號工具（passwd、adduser、usermod、vipw）保持紀錄一致
 B> 雜湊前綴：**$1$ = MD5**（舊、不安全）、**$2…$ = bcrypt**、**$5$ = SHA-256**、**$6$ = SHA-512 crypt**、**$y$ = yescrypt**（現代 Debian）
 B> shadow 欄位：1-2 名稱與 hash、3-6 上次修改日 / 最短 / 最長 / 警告天數、7-9 inactive 天數 / 帳號到期日 / 保留
 B> **密碼到期**要求改密碼；**帳號到期**會依政策阻擋存取
-?sa A. 使用者可以屬於多個 group，在 /etc/passwd 中設定 group 與寫在 /etc/group 有何差異？ B. 何謂 shadow passwd？為何現在大多數系統都採用？ C. 如何從 /etc/master.passwd（或 /etc/shadow）判斷使用者的密碼使用哪種 hash function？（例：root:$6$gW9y$NtFj3pni:0:0:root:/root:/bin/sh）
-S> 2023 期末 Q12
+?sa A. 使用者可以屬於多個 group，在 /etc/passwd 中設定 group 與寫在 /etc/group 有何差異？ B. 何謂 shadow passwd？為何現在大多數系統都採用？ C. 如何從 /etc/shadow 判斷使用者的密碼使用哪種 hash function？（例：root:$y$j9T$gW9yQ2kL$NtFj3pniXc:20400:0:99999:7:::）
+S> 2023 期末 Q12（改編為 Debian 版）
 R> A. /etc/passwd 的 GID 欄位是使用者的 primary group（只能有一個，建立檔案時預設的群組）；/etc/group 每行最後的成員清單列的是 supplementary（附加）群組成員，一個使用者可以出現在多個群組中。
-R> B. shadow passwd 是把密碼 hash（與密碼期限資訊）從所有人都可讀的 /etc/passwd 移到只有 root 可讀的 /etc/shadow（FreeBSD 為 /etc/master.passwd），/etc/passwd 的密碼欄只留 x 或 *。因為 /etc/passwd 必須公開讓程式查 UID↔名稱，若 hash 放在裡面任何人都能拿去離線暴力破解，所以分開存放更安全。
-R> C. 看密碼欄位 $id$salt$hash 的前綴 id：$1$ 是 MD5、$2a$/$2b$ 是 bcrypt、$5$ 是 SHA-256、$6$ 是 SHA-512、$y$ 是 yescrypt。例子中 $6$ 表示 SHA-512（salt 為 gW9y）。
+R> B. shadow passwd 是把密碼 hash（與密碼期限資訊）從所有人都可讀的 /etc/passwd 移到只有 root 可讀的 /etc/shadow，/etc/passwd 的密碼欄只留 x 或 *。因為 /etc/passwd 必須公開讓程式查 UID↔名稱，若 hash 放在裡面任何人都能拿去離線暴力破解，所以分開存放更安全。
+R> C. 看第 2 欄（密碼欄）$id$…$hash 的前綴 id：$1$ 是 MD5、$2a$/$2b$ 是 bcrypt、$5$ 是 SHA-256、$6$ 是 SHA-512、$y$ 是 yescrypt（Debian 11 起的預設）。例子中 $y$ 表示 yescrypt（j9T 是參數，gW9yQ2kL 是 salt）。
 P> A. passwd 的 GID 是 primary group；/etc/group 列 supplementary 成員
 P> B. hash 移到 root 才能讀的檔案，防止離線破解
-P> C. 由 $id$ 前綴判斷，$6$ = SHA-512
+P> C. 由 $id$ 前綴判斷，$y$ = yescrypt
 ?mt 配對 hash 前綴：
 > $1$ :: MD5（舊式，不適合新密碼）
 > $6$ :: SHA-512 crypt
@@ -96,14 +96,14 @@ B> **nologin** 阻擋一般 shell 登入，但不代表擋住所有認證路徑�
 ?cmd 把自己的 login shell 改成 /bin/sh：
 = chsh -s /bin/sh
 E> 先 cat /etc/shells 確認路徑合法。
-?sa a. 下列指令已把 shell 從 tcsh 改成 sh，但印 $SHELL 仍是 tcsh，為什麼？ b. 要怎麼知道目前的 shell 是什麼？
+?sa a. 下列指令已把 shell 從 bash 換成 sh，但印 $SHELL 仍是 /bin/bash，為什麼？ b. 要怎麼知道目前的 shell 是什麼？
 QX> $ echo $SHELL
-QX> /bin/tcsh
+QX> /bin/bash
 QX> $ sh
 QX> $ echo $SHELL
-QX> /bin/tcsh
-S> 2023 期中 Q11
-R> a. 執行 sh 只是在 tcsh 底下開了一個 sh 子行程，並沒有改變帳號設定。$SHELL 是登入時根據 /etc/passwd 設定的 login shell 所設的環境變數，sh 從父行程繼承了這個環境變數，且 sh 不會去改它，所以仍是 /bin/tcsh。
+QX> /bin/bash
+S> 2023 期中 Q11（改編為 Debian 版）
+R> a. 執行 sh（Debian 上是 dash）只是在 bash 底下開了一個 sh 子行程，並沒有改變帳號設定。$SHELL 是登入時根據 /etc/passwd 設定的 login shell 所設的環境變數，sh 從父行程繼承了這個環境變數，且 sh 不會去改它，所以仍是 /bin/bash。
 R> b. 用 echo $0（顯示目前 shell 程式名稱），或 ps -p $$（查看目前 shell PID 對應的程式），也可用 ps 看 process 樹。
 P> a. $SHELL 是 login shell 的環境變數，由父行程繼承，不會因執行 sh 而改變
 P> b. echo $0 或 ps -p $$

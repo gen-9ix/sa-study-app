@@ -60,7 +60,7 @@ B> **相對路徑**：從目前目錄開始，例 test/haha.c
 B> 限制（投影片）：單一元件 ≤ **255** 字元；單一絕對路徑 ≤ **1023** 字元
 ?fill 單一路徑元件（一個檔名）最長＿＿個字元
 = 255
-E> 絕對路徑上限為 1023（FreeBSD）。
+E> Linux 的完整路徑上限 PATH_MAX 是 4096 bytes（含結尾的 \0）。
 ?mc 目前目錄是 /home/amy，相對路徑 ../bob/a.txt 指的是？
 + /home/bob/a.txt
 - /home/amy/bob/a.txt
@@ -88,12 +88,12 @@ B> **/mnt**：暫時掛載點；/lib 共享函式庫；/libexec 關鍵系統工�
 > /dev :: 裝置檔
 > /tmp :: 不保證跨重開機保留的暫存檔
 E> hier(7) 有完整說明。
-?mc FreeBSD 上用 pkg 安裝的第三方軟體，設定檔通常放在？
-+ /usr/local/etc
-- /etc（和系統設定放在一起）
-- /var/etc（可變動的設定）
-- /opt/etc（第三方軟體專用）
-E> /usr/local/etc 是 /usr/local 版的 /etc。
+?mc 在 Debian 上用 apt 安裝 nginx，它的主要設定檔放在哪裡？
++ /etc/nginx
+- /usr/local/etc/nginx
+- /var/lib/nginx/etc
+- /opt/nginx/etc
+E> 套件裝的設定檔一律在 /etc；/usr/local 留給管理員自行編譯安裝的軟體（make install 的預設 prefix）。對照：FreeBSD 用 pkg 裝的第三方軟體，設定放 /usr/local/etc。
 
 @CARD fs.mount | mount 與 umount
 A> mount 是「把一個新的儲物櫃接到大樓的某個門口」：之後走進那個門（mount point）看到的就是新櫃子的內容，原本門後的東西暫時被擋住看不到（但沒消失）。有人正在櫃子裡（cd 在裡面或開著檔案）時，你沒辦法把櫃子拆走（busy）。
@@ -196,7 +196,7 @@ E> 檔名存在目錄的資料區塊（檔名 → inode 號碼）；inode 不含
 > Super block :: 檔案系統整體狀態（大小、block size…）
 > Inode list :: 所有 inode 的陣列
 > Data blocks :: 檔案的實際內容
-E> UFS 經典結構。
+E> 傳統 Unix 檔案系統的經典結構；ext2/3/4 把 inode 與 data block 分散到多個 block group，但概念相同。
 ?cmd 列出目前目錄檔案及其 inode 號碼：
 = ls -i
 = ls -li
@@ -387,24 +387,27 @@ E> user:group。
 = chgrp staff report.txt
 E> 也可以 chown :staff report.txt。
 
-@CARD fs.chflags | FreeBSD chflags（附錄）
-A> chflags 是 FreeBSD 的「封條」：schg（系統不可變）連 root 都不能改（在高 securelevel 下連拆封條都不行）；uappnd 是「只能在後面加字的日記本」。
-B> **schg** system immutable（root only）；**sunlnk** system undeletable；**sappnd** system append-only
-B> **uappnd** user append-only；**uunlnk** user undeletable（root 與 user 都可設）
-B> **ls -ol** 顯示 flags
-B> 例：設 uappend 後 ls > file 失敗（Operation not permitted），ls >> file 可以
-?mc 對檔案設了 uappnd flag 後，下列哪個操作會成功？
+@CARD fs.chflags | chattr / lsattr：檔案屬性（對應 FreeBSD chflags）
+A> chattr 是 Linux 檔案的「封條」：+i（immutable）貼上後連 root 都不能改、刪、改名，要先 chattr -i 拆封；+a 是「只能在後面加字的日記本」，適合 log。這些屬性存在檔案系統裡，ls -l 看不到，要用 lsattr。
+B> **chattr +i file**：immutable，不能修改、刪除、改名、建 hard link
+B> **chattr +a file**：append-only，只能用 >> 附加；不能覆寫、截斷、刪除
+B> +i 與 +a **只有 root**（CAP_LINUX_IMMUTABLE）能設定或移除
+B> **lsattr file** 顯示屬性（例如 ----i---------e-------）；**chattr -i file** 移除
+B> 其他：**A** 不更新 atime、**d** dump 備份時略過；支援程度依檔案系統而定（ext4、btrfs 大多支援）
+B> 例：設 +a 後 ls > file 失敗（Operation not permitted），ls >> file 可以
+B> 對照：FreeBSD 用 **chflags**（schg、sappnd、uappnd…），ls -ol 顯示
+?mc 對檔案設了 chattr +a 後，下列哪個操作會成功？
 + ls -al >> file
 - ls -al > file
 - rm file
 - 用編輯器修改中間內容
-E> append-only 只能附加。
-?mt 配對 FreeBSD file flags：
-> schg :: system immutable，只有 root 能設
-> sappnd :: system append-only
-> uappnd :: user append-only
-> uunlnk :: user undeletable
-E> s 開頭是 system 等級，u 開頭是 user 等級。
+E> append-only 只能附加；覆寫、截斷、刪除都會得到 Operation not permitted。
+?mt 配對 chattr 屬性：
+> i :: immutable，不能改、刪、改名
+> a :: append-only，只能附加
+> A :: 不更新 access time
+> d :: dump 備份時略過
+E> 用 lsattr 查看，chattr +x / -x 設定或移除。
 
 @CARD fs.journal | Journaling、CoW 與 Extended Attributes
 A> Journaling 像「先記帳再搬貨」：當機後看帳本就知道哪些做完、哪些要回滾，不用盤點整個倉庫（fsck 很快）。CoW 像「改作業時不在原稿上塗改，而是寫在新紙上再換掉」，沒改的部分共用同一張紙 → 快照幾乎不花空間。
