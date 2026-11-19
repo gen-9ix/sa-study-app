@@ -11,7 +11,7 @@ python3 build/build.py && node tools/check.mjs || exit 1
 node -e "new (require('vm').Script)(require('fs').readdirSync('src/js').sort().map(f=>require('fs').readFileSync('src/js/'+f,'utf8')).join(''))" || { echo 'FAIL syntax'; exit 1; }
 python3 -m http.server $PORT --directory . >/dev/null 2>&1 & SRV=$!; trap 'kill $SRV' EXIT; sleep 1
 fail=0
-for t in ${@:-v5 t3 fuzz f6 star backup feat4 fbmerge fbsync t8}; do
+for t in ${@:-v5 t3 fuzz f6 star skip backup feat4 fbmerge fbsync t8}; do
   out=$(timeout 300 node "test/$t.mjs" 2>&1); printf '%s\n' "$out" | tail -n 3 | cut -c1-200
   printf '%s\n' "$out" | grep -q 'NO ERRORS' && echo "PASS $t" || { echo "FAIL $t"; fail=1; }
 done

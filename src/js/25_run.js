@@ -106,11 +106,18 @@ VIEWS.run=()=>{
   if(it.t==='goal'){ const tm=QLIST.filter(q=>{ const s=S.q[q.id]; return s&&s.n&&s.d<=now()+DAY; }).length; const D=S.days[today()]||{x:0};
     return head+`<div class="card center">${mascot('happy')}<div class="h1 mt-xs">今日目標達成！</div><div class="stats"><span class="chip y">${icon('flame')} 連續 ${streak()} 天</span><span class="chip g">今天 +${D.x} XP</span></div>${weekRow()}<div class="small mt-md">明天會有 <b>${tm}</b> 個記憶到期。回來接住它們只要幾分鐘，放掉就得重學。</div></div><div class="sp-dock"></div><div class="dock"><div><button class="btn" data-act="hub">今天到這</button><button class="btn pri" data-act="next">再學一點 →</button></div></div>`; }
   const q=Q[it.id];
-  return head+questionHTML(q,R.st,{nw:it.nw,re:it.re,fast:it.fast})+`<div class="sp-dock"></div>`+dockHTML();
+  return head+questionHTML(q,R.st,{nw:it.nw,re:it.re,fast:it.fast,sk:it.sk})+skipHTML()+`<div class="sp-dock"></div>`+dockHTML();
 };
 AFTER.run=()=>{ const R=RUN; if(!R||R.pos>=R.items.length){ if(R&&R.active) finishRun(); return; } const it=R.items[R.pos];
   if(it.t!=='q'){ if(it.t==='learn') viewCardOnce(it.c); if(it.t==='goal'&&!it.shown){ it.shown=1; confetti(); sfx('fanfare'); } if(it.t==='chest'&&!it.shown){ it.shown=1; sfx('coin'); } return; }
   afterQuestion(); if(R.boss){ const el=document.querySelector('.utbox .utt'); const line=el&&el.getAttribute('data-full'); if(line&&line!==bossTypewriter.last){ bossTypewriter.last=line; bossTypewriter(); } } };
+/* 暫時跳過：不計分、不動排程，把這題移到稍後（一般練習移到最後，無限模式往後 5 題）。魔王戰不能跳。 */
+function canSkip(){ const R=RUN, st=R.st; if(!R||R.boss||st.done||(st.log||[]).length) return false;
+  return R.endless||R.items.slice(R.pos+1).some(x=>x.t==='q'); }
+function skipHTML(){ return canSkip()?`<div class="center mt-sm"><button class="btn sm ghost" data-act="skipq">${icon('repeat')} 先跳過，稍後再答</button></div>`:''; }
+function skipQ(){ const R=RUN; if(!canSkip()) return; const it=R.items.splice(R.pos,1)[0]; it.sk=(it.sk||0)+1;
+  if(R.endless){ if(R.items.length-R.pos<6) feedFill(); R.items.splice(Math.min(R.items.length,R.pos+5),0,it); } else R.items.push(it);
+  R.st={t0:now()}; toast('先跳過，等一下會再出這題'); window.scrollTo(0,0); render(); }
 function dockHTML(){
   const R=RUN, st=R.st, q=Q[R.items[R.pos].id];
   if(st.done) return `<div class="dock"><div><button class="btn pri" data-act="next">${R.pos+1>=R.items.length?'看成果':'繼續 →'}</button></div></div>`;
@@ -122,7 +129,7 @@ function dockHTML(){
   return '';
 }
 function qHeader(q,o={}){ const c=q.card;
-  return `<div class="qmeta"><span class="chip">${icon(KIND_IC[q.k])} ${KIND[q.k]}</span>${o.nw?'<span class="chip b">新題</span>':''}${o.re?'<span class="chip r">再來一次</span>':''}${o.fast?`<span class="chip y">${icon('bolt')} 快問快答 XP×2</span>`:''}${q.src?`<span class="chip y">${icon('scroll')} ${esc(q.src)}</span>`:''}<span class="src">${chTag(c.ch)} ${md(c.t)}</span></div>`; }
+  return `<div class="qmeta"><span class="chip">${icon(KIND_IC[q.k])} ${KIND[q.k]}</span>${o.nw?'<span class="chip b">新題</span>':''}${o.re?'<span class="chip r">再來一次</span>':''}${o.sk?'<span class="chip">剛剛跳過</span>':''}${o.fast?`<span class="chip y">${icon('bolt')} 快問快答 XP×2</span>`:''}${q.src?`<span class="chip y">${icon('scroll')} ${esc(q.src)}</span>`:''}<span class="src">${chTag(c.ch)} ${md(c.t)}</span></div>`; }
 const RATE_DOCK=act=>`<div class="dock"><div><button class="btn danger" data-act="${act}" data-r="0">${icon('x')} 忘了</button><button class="btn warn" data-act="${act}" data-r="1">${icon('q')} 模糊</button><button class="btn pri" data-act="${act}" data-r="2">${icon('check')} 記得</button></div></div>`;
 function questionHTML(q,st,o={}){
   let body='';

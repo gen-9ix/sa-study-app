@@ -81,6 +81,7 @@ const ACT={
   mc:d=>{ const st=RUN.st; if(st.done) return; st.pick=+d.i; const q=Q[RUN.items[RUN.pos].id]; answer(st.pick===q.a?2:0, st.pick===q.a); },
   tf:d=>{ const st=RUN.st; if(st.done) return; st.pick=d.v==='1'; const q=Q[RUN.items[RUN.pos].id]; answer(st.pick===q.a?2:0, st.pick===q.a); },
   submit:()=>submitTyped(),
+  skipq:()=>skipQ(),
   giveup:()=>{ blurInput(); const st=RUN.st; const q=Q[RUN.items[RUN.pos].id]; st.val=($('#ans')?.value||'').trim(); if(q.k==='cmd') st.log=(st.log||[]).concat(`<div class="out hint"># 參考：${esc(q.a[0])}</div>`); answer(0,false); },
   hint:()=>{ RUN.st.hint=true; render(); },
   override:()=>{ const R=RUN, st=R.st, q=Q[R.items[R.pos].id]; st.override=true; st.ok=true; const s=S.q[q.id]; if(s){ s.l=Math.max(0,s.l-1); s.h=s.h.slice(0,-1)+'1'; s.c++; s.i=Math.max(1,s.i); s.d=now()+DAY; } R.res[R.pos]=2; const ix=R.items.findIndex((x,i)=>i>R.pos&&x.id===q.id&&x.re); if(ix>0) R.items.splice(ix,1); save(); render(); toast('已改判為正確'); },
